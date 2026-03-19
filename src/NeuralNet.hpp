@@ -16,7 +16,10 @@ static constexpr float EPS = 1e-8f;
 static constexpr float ADAM_BETA_1 = 0.9f;
 static constexpr float ADAM_BETA_2 = 0.999f;
 
-enum class ActivationFunction { Input, Sigmoid, ReLU, Softmax, Tanh };
+template<size_t In, size_t Out>
+struct Block{};
+
+enum class ActivationFunction { Linear, Input, Sigmoid, ReLU, Softmax, Tanh };
 
 // activation function
 template<size_t N>
@@ -34,13 +37,21 @@ Tensor<N> Activate(const Tensor<N>& z, const ActivationFunction act) {
         case ActivationFunction::Softmax: {
             // subtract max for numerical stability
             float maxV = z.flat(0);
-            for (size_t i = 1; i < N; ++i) if (z.flat(i) > maxV) maxV = z.flat(i);
+            for (size_t i = 1; i < N; ++i) {
+                if (z.flat(i) > maxV) {
+                    maxV = z.flat(i);
+                }
+            }
             auto a = z.map([maxV](const float x) { return std::exp(x - maxV); });
             float sum = 0.f;
-            for (size_t i = 0; i < N; ++i) sum += a.flat(i);
+            for (size_t i = 0; i < N; ++i) {
+                sum += a.flat(i);
+            }
             a.apply([sum](float& x) { x /= sum; });
             return a;
         }
+        case ActivationFunction::Linear:
+        case ActivationFunction::Input:
         default: return z;
     }
 }
@@ -57,9 +68,13 @@ Tensor<N> ActivatePrime(const Tensor<N>& grad, const Tensor<N>& a, const Activat
             return grad.zip(a, [](const float g, const float ai) { return g * (1.f - ai * ai); });
         case ActivationFunction::Softmax: {
             float dot = 0.f;
-            for (size_t i = 0; i < N; ++i) dot += a.flat(i) * grad.flat(i);
+            for (size_t i = 0; i < N; ++i) {
+                dot += a.flat(i) * grad.flat(i);
+            }
             return a.zip(grad, [dot](const float ai, const float gi) { return ai * (gi - dot); });
         }
+        case ActivationFunction::Linear:
+        case ActivationFunction::Input:
         default: return grad;
     }
 }
@@ -91,7 +106,7 @@ template<size_t In, size_t Out>
 struct Layer {
     Tensor<Out, In> W;
     Tensor<Out> b{};          
-    ActivationFunction actFunc = ActivationFunction::Input;
+    ActivationFunction actFunc = ActivationFunction::Linear;
 
     // Adam first and second moments (0 init)
     Tensor<Out, In> mW{}, vW{};
@@ -111,11 +126,13 @@ struct Layer {
     // backward pass
     // take in downstream gradient and take outer product with upstream activation: this is dL/dW
     Tensor<In> Backward(const Tensor<Out>& delta, const Tensor<In>& a_prev, float lr, float mCorr, float vCorr) {
-        // dW = OUTER(delta, a_prev)
-        // delta: Tensor<Out>, a_prev: Tensor<In>....outer prod --> Tensor<Out,In>, same dim as W
 
         // then apply Adam update to W and b
-        AdamUpdate(Einsum(delta, a_prev), delta, lr, mCorr, vCorr);
+        AdamUpdate(
+            // dW = OUTER(delta, a_prev)
+            // delta: Tensor<Out>, a_prev: Tensor<In>....outer prod --> Tensor<Out,In>, same dim as W
+            Einsum(delta, a_prev)
+            , delta, lr, mCorr, vCorr);
 
         // then pass gradient upstream, defining dL/dA_prev:
         //      W: Tensor<Out,In>, delta: Tensor<Out>...contract first axis of each --> Tensor<In>, same dim as a_prev
@@ -159,111 +176,73 @@ struct Layer {
 };
 
 
-// NEURAL NETWORK CLASS
-// templatized by layer sizes
-//      sizes[0] = input size
-//      sizes[1...] = layer output sizes
-// network is essentially a Tuple of Layer<In,Out> objects, where mLayers[i - 1]::Out == mLayers[i]::In
+// LAYER SPEC
+// layer is most primitively defined as its output size and its activation function, which defaults to linear
+struct LayerSpec {
+    size_t size{};
+    ActivationFunction act = ActivationFunction::Linear;
+};
 
-template<size_t... Sizes>
+// NEURAL NETWORK CLASS
+// templatized by LayerSpec NTTPs
+//      Specs[0]    = input layer  (act is ignored)
+//      Specs[1...] = output sizes + activations for each layer
+// network is a Tuple of Layer<In,Out> objects, where consecutive specs define each layer
+
+template<LayerSpec... Specs>
 class NeuralNetwork {
-    static_assert(sizeof...(Sizes) >= 2, "Need at least input size + one output size");
+    static_assert(sizeof...(Specs) >= 2, "Need at least input spec + one output spec");
 
     // LAYER TUPLE TOOLS
-    // necessary unpacker to make tuple of Layers from list of activation sizes
-    // remember, these are all type operations!
-    // we just need LayerTupleBuilder to give us the full type of the layer tuple
+    // LayerTupleBuilder walks consecutive pairs of LayerSpecs to produce
+    // std::tuple<Layer<A.size, B.size>, Layer<B.size, C.size>, ...>
 
-    // generic
-    template<size_t... LayerSizes>
+    template<LayerSpec... S>
     struct LayerTupleBuilder;
 
-    // base case: two left --> final layer
-    template<size_t In, size_t Out>
-    struct LayerTupleBuilder<In, Out> {
-        using type = std::tuple<Layer<In, Out>>;
+    // base case: two specs left --> single final layer
+    template<LayerSpec A, LayerSpec B>
+    struct LayerTupleBuilder<A, B> {
+        using type = std::tuple<Layer<A.size, B.size>>;
     };
 
-    // recursive case
-    template<size_t In, size_t Mid, size_t... Rest>
-    struct LayerTupleBuilder<In, Mid, Rest...> {
-        // get type of this tuple_cat monstrosity
+    // recursive case: emit Layer<A,B>, then recurse on <B, Rest...>
+    template<LayerSpec A, LayerSpec B, LayerSpec... Rest>
+    struct LayerTupleBuilder<A, B, Rest...> {
         using type = decltype(std::tuple_cat(
-            // declval allows us to peek around at types in an unevaluated context
-            // we need the type of this tuple AS A VALUE for tuple_cat
-
-            // this layer fully pops top of template list, peeks second-to-top, to create a Layer
-            std::declval<std::tuple<Layer<In, Mid>>>(),
-            // once again, extract type of recursive result !
-            // recurse on the rest and forget about In
-            std::declval<typename LayerTupleBuilder<Mid, Rest...>::type>()
+            std::declval<std::tuple<Layer<A.size, B.size>>>(),
+            std::declval<typename LayerTupleBuilder<B, Rest...>::type>()
         ));
     };
-    /*
-     * DECLVAL example from C++ ref:
-     *
-    *   #include <iostream>
-        #include <utility>
-        struct Default
-        {
-            int foo() const { return 1; }
-        };
 
-        struct NonDefault
-        {
-            NonDefault() = delete;
-            int foo() const { return 1; }
-        };
+    static constexpr size_t NumLayers = sizeof...(Specs) - 1;
+    static constexpr std::array<LayerSpec, sizeof...(Specs)> specsArr = {Specs...};
 
-        int main()
-        {
-            decltype(Default().foo())                   n1 = 1;     // type of n1 is int
-            decltype(std::declval<Default>().foo())     n2 = 1;     // same
-
-            decltype(NonDefault().foo())               n3 = n1;     // error: no default constructor
-            decltype(std::declval<NonDefault>().foo()) n3 = n1;     // type of n3 is int
-
-            std::cout << "n1 = " << n1 << '\n'
-                      << "n2 = " << n2 << '\n'
-                      << "n3 = " << n3 << '\n';
-        }
-     *
-     *
-     */
-
-    static constexpr size_t NumLayers = sizeof...(Sizes) - 1;
-
-    // now we extract our hard-won std::tuple<Layer<>...> which is our network
-    using LayerTuple = LayerTupleBuilder<Sizes...>::type;
+    using LayerTuple = LayerTupleBuilder<Specs...>::type;
     LayerTuple mLayers;
     int mT = 0;
     float mCorr = 1.0f;
     float vCorr = 1.0f;
 
 public:
-    static constexpr size_t InSize = SizeTemplateGet<0, Sizes...>::value;
-    static constexpr size_t OutSize = SizeTemplateGet<sizeof...(Sizes) - 1, Sizes...>::value;
+    static constexpr size_t InSize  = specsArr[0].size;
+    static constexpr size_t OutSize = specsArr[NumLayers].size;
 
-    using InputTensor = Tensor<InSize>;
+    using InputTensor  = Tensor<InSize>;
     using OutputTensor = Tensor<OutSize>;
 
     // tuple of Tensors representing intermediate network activations
-    using ActivationsTuple = std::tuple<Tensor<Sizes>...>;
+    // Specs.size... expands the .size member of each LayerSpec NTTP
+    using ActivationsTuple = std::tuple<Tensor<Specs.size>...>;
 
-
-    NeuralNetwork() = default;
-
-    NeuralNetwork(std::initializer_list<ActivationFunction> acts) {
-        std::array<ActivationFunction, NumLayers> actArr{};
-        std::copy(acts.begin(), acts.end(), actArr.begin());
-
-        auto attachActivationFunction = [&]<size_t... Is>(std::index_sequence<Is...>) {
-            // use C++ lambda unfolding to assign .actFunc member to each Layer
-            ((std::get<Is>(mLayers).actFunc = actArr[Is]), ...);
-            // and to xavier initialize each
+    // activations and sizes are fully encoded in Specs — no constructor args needed
+    NeuralNetwork() {
+        auto init = [&]<size_t... Is>(std::index_sequence<Is...>) {
+            // layer I sits between Specs[I] and Specs[I+1], so its activation is Specs[I+1].act
+            ((std::get<Is>(mLayers).actFunc = specsArr[Is + 1].act), ...);
             (XavierInit(std::get<Is>(mLayers).W), ...);
         };
-        attachActivationFunction(std::make_index_sequence<NumLayers>{});
+        init(std::make_index_sequence<NumLayers>{});
     }
 
 

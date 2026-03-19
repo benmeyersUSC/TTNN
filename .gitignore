@@ -1,3 +1,9 @@
+# Build directory
+build/
+
+# VSCode settings
+.vscode/
+
 # Prerequisites
 *.d
 

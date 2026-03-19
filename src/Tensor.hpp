@@ -276,9 +276,6 @@ struct EinsumResultType<I, J, Tensor<ADims...>, Tensor<BDims...>> {
 //
 // we iterate over free indices in EinsumResultType, and sum over contracted indices
 
-template<size_t I, size_t J, typename TA, typename TB>
-auto Einsum(){};
-
 template<size_t I, size_t J, size_t... ADims, size_t... BDims>
 auto Einsum(const Tensor<ADims...>& A, const Tensor<BDims...>& B) {
     using Result = typename EinsumResultType<I, J, Tensor<ADims...>, Tensor<BDims...>>::type;
