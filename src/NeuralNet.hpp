@@ -10,7 +10,7 @@
 #include <ranges>
 #include <algorithm>
 
-using namespace tensor;
+using namespace TTTN;
 
 static constexpr float EPS = 1e-8f;
 static constexpr float ADAM_BETA_1 = 0.9f;

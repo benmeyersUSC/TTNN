@@ -10,7 +10,7 @@
 #include <ranges>
 #include <algorithm>
 
-using namespace tensor;
+using namespace TTTN;
 
 static constexpr float EPS = 1e-8f;
 static constexpr float ADAM_BETA_1 = 0.9f;
@@ -20,7 +20,7 @@ enum class ActivationFunction { Linear, Sigmoid, ReLU, Softmax, Tanh };
 
 // activation function
 template<size_t N>
-Tensor<N> Activate(const Tensor<N>& z, const ActivationFunction act) {
+Tensor<N> Activate(const Tensor<N> &z, const ActivationFunction act) {
     switch (act) {
         case ActivationFunction::ReLU:
             return z.map([](const float x) {
@@ -44,7 +44,7 @@ Tensor<N> Activate(const Tensor<N>& z, const ActivationFunction act) {
             for (size_t i = 0; i < N; ++i) {
                 sum += a.flat(i);
             }
-            a.apply([sum](float& x) { x /= sum; });
+            a.apply([sum](float &x) { x /= sum; });
             return a;
         }
         case ActivationFunction::Linear:
@@ -54,7 +54,7 @@ Tensor<N> Activate(const Tensor<N>& z, const ActivationFunction act) {
 
 // given upstream gradient (dL/da) and post-activation a --> dL/dz
 template<size_t N>
-Tensor<N> ActivatePrime(const Tensor<N>& grad, const Tensor<N>& a, const ActivationFunction act) {
+Tensor<N> ActivatePrime(const Tensor<N> &grad, const Tensor<N> &a, const ActivationFunction act) {
     switch (act) {
         case ActivationFunction::ReLU:
             return grad.zip(a, [](const float g, const float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
@@ -74,73 +74,22 @@ Tensor<N> ActivatePrime(const Tensor<N>& grad, const Tensor<N>& a, const Activat
     }
 }
 
-// CROSS ENTROPY LOSS
-template<size_t N>
-float CrossEntropyLoss(const Tensor<N>& output, const Tensor<N>& target) {
-    auto indices = std::views::iota(size_t{0}, N);
 
-    return std::accumulate(indices.begin(), indices.end(), 0.0f,
-        [&target, &output](float current_loss, size_t i) {
-            return current_loss - target.flat(i) * std::log(std::max(output.flat(i), EPS));
-        }
-    );
-}
-
-// xavier init for controlled init variance
-template<size_t In, size_t Out>
-void XavierInit(Tensor<Out, In>& W) {
-    static std::mt19937 rng{std::random_device{}()};
-    const float limit = std::sqrt(6.f / static_cast<float>(In + Out));
-    std::uniform_real_distribution<float> dist{-limit, limit};
-    W.apply([&dist](float& x) { x = dist(rng); });
-}
-
-
-// IS TENSOR TRAIT
-// used to constrain Block's ParamTensors pack to actual Tensor types
+// Block concept
+// *any object* which satisfies these criteria may be a Block in a Trainable Tensor Network
 template<typename T>
-struct is_tensor : std::false_type {};
-
-template<size_t... Dims>
-struct is_tensor<Tensor<Dims...>> : std::true_type {};
-
-template<typename T>
-concept IsTensor = is_tensor<T>::value;
-
-
-// BLOCK BASE
-// every block takes a Tensor<InSize> in, produces a Tensor<OutSize> out,
-// and declares its learnable parameters as a pack of Tensor types
-// children inherit and shadow Forward/Backward/Save/Load with their own implementations
-template<size_t In, size_t Out, IsTensor... ParamTensors>
-struct BlockBase {
-    static constexpr size_t InSize  = In;
-    static constexpr size_t OutSize = Out;
-    using InputTensor  = Tensor<In>;
-    using OutputTensor = Tensor<Out>;
-    using Params       = std::tuple<ParamTensors...>;
-
-    Tensor<Out> Forward(const Tensor<In>&) const                         { return {}; }
-    Tensor<In>  Backward(const Tensor<Out>&, const Tensor<Out>&,
-                         const Tensor<In>&, float, float, float)         { return {}; }
-    void        Save(std::ofstream&) const                               {}
-    void        Load(std::ifstream&)                                     {}
+concept Block = requires(T t, const T ct,
+                         Tensor<T::InSize> in,
+                         Tensor<T::OutSize> out,
+                         std::ofstream &of, std::ifstream &inf)
+{
+    { T::InSize } -> std::convertible_to<size_t>;
+    { T::OutSize } -> std::convertible_to<size_t>;
+    { ct.Forward(in) } -> std::same_as<Tensor<T::OutSize> >;
+    { t.Backward(out, out, in, 0.f, 0.f, 0.f) } -> std::same_as<Tensor<T::InSize> >;
+    { ct.Save(of) };
+    { t.Load(inf) };
 };
-
-// IS BLOCK TRAIT
-// checks whether T inherits from any specialization of BlockBase
-// pointer overload trick: test(BlockBase<...>*) wins over test(...) iff T* is implicitly convertible
-template<typename T>
-struct is_block {
-    template<size_t In, size_t Out, IsTensor... Ps>
-    static std::true_type  test(BlockBase<In, Out, Ps...>*);
-    static std::false_type test(...);
-    static constexpr bool value = decltype(test(std::declval<T*>()))::value;
-};
-
-// Block concept: the name you use everywhere (NeuralNetwork, user-defined blocks)
-template<typename T>
-concept Block = is_block<T>::value;
 
 
 // DENSE BLOCK
@@ -148,22 +97,24 @@ concept Block = is_block<T>::value;
 // implements the Block interface for a fully-connected layer with activation
 // InSize and OutSize define the Block's tensor contract; Act is applied in Forward/Backward
 template<size_t In, size_t Out, ActivationFunction Act_ = ActivationFunction::Linear>
-struct DenseBlock : BlockBase<In, Out, Tensor<Out,In>, Tensor<Out>> {
+struct DenseBlock {
+    static constexpr size_t InSize = In;
+    static constexpr size_t OutSize = Out;
     static constexpr ActivationFunction Act = Act_;
 
     Tensor<Out, In> W;
-    Tensor<Out>     b{};
+    Tensor<Out> b{};
 
     // Adam first and second moments (0 init)
     Tensor<Out, In> mW{}, vW{};
-    Tensor<Out>     mb{}, vb{};
+    Tensor<Out> mb{}, vb{};
 
     DenseBlock() { XavierInit(W); }
 
     // forward pass
     // uses Einsum to contract 2nd and 1st dimensions from W and x, respectively
     // then calls activation
-    Tensor<Out> Forward(const Tensor<In>& x) const {
+    Tensor<Out> Forward(const Tensor<In> &x) const {
         // MATVEC contracts matrix's columns with column-vec's rows --> Tensor<NumRowsInWeight>
         auto z = Einsum<1, 0>(W, x) + b;
         return Activate(z, Act);
@@ -172,8 +123,8 @@ struct DenseBlock : BlockBase<In, Out, Tensor<Out,In>, Tensor<Out>> {
     // delta_A is dL/dA (gradient wrt my output activation)
     // a is my output (for ActivatePrime), a_prev is my input (for dW)
     // returns dL/dA_prev
-    Tensor<In> Backward(const Tensor<Out>& delta_A, const Tensor<Out>& a,
-                        const Tensor<In>& a_prev, float lr, float mCorr, float vCorr) {
+    Tensor<In> Backward(const Tensor<Out> &delta_A, const Tensor<Out> &a,
+                        const Tensor<In> &a_prev, float lr, float mCorr, float vCorr) {
         // peel off activation derivative to get dL/dZ
         const auto delta_Z = ActivatePrime(delta_A, a, Act);
 
@@ -190,48 +141,45 @@ struct DenseBlock : BlockBase<In, Out, Tensor<Out,In>, Tensor<Out>> {
     // Adam update.
     // mCorr and vCorr are precomputed by NN. at the beginning, (low mT), corrections amplify
     // moments from 0-bias, but eventually corrections approach 1
-    void AdamUpdate(const Tensor<Out, In>& dW, const Tensor<Out>& db, float lr, float mCorr, float vCorr) {
+    void AdamUpdate(const Tensor<Out, In> &dW, const Tensor<Out> &db, float lr, float mCorr, float vCorr) {
         // for each Weight and Bias, subtract LR * adjusted_First_Moment / sqrt(adjusted_Second_Moment)
         //      first moment approximates consistency of direction of update
         //      second moment approximates inverse of smoothness of local terrain on loss landscape
         for (size_t i = 0; i < Out * In; ++i) {
-            const float g  = dW.flat(i);
+            const float g = dW.flat(i);
             mW.flat(i) = ADAM_BETA_1 * mW.flat(i) + (1.f - ADAM_BETA_1) * g;
             vW.flat(i) = ADAM_BETA_2 * vW.flat(i) + (1.f - ADAM_BETA_2) * g * g;
             W.flat(i) -= lr * (mW.flat(i) * mCorr) / (std::sqrt(vW.flat(i) * vCorr) + EPS);
         }
         for (size_t i = 0; i < Out; ++i) {
-            const float g  = db.flat(i);
+            const float g = db.flat(i);
             mb.flat(i) = ADAM_BETA_1 * mb.flat(i) + (1.f - ADAM_BETA_1) * g;
             vb.flat(i) = ADAM_BETA_2 * vb.flat(i) + (1.f - ADAM_BETA_2) * g * g;
             b.flat(i) -= lr * (mb.flat(i) * mCorr) / (std::sqrt(vb.flat(i) * vCorr) + EPS);
         }
     }
 
-    void Save(std::ofstream& f) const {
-        const auto a = static_cast<uint8_t>(Act);
-        f.write(reinterpret_cast<const char*>(&a), 1);
-        f.write(reinterpret_cast<const char*>(W.data()), Out * In * sizeof(float));
-        f.write(reinterpret_cast<const char*>(b.data()), Out * sizeof(float));
+    void Save(std::ofstream &f) const {
+        W.Save(f);
+        b.Save(f);
     }
-    void Load(std::ifstream& f) {
-        uint8_t a; f.read(reinterpret_cast<char*>(&a), 1);
-        // Act is constexpr so we just skip the byte; it's baked into the type
-        f.read(reinterpret_cast<char*>(W.data()), Out * In * sizeof(float));
-        f.read(reinterpret_cast<char*>(b.data()), Out      * sizeof(float));
+
+    void Load(std::ifstream &f) {
+        W.Load(f);
+        b.Load(f);
     }
 };
 
 
 // NEURAL NETWORK CLASS
-// templatized by Block types
+// templatized by Block-concept-compliant types
 //      Blocks[0]   = first block  (network InSize  = its InSize)
 //      Blocks[N-1] = last block   (network OutSize = its OutSize)
 // network is a std::tuple<Blocks...>; connectivity Blocks[I]::OutSize == Blocks[I+1]::InSize
 //      is enforced at compile time
 
 template<Block... Blocks>
-class NeuralNetwork {
+class TrainableTensorNetwork {
     static_assert(sizeof...(Blocks) >= 1, "Need at least one block");
 
     // ACTIVATION TUPLE BUILDER
@@ -245,14 +193,14 @@ class NeuralNetwork {
     // base case: single block --> (input, output)
     template<typename Last>
     struct ActivationsTupleBuilder<Last> {
-        using type = std::tuple<Tensor<Last::InSize>, Tensor<Last::OutSize>>;
+        using type = std::tuple<Tensor<Last::InSize>, Tensor<Last::OutSize> >;
     };
 
     // recursive case: emit Tensor<First::InSize>, then recurse on <Rest...>
     template<typename First, typename... Rest>
     struct ActivationsTupleBuilder<First, Rest...> {
         using type = decltype(std::tuple_cat(
-            std::declval<std::tuple<Tensor<First::InSize>>>(),
+            std::declval<std::tuple<Tensor<First::InSize> > >(),
             std::declval<typename ActivationsTupleBuilder<Rest...>::type>()
         ));
     };
@@ -264,10 +212,11 @@ class NeuralNetwork {
     // connectivity check: every Blocks[I]::OutSize must equal Blocks[I+1]::InSize
     static constexpr bool check_connected() {
         return []<size_t... Is>(std::index_sequence<Is...>) -> bool {
-            return ((std::tuple_element_t<Is,   BlockTuple>::OutSize ==
-                     std::tuple_element_t<Is+1, BlockTuple>::InSize) && ...);
+            return ((std::tuple_element_t<Is, BlockTuple>::OutSize ==
+                     std::tuple_element_t<Is + 1, BlockTuple>::InSize) && ...);
         }(std::make_index_sequence<NumLayers - 1>{});
     }
+
     static_assert(check_connected(), "Block output/input sizes don't chain");
 
     BlockTuple mBlocks;
@@ -276,18 +225,18 @@ class NeuralNetwork {
     float vCorr = 1.0f;
 
 public:
-    static constexpr size_t InSize  = std::tuple_element_t<0,           BlockTuple>::InSize;
-    static constexpr size_t OutSize = std::tuple_element_t<NumLayers-1, BlockTuple>::OutSize;
+    static constexpr size_t InSize = std::tuple_element_t<0, BlockTuple>::InSize;
+    static constexpr size_t OutSize = std::tuple_element_t<NumLayers - 1, BlockTuple>::OutSize;
 
-    using InputTensor  = Tensor<InSize>;
+    using InputTensor = Tensor<InSize>;
     using OutputTensor = Tensor<OutSize>;
 
     // tuple of Tensors representing intermediate network activations
     using ActivationsTuple = typename ActivationsTupleBuilder<Blocks...>::type;
 
-    NeuralNetwork() = default;
+    TrainableTensorNetwork() = default;
 
-    [[nodiscard]] ActivationsTuple ForwardAll(const InputTensor& x) const {
+    [[nodiscard]] ActivationsTuple ForwardAll(const InputTensor &x) const {
         // declare tuple of activation Tensors
         ActivationsTuple A;
         // assign InputTensor to first activation Tensor
@@ -298,20 +247,20 @@ public:
         return A;
     }
 
-    [[nodiscard]] OutputTensor Forward(const InputTensor& x) const {
+    [[nodiscard]] OutputTensor Forward(const InputTensor &x) const {
         // call ForwardAll and grab last activation Tensor
         return std::get<NumLayers>(ForwardAll(x));
     }
 
     // raw full train step: pass in gradient wrt final layer output
     // grad should be dL/da
-    void TrainStep(const InputTensor& x, const OutputTensor& grad, float lr) {
+    void TrainStep(const InputTensor &x, const OutputTensor &grad, float lr) {
         const auto A = ForwardAll(x);
         tick_adam();
         backward_update_impl<NumLayers>(A, grad, lr);
     }
 
-    void Save(const std::string& path) const {
+    void Save(const std::string &path) const {
         std::ofstream f(path, std::ios::binary);
         if (!f) {
             throw std::runtime_error("Cannot write: " + path);
@@ -322,7 +271,8 @@ public:
         };
         writeBlocks(std::make_index_sequence<NumLayers>{});
     }
-    void Load(const std::string& path) {
+
+    void Load(const std::string &path) {
         std::ifstream f(path, std::ios::binary);
         if (!f) {
             throw std::runtime_error("Cannot read: " + path);
@@ -344,13 +294,13 @@ private:
     // internal recursive implementation of forward pass
     // uses Block.Forward to populate ActivationsTuple with activation Tensors
     template<size_t I = 0>
-    void forward_all_impl(ActivationsTuple& A) const {
+    void forward_all_impl(ActivationsTuple &A) const {
         if constexpr (I < NumLayers) {
             // next activation Tensor = Block[I].Forward(prev activation Tensor)
             // recall there are NumLayers+1 activation Tensors but NumLayers actual blocks
-            std::get<I+1>(A) = std::get<I>(mBlocks).Forward(std::get<I>(A));
+            std::get<I + 1>(A) = std::get<I>(mBlocks).Forward(std::get<I>(A));
             // recurse forward
-            forward_all_impl<I+1>(A);
+            forward_all_impl<I + 1>(A);
         }
         // base case is just termination because we have no return
     }
@@ -362,17 +312,17 @@ private:
     // 'I' starts as NumLayers, so it starts by peeling off last block (that's how backprop works)
     // delta is dL/dA[I]: gradient wrt block I-1's output activation
     template<size_t I, size_t DeltaSize>
-    InputTensor backward_update_impl(const ActivationsTuple& A, const Tensor<DeltaSize>& delta, float lr) {
+    InputTensor backward_update_impl(const ActivationsTuple &A, const Tensor<DeltaSize> &delta, float lr) {
         // block I-1 outputs A[I] and takes input A[I-1]
         // Backward peels off ActivatePrime, does AdamUpdate, returns dL/dA[I-1]
-        const auto grad = std::get<I-1>(mBlocks).Backward(delta, std::get<I>(A), std::get<I-1>(A), lr, mCorr, vCorr);
+        const auto grad = std::get<I - 1>(mBlocks).
+                Backward(delta, std::get<I>(A), std::get<I - 1>(A), lr, mCorr, vCorr);
         if constexpr (I > 1) {
-            return backward_update_impl<I-1>(A, grad, lr);
+            return backward_update_impl<I - 1>(A, grad, lr);
         }
         // because we have a if-constexpr (compile time if), we must pair it with an else.
         // even when I > 1, this code (if not else-wrapped) would run, causing type errors!
-        else
-        {
+        else {
             // base case: gradient is already wrt Input
             return grad;
         }
