@@ -191,4 +191,20 @@ namespace TTTN {
             f.read(reinterpret_cast<char *>(data_.data()), Size * sizeof(float));
         }
     };
+
+    // IS_TENSOR type trait -> concept
+    // allows us to make sure Block parameters are Tensors
+     // dummy SFINAE backup
+    template<typename T>
+    struct is_tensor : std::false_type {
+    };
+
+    // substitution success: able to pattern match the T in is_tensor<T> to a Tensor<any dims at all> (ie any Tensor)
+    template<size_t... Dims>
+    struct is_tensor<Tensor<Dims...> > : std::true_type {
+    };
+
+    // concept to wrap it
+    template<typename T>
+    concept IsTensor = is_tensor<T>::value;
 }

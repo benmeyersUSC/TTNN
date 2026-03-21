@@ -1,5 +1,4 @@
 #pragma once
-#include <concepts>
 #include <stdexcept>
 #include "NetworkUtil.hpp"
 
@@ -67,7 +66,7 @@ namespace TTTN {
         using OutputTensor = Tensor<OutSize>;
 
         // tuple of Tensors representing every activation: input + one per block output
-        using ActivationsTuple = typename TensorTupleBuilder<Blocks...>::type;
+        using ActivationsTuple = TensorTupleBuilder<Blocks...>::type;
 
         TrainableTensorNetwork() = default;
 
@@ -107,6 +106,21 @@ namespace TTTN {
             BackwardAll(A, grad);
             Update(lr);
         }
+
+        /*
+        
+        template<size_t Batch>
+        TrainStep(const TensorConcat<InputTensor, Batch> &x, const OutputTensor &grad, float lr){
+
+        - make a new network out of this network's Blocks. grab em by reference if poss (we need a network to be able to expose its blocks...a tuple of references)
+        - this new network's input and all its Activations (the tuple) will have an added dimenion of Batch (add it, don't increment a diff one)
+        - then in this function, we'll manually pass the input and each activation to each block...we will use einsum to contract on the batch dimenion
+        - we'll need some transposes and stuff. 
+        - then we can delete this thin 'training' network
+
+        }
+        
+        */
 
         void Save(const std::string &path) const {
             std::ofstream f(path, std::ios::binary);
@@ -160,7 +174,7 @@ namespace TTTN {
             if constexpr (I > 1) {
                 backward_impl<I - 1>(A, grad);
             }
-            // because we have a if-constexpr (compile time if), we must pair it with an else.
+            // because we have an if-constexpr (compile time if), we must pair it with an else.
             // even when I > 1, this code (if not else-wrapped) would run, causing type errors!
         }
     };

@@ -1,66 +1,8 @@
 #pragma once
 #include "TensorOps.hpp"
+#include "TensorMLUtil.hpp"
 
 namespace TTTN {
-    enum class ActivationFunction { Linear, Sigmoid, ReLU, Softmax, Tanh };
-
-    // activation function
-    template<size_t N>
-    Tensor<N> Activate(const Tensor<N> &z, const ActivationFunction act) {
-        switch (act) {
-            case ActivationFunction::ReLU:
-                return z.map([](const float x) {
-                    return x > 0.f ? x : 0.f;
-                });
-            case ActivationFunction::Sigmoid:
-                return z.map([](const float x) {
-                    return 1.f / (1.f + std::exp(-x));
-                });
-            case ActivationFunction::Tanh: return z.map([](const float x) { return std::tanh(x); });
-            case ActivationFunction::Softmax: {
-                // subtract max for numerical stability
-                float maxV = z.flat(0);
-                for (size_t i = 1; i < N; ++i) {
-                    if (z.flat(i) > maxV) {
-                        maxV = z.flat(i);
-                    }
-                }
-                auto a = z.map([maxV](const float x) { return std::exp(x - maxV); });
-                float sum = 0.f;
-                for (size_t i = 0; i < N; ++i) {
-                    sum += a.flat(i);
-                }
-                a.apply([sum](float &x) { x /= sum; });
-                return a;
-            }
-            case ActivationFunction::Linear:
-            default: return z;
-        }
-    }
-
-    // given upstream gradient (dL/da) and post-activation a --> dL/dz
-    template<size_t N>
-    Tensor<N> ActivatePrime(const Tensor<N> &grad, const Tensor<N> &a, const ActivationFunction act) {
-        switch (act) {
-            case ActivationFunction::ReLU:
-                return grad.zip(a, [](const float g, const float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
-            case ActivationFunction::Sigmoid:
-                return grad.zip(a, [](const float g, const float ai) { return g * ai * (1.f - ai); });
-            case ActivationFunction::Tanh:
-                return grad.zip(a, [](const float g, const float ai) { return g * (1.f - ai * ai); });
-            case ActivationFunction::Softmax: {
-                float dot = 0.f;
-                for (size_t i = 0; i < N; ++i) {
-                    dot += a.flat(i) * grad.flat(i);
-                }
-                return a.zip(grad, [dot](const float ai, const float gi) { return ai * (gi - dot); });
-            }
-            case ActivationFunction::Linear:
-            default: return grad;
-        }
-    }
-
-
     // DENSE BLOCK
     // weights, bias, activation, Adam moments
     // implements the Block interface for a fully-connected layer with activation
