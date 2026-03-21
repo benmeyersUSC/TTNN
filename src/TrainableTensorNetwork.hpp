@@ -1,27 +1,9 @@
 #pragma once
-#include "DenseBlock.hpp"
 #include <concepts>
 #include <stdexcept>
+#include "NetworkUtil.hpp"
 
 namespace TTTN {
-    // Block concept
-    // *any object* which satisfies these criteria may be a Block in a Trainable Tensor Network
-    template<typename T>
-    concept Block = requires(T t, const T ct,
-                             Tensor<T::InSize> in,
-                             Tensor<T::OutSize> out,
-                             std::ofstream &of, std::ifstream &inf)
-    {
-        { T::InSize } -> std::convertible_to<size_t>;
-        { T::OutSize } -> std::convertible_to<size_t>;
-        { ct.Forward(in) } -> std::same_as<Tensor<T::OutSize> >;
-        { t.Backward(out, out, in) } -> std::same_as<Tensor<T::InSize> >;
-        { t.Update(0.f, 0.f, 0.f, 0.f, 0.f, 0.f) };
-        { ct.Save(of) };
-        { t.Load(inf) };
-    };
-
-
     // TRAINABLE TENSOR NETWORK
     // templatized by Block-concept-compliant types
     //      Blocks[0]   = first block  (network InSize  = its InSize)
@@ -29,7 +11,7 @@ namespace TTTN {
     // network is a std::tuple<Blocks...>; connectivity Blocks[I]::OutSize == Blocks[I+1]::InSize
     //      is enforced at compile time
 
-    template<Block... Blocks>
+    template<ConcreteBlock... Blocks>
     class TrainableTensorNetwork {
         static_assert(sizeof...(Blocks) >= 1, "Need at least one block");
 

@@ -142,4 +142,14 @@ namespace TTTN {
             b.Load(f);
         }
     };
+
+    template<size_t Out, ActivationFunction Act_ = ActivationFunction::Linear>
+    struct Dense {
+        static constexpr size_t OutSize = Out;
+        static constexpr ActivationFunction Act = Act_;
+
+        // given an input size_t, we can make the full concrete type
+        template<size_t In>
+        using Resolve = DenseBlock<In, Out, Act>;
+    };
 };
