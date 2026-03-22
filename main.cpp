@@ -32,14 +32,8 @@ void runXOR() {
 
     for (int e = 0; e < 1000; ++e) {
         float total_loss = 0.f;
-        for (int i = 0; i < 4; ++i) {
-            const auto out = net.Forward(inputs[i]);
-            Tensor<1> grad;
-            const float o = out.flat(0), t = targets[i].flat(0);
-            grad.flat(0) = (o - t) / (o * (1.f - o) + EPS);
-            net.TrainStep(inputs[i], grad, 0.01f);
-            total_loss += CrossEntropyLoss(out, targets[i]);
-        }
+        for (int i = 0; i < 4; ++i)
+            total_loss += net.Fit<BinaryCEL>(inputs[i], targets[i], 0.01f);
         if (e % 100 == 0)
             std::cout << "  epoch " << e << "  loss=" << total_loss / 4.f << "\n";
     }
@@ -91,14 +85,8 @@ void runParity() {
 
     for (int e = 0; e < 1000; ++e) {
         float total_loss = 0.f;
-        for (int i = 0; i < 8; ++i) {
-            const auto out = net.Forward(inputs[i]);
-            Tensor<1> grad;
-            const float o = out.flat(0), t = targets[i].flat(0);
-            grad.flat(0) = (o - t) / (o * (1.f - o) + EPS);
-            net.TrainStep(inputs[i], grad, 0.005f);
-            total_loss += CrossEntropyLoss(out, targets[i]);
-        }
+        for (int i = 0; i < 8; ++i)
+            total_loss += net.Fit<BinaryCEL>(inputs[i], targets[i], 0.005f);
         if (e % 100 == 0)
             std::cout << "  epoch " << e << "  loss=" << total_loss / 8.f << "\n";
     }
@@ -128,21 +116,14 @@ void runXORFullBatch() {
     Tensor<4, 1> T{0.f, 1.f, 1.f, 0.f};
 
     for (int e = 0; e < 1000; ++e) {
-        const auto& Y = std::get<2>(net.BatchedForwardAll<4>(X));
-        Tensor<4, 1> grad;
-        float total_loss = 0.f;
-        for (int i = 0; i < 4; ++i) {
-            const float o = Y(i,0), t = T(i,0);
-            grad(i,0) = (o - t) / (o * (1.f - o) + EPS);
-            total_loss -= t * std::log(std::max(o, EPS)) + (1.f-t) * std::log(std::max(1.f-o, EPS));
-        }
+        const float loss = net.BatchFit<BinaryCEL, 4>(X, T, 0.01f);
         if (e % 100 == 0)
-            std::cout << "  epoch " << e << "  loss=" << total_loss / 4.f << "\n";
-        net.BatchTrainStep<4>(X, grad, 0.01f);
+            std::cout << "  epoch " << e << "  loss=" << loss << "\n";
     }
 
     std::cout << "  predictions:\n";
-    const auto& Y = std::get<2>(net.BatchedForwardAll<4>(X));
+    const auto A_final = net.BatchedForwardAll<4>(X);
+    const auto& Y = A_final.template get<2>();
     for (int i = 0; i < 4; ++i)
         std::cout << "    [" << X(i,0) << "," << X(i,1) << "]"
                   << " -> " << Y(i,0) << "  (target=" << T(i,0) << ")\n";
@@ -171,20 +152,7 @@ void runAutoencoder() {
     };
 
     for (int e = 0; e < 279; ++e) {
-        const auto out = net.Forward(x);
-
-        // MSE gradient: dL/d(out_i) = 2*(out_i - x_i) / 20
-        Tensor<20> grad;
-        float loss = 0.f;
-        for (size_t i = 0; i < 20; ++i) {
-            const float diff = out.flat(i) - x.flat(i);
-            loss += diff * diff;
-            grad.flat(i) = 2.f * diff / 20.f;
-        }
-        loss /= 20.f;
-
-        net.TrainStep(x, grad, 0.001f);
-
+        const float loss = net.Fit<MSE>(x, x, 0.001f);
         if (e % 10 == 0)
             std::cout << "  epoch " << std::setw(4) << e
                       << "  MSE = " << std::fixed << std::setprecision(6) << loss << "\n";
@@ -231,19 +199,7 @@ void runRankNineAutoencoder() {
     constexpr size_t N = decltype(x)::Size;  // 512
 
     for (int e = 0; e < 300; ++e) {
-        const auto out = net.Forward(x);
-
-        decltype(x) grad;
-        float loss = 0.f;
-        for (size_t i = 0; i < N; ++i) {
-            const float diff = out.flat(i) - x.flat(i);
-            loss += diff * diff;
-            grad.flat(i) = 2.f * diff / static_cast<float>(N);
-        }
-        loss /= static_cast<float>(N);
-
-        net.TrainStep(x, grad, 0.0001f);
-
+        const float loss = net.Fit<MSE>(x, x, 0.0001f);
         if (e % 10 == 0)
             std::cout << "  epoch " << std::setw(4) << e
                       << "  MSE = " << std::fixed << std::setprecision(6) << loss << "\n";
@@ -277,19 +233,7 @@ void runAttentionAutoencoder() {
         x.flat(i) = 0.5f + 0.4f * std::sin(static_cast<float>(i) * 3.14159f / 8.f);
 
     for (int e = 0; e < 500; ++e) {
-        const auto out = net.Forward(x);
-
-        Tensor<6, 8> grad;
-        float loss = 0.f;
-        for (size_t i = 0; i < 48; ++i) {
-            const float diff = out.flat(i) - x.flat(i);
-            loss += diff * diff;
-            grad.flat(i) = 2.f * diff / 48.f;
-        }
-        loss /= 48.f;
-
-        net.TrainStep(x, grad, 0.001f);
-
+        const float loss = net.Fit<MSE>(x, x, 0.001f);
         if (e % 50 == 0)
             std::cout << "  epoch " << std::setw(4) << e
                       << "  MSE = " << std::fixed << std::setprecision(6) << loss << "\n";
@@ -305,6 +249,70 @@ void runAttentionAutoencoder() {
     std::cout << "...\n";
 }
 
+// MNIST: 784 inputs -> 128 (ReLU) -> 64 (ReLU) -> 10 (Softmax), trained with CEL.
+// Expects mnist_train.csv in the working directory:
+//   format: label,pixel0,pixel1,...,pixel783  (header row, 60000 data rows)
+//   download from: https://www.kaggle.com/datasets/oddrationale/mnist-in-csv
+void runMNIST() {
+    std::cout << "\n=== MNIST (784 -> 128 -> 64 -> 10, Softmax + CEL) ===\n";
+
+    // Shape stated at compile time — the type IS the schema.
+    auto train_data = LoadCSV<60000, 785>("../mnist_train.csv", /*skip_header=*/true);
+
+    NetworkBuilder<
+        Input<784>,
+        Dense<128, ActivationFunction::ReLU>,
+        Dense<64,  ActivationFunction::ReLU>,
+        Dense<10,  ActivationFunction::Softmax>
+    >::type net;
+    std::cout << "    params: " << net.TotalParamCount << "\n\n";
+
+    std::mt19937 rng{42};
+    constexpr size_t Batch = 32;
+    constexpr int    Steps = 200;   // steps per epoch (increase for more training)
+
+    for (int epoch = 0; epoch < 1; ++epoch) {
+        float total_loss = 0.f;
+        int   correct    = 0;
+
+        for (int step = 0; step < Steps; ++step) {
+            auto batch = RandomBatch<Batch>(train_data, rng);
+
+            Tensor<Batch, 784> X;
+            Tensor<Batch, 10>  Y;
+            for (size_t b = 0; b < Batch; ++b) {
+                const auto label = static_cast<size_t>(batch(b, 0));
+                for (size_t p = 0; p < 784; ++p)
+                    X(b, p) = batch(b, p + 1) / 255.f;
+                for (size_t c = 0; c < 10; ++c)
+                    Y(b, c) = (c == label) ? 1.f : 0.f;
+            }
+
+            // measure loss before the update
+            const auto A_mnist = net.BatchedForwardAll<Batch>(X);
+            const auto& preds = A_mnist.template get<3>();
+            for (size_t b = 0; b < Batch; ++b) {
+                Tensor<10> pred_b, y_b;
+                float best = -1.f; size_t pred_label = 0;
+                for (size_t i = 0; i < 10; ++i) {
+                    pred_b.flat(i) = preds(b, i);
+                    y_b.flat(i)    = Y(b, i);
+                    if (preds(b, i) > best) { best = preds(b, i); pred_label = i; }
+                }
+                total_loss += CEL::Loss(pred_b, y_b);
+                if (pred_label == static_cast<size_t>(batch(b, 0))) ++correct;
+            }
+
+            net.BatchFit<CEL, Batch>(X, Y, 0.001f);
+        }
+
+        const float n = static_cast<float>(Steps * Batch);
+        std::cout << "  epoch " << epoch
+                  << "  avg CEL = " << std::fixed << std::setprecision(4) << total_loss / n
+                  << "  acc = " << std::setprecision(1) << 100.f * static_cast<float>(correct) / n << "%\n";
+    }
+}
+
 int main() {
     runXOR();
     runParity();
@@ -312,5 +320,6 @@ int main() {
     runAutoencoder();
     runRankNineAutoencoder();
     runAttentionAutoencoder();
+    runMNIST();   // uncomment after placing mnist_train.csv in the working directory
     return 0;
 }

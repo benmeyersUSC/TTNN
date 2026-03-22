@@ -3,6 +3,7 @@
 #include <cassert>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <numeric>
 #include <type_traits>
 
@@ -154,102 +155,114 @@ namespace TTTN {
         }
 
     private:
-        std::array<float, Size> data_{};
+        std::unique_ptr<float[]> data_;
 
     public:
-        Tensor() = default;
+        // Default: heap-allocate and zero-initialize.
+        Tensor() : data_(std::make_unique<float[]>(Size)) {}
 
-        // construct from initializer list
-        Tensor(std::initializer_list<float> init) {
+        // Initializer list: heap-allocate, fill from list (remaining elements stay zero).
+        Tensor(std::initializer_list<float> init) : data_(std::make_unique<float[]>(Size)) {
             size_t i = 0;
-            for (auto v: init) {
-                if (i < Size) {
-                    data_[i++] = v;
-                }
-            }
+            for (auto v : init)
+                if (i < Size) data_[i++] = v;
         }
 
+        // Rule of Five ─────────────────────────────────────────────────────────
+
+        // Destructor: unique_ptr<float[]> calls delete[] automatically.
+        ~Tensor() = default;
+
+        // Copy ctor: deep copy — allocate a new buffer and memcpy the data.
+        Tensor(const Tensor& other) : data_(std::make_unique<float[]>(Size)) {
+            for (size_t i = 0; i < Size; ++i) data_[i] = other.data_[i];
+        }
+
+        // Copy assignment: destination already owns a live buffer, just overwrite it.
+        Tensor& operator=(const Tensor& other) {
+            if (this != &other)
+                for (size_t i = 0; i < Size; ++i) data_[i] = other.data_[i];
+            return *this;
+        }
+
+        // Move ctor / move assignment: unique_ptr transfers ownership for free.
+        Tensor(Tensor&&) noexcept = default;
+        Tensor& operator=(Tensor&&) noexcept = default;
+
+        // ──────────────────────────────────────────────────────────────────────
+
         // fill with a value
-        void fill(float v) { data_.fill(v); }
+        void fill(float v) { for (size_t i = 0; i < Size; ++i) data_[i] = v; }
 
         // get underlying array
-        float *data() { return data_.data(); }
-        [[nodiscard]] const float *data() const { return data_.data(); }
+        float*       data()       { return data_.get(); }
+        const float* data() const { return data_.get(); }
 
         // flat indexing
-        float &flat(size_t idx) { return data_[idx]; }
+        float&       flat(size_t idx)       { return data_[idx]; }
         [[nodiscard]] float flat(size_t idx) const { return data_[idx]; }
 
         // map: apply f(float) -> float element-wise, return new tensor
         template<typename F>
         Tensor map(F f) const {
             Tensor out;
-            for (size_t i = 0; i < Size; ++i) {
+            for (size_t i = 0; i < Size; ++i)
                 out.data_[i] = f(data_[i]);
-            }
             return out;
         }
 
         // zip: apply f(float, float) -> float element-wise with another tensor, return new tensor
         template<typename F>
-        Tensor zip(const Tensor &other, F f) const {
+        Tensor zip(const Tensor& other, F f) const {
             Tensor out;
-            for (size_t i = 0; i < Size; ++i) {
+            for (size_t i = 0; i < Size; ++i)
                 out.data_[i] = f(data_[i], other.data_[i]);
-            }
             return out;
         }
 
         // apply: mutate each element in-place with f(float&)
         template<typename F>
         void apply(F f) {
-            for (size_t i = 0; i < Size; ++i) {
+            for (size_t i = 0; i < Size; ++i)
                 f(data_[i]);
-            }
         }
 
         // zip_apply: mutate each element in-place using corresponding element from other with f(float&, float)
         template<typename F>
-        void zip_apply(const Tensor &other, F f) {
-            for (size_t i = 0; i < Size; ++i) {
+        void zip_apply(const Tensor& other, F f) {
+            for (size_t i = 0; i < Size; ++i)
                 f(data_[i], other.data_[i]);
-            }
         }
 
 #define ACCESS_IMPL {                                                                       \
         static_assert(sizeof...(idxs) == Rank,"Number of indices must match tensor rank");  \
         const size_t idx_arr[] = {static_cast<size_t>(idxs)...};                            \
-        /* flat index is simply a dot product between requested indices and strides ! */    \
         size_t flat_index = 0;                                                              \
-        for (size_t i = 0; i < Rank; i++) {                                                 \
+        for (size_t i = 0; i < Rank; i++)                                                   \
             flat_index += idx_arr[i] * Strides[i];                                          \
-        }                                                                                   \
         return data_[flat_index];                                                           \
     }
-        // proper dimensional indexing
         template<typename... Indices>
-        float &operator()(Indices... idxs) ACCESS_IMPL
+        float& operator()(Indices... idxs) ACCESS_IMPL
 
         template<typename... Indices>
         float operator()(Indices... idxs) const ACCESS_IMPL
 #undef ACCESS_IMPL
 
         // array multi-index overload — runtime values, no compile-time bounds check
-        float &operator()(const std::array<size_t, Rank> &multi) {
+        float& operator()(const std::array<size_t, Rank>& multi) {
             return data_[MultiToFlat(multi)];
         }
-        float operator()(const std::array<size_t, Rank> &multi) const {
+        float operator()(const std::array<size_t, Rank>& multi) const {
             return data_[MultiToFlat(multi)];
         }
 
-        // these functions are extremely easy because the Tensor type itself (prereq to calling the function)
-        // already has all the metadata
-        void Save(std::ofstream &f) const {
-            f.write(reinterpret_cast<char *>(data_.data()), Size * sizeof(float));
+        void Save(std::ofstream& f) const {
+            f.write(reinterpret_cast<const char*>(data_.get()), Size * sizeof(float));
         }
 
-        void Load(std::ifstream &f) {
-            f.read(reinterpret_cast<char *>(data_.data()), Size * sizeof(float));
+        void Load(std::ifstream& f) {
+            f.read(reinterpret_cast<char*>(data_.get()), Size * sizeof(float));
         }
     };
 

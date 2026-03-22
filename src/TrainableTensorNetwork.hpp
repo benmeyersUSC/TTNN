@@ -1,6 +1,7 @@
 #pragma once
 #include <stdexcept>
 #include "NetworkUtil.hpp"
+#include "TTTN_ML.hpp"
 
 namespace TTTN {
     // TRAINABLE TENSOR NETWORK
@@ -90,31 +91,35 @@ namespace TTTN {
         static constexpr size_t OutSize = OutputTensor::Size;
         static constexpr size_t TotalParamCount = (Blocks::ParamCount + ...);
 
-        // tuple of Tensors representing every activation: input + one per block output
+        // raw tuple types (internal / advanced use)
         using ActivationsTuple = TensorTupleBuilder<Blocks...>::type;
+        template<size_t Batch>
+        using BatchedActivationsTuple = typename BatchedTensorTupleBuilder<Batch, Blocks...>::type;
+
+        // safe owning wrappers returned by ForwardAll / BatchedForwardAll
+        using Activations = ActivationsWrap<ActivationsTuple>;
+        template<size_t Batch>
+        using BatchedActivations = ActivationsWrap<BatchedActivationsTuple<Batch>>;
 
         TrainableTensorNetwork() = default;
 
-        [[nodiscard]] ActivationsTuple ForwardAll(const InputTensor &x) const {
-            // declare tuple of activation Tensors
+        // ForwardAll: returns an ActivationsWrap (input + one tensor per block).
+        // Bind to a named variable — calling .get<N>() on a temporary is a compile error.
+        [[nodiscard]] Activations ForwardAll(const InputTensor& x) const {
             ActivationsTuple A;
-            // assign InputTensor to first activation Tensor
             std::get<0>(A) = x;
-            // populate tuple with each block
             forward_impl(A);
-            // return activation Tensors
-            return A;
+            return Activations{std::move(A)};
         }
 
-        [[nodiscard]] OutputTensor Forward(const InputTensor &x) const {
-            // call ForwardAll and grab last activation Tensor
-            return std::get<NumBlocks>(ForwardAll(x));
+        [[nodiscard]] OutputTensor Forward(const InputTensor& x) const {
+            auto A = ForwardAll(x);
+            return A.template get<NumBlocks>();
         }
 
-        // grad is dL/dA for the final block's output
-        // each block stores its own dW/db; call Update() after to apply them
-        void BackwardAll(const ActivationsTuple &A, const OutputTensor &grad) {
-            backward_impl<NumBlocks>(A, grad);
+        // BackwardAll: takes the wrapper produced by ForwardAll.
+        void BackwardAll(const Activations& A, const OutputTensor& grad) {
+            backward_impl<NumBlocks>(A.tuple(), grad);
         }
 
         // apply Adam to every block's stored gradients
@@ -124,16 +129,15 @@ namespace TTTN {
             }(std::make_index_sequence<NumBlocks>{});
         }
 
-        // zero all Blocks' params (however they're defined)
+        // zero all blocks' gradients
         void ZeroGrad() {
             [&]<size_t... Is>(std::index_sequence<Is...>) {
                 (std::get<Is>(mBlocks).ZeroGrad(), ...);
             }(std::make_index_sequence<NumBlocks>{});
         }
 
-        // full train step: client provides x and dL/dA of final output
-        // FIX THIS so they only have to give in X and Y...need to figure out way for dL/dA of final output to be done internally
-        void TrainStep(const InputTensor &x, const OutputTensor &grad, float lr) {
+        // TrainStep: raw gradient version (caller owns gradient computation).
+        void TrainStep(const InputTensor& x, const OutputTensor& grad, float lr) {
             const auto A = ForwardAll(x);
             tick_adam();
             ZeroGrad();
@@ -141,33 +145,81 @@ namespace TTTN {
             Update(lr);
         }
 
-        // batched train step: X is Tensor<Batch, InSize>, grad is Tensor<Batch, OutSize>
-        // uses einsum over batch dim; same weight matrices, no looping!
+        // Fit: single-sample train step driven by a loss function.
+        // Returns the loss value at the start of the step (before the weight update).
+        // Usage: float loss = net.Fit<MSE>(x, target, lr);
+        template<typename Loss>
+        float Fit(const InputTensor& x, const OutputTensor& target, float lr) {
+            static_assert(LossFunction<Loss, OutputTensor>,
+                "Loss must expose static Loss(pred,target)->float and Grad(pred,target)->OutputTensor");
+            const auto A = ForwardAll(x);
+            const auto& pred = A.template get<NumBlocks>();
+            const float loss_val = Loss::Loss(pred, target);
+            const auto grad = Loss::Grad(pred, target);
+            tick_adam();
+            ZeroGrad();
+            BackwardAll(A, grad);
+            Update(lr);
+            return loss_val;
+        }
+
+        // BatchedForwardAll: returns a BatchedActivations wrapper (same safety guarantee).
         template<size_t Batch>
-        void BatchTrainStep(const Tensor<Batch, InSize> &X, const Tensor<Batch, OutSize> &grad, float lr) {
+        [[nodiscard]] BatchedActivations<Batch> BatchedForwardAll(
+                const typename PrependBatch<Batch, InputTensor>::type& X) const {
+            BatchedActivationsTuple<Batch> A;
+            std::get<0>(A) = X;
+            batched_forward_impl<Batch>(A);
+            return BatchedActivations<Batch>{std::move(A)};
+        }
+
+        // BatchedBackwardAll: takes the wrapper produced by BatchedForwardAll.
+        template<size_t Batch>
+        void BatchedBackwardAll(const BatchedActivations<Batch>& A,
+                                const typename PrependBatch<Batch, OutputTensor>::type& grad) {
+            batched_backward_impl<Batch, NumBlocks>(A.tuple(), grad);
+        }
+
+        // BatchTrainStep: raw batched gradient version.
+        template<size_t Batch>
+        void BatchTrainStep(const typename PrependBatch<Batch, InputTensor>::type& X,
+                            const typename PrependBatch<Batch, OutputTensor>::type& grad, float lr) {
             const auto A = BatchedForwardAll<Batch>(X);
             tick_adam();
             ZeroGrad();
-            // grad is accumulated fully...Blocks should scale lr or grad down by Batch internally!
             BatchedBackwardAll<Batch>(A, grad);
             Update(lr);
         }
 
-        // build activations tuple type returned by BatchForwardAll
-        template<size_t Batch>
-        using BatchedActivationsTuple = typename BatchedTensorTupleBuilder<Batch, Blocks...>::type;
-
-        template<size_t Batch>
-        [[nodiscard]] BatchedActivationsTuple<Batch> BatchedForwardAll(const Tensor<Batch, InSize> &X) const {
-            BatchedActivationsTuple<Batch> A;
-            std::get<0>(A) = X;
-            batched_forward_impl<Batch>(A);
-            return A;
-        }
-
-        template<size_t Batch>
-        void BatchedBackwardAll(const BatchedActivationsTuple<Batch> &A, const Tensor<Batch, OutSize> &grad) {
-            batched_backward_impl<Batch, NumBlocks>(A, grad);
+        // BatchFit: batched train step driven by a loss function.
+        // Gradients and loss are averaged over Batch so lr is batch-size-invariant.
+        // Returns the average loss over the batch at the start of the step.
+        // Usage: float loss = net.BatchFit<CEL, 32>(X, Y, lr);
+        template<typename Loss, size_t Batch>
+        float BatchFit(const typename PrependBatch<Batch, InputTensor>::type& X,
+                       const typename PrependBatch<Batch, OutputTensor>::type& Y, float lr) {
+            static_assert(LossFunction<Loss, OutputTensor>,
+                "Loss must expose static Loss(pred,target)->float and Grad(pred,target)->OutputTensor");
+            const auto A = BatchedForwardAll<Batch>(X);
+            const auto& A_out = A.template get<NumBlocks>();
+            typename PrependBatch<Batch, OutputTensor>::type grad;
+            float total_loss = 0.f;
+            for (size_t b = 0; b < Batch; ++b) {
+                OutputTensor pred_b, target_b;
+                for (size_t i = 0; i < OutputTensor::Size; ++i) {
+                    pred_b.flat(i)   = A_out.flat(b * OutputTensor::Size + i);
+                    target_b.flat(i) = Y.flat(b * OutputTensor::Size + i);
+                }
+                total_loss += Loss::Loss(pred_b, target_b);
+                const auto g = Loss::Grad(pred_b, target_b);
+                for (size_t i = 0; i < OutputTensor::Size; ++i)
+                    grad.flat(b * OutputTensor::Size + i) = g.flat(i) / static_cast<float>(Batch);
+            }
+            tick_adam();
+            ZeroGrad();
+            BatchedBackwardAll<Batch>(A, grad);
+            Update(lr);
+            return total_loss / static_cast<float>(Batch);
         }
 
         void Save(const std::string &path) const {

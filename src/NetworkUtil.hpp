@@ -75,4 +75,33 @@ namespace TTTN {
     struct PrependBatch<Batch, Tensor<Dims...>> {
         using type = Tensor<Batch, Dims...>;
     };
+
+    // ActivationsWrap: thin owning wrapper around an activations tuple.
+    //
+    // Calling get<N>() on an rvalue (temporary) wrapper is deleted at compile time,
+    // so `auto& y = net.ForwardAll(x).get<1>()` is a hard error — not a runtime dangle.
+    // The user must bind to a named variable: `auto A = net.ForwardAll(x); A.get<1>();`
+    template<typename TupleT>
+    class ActivationsWrap {
+        TupleT data_;
+    public:
+        explicit ActivationsWrap(TupleT t) : data_(std::move(t)) {}
+
+        // Safe: reference into owned tuple; valid as long as this wrapper is alive.
+        template<size_t N>
+        auto get() const& -> const std::tuple_element_t<N, TupleT>& {
+            return std::get<N>(data_);
+        }
+        template<size_t N>
+        auto get() & -> std::tuple_element_t<N, TupleT>& {
+            return std::get<N>(data_);
+        }
+
+        // Deleted: `temporary_wrap.get<N>()` is a compile error, not a dangle.
+        template<size_t N>
+        auto get() && -> std::tuple_element_t<N, TupleT>&& = delete;
+
+        // Raw tuple access for internal backward pass machinery.
+        const TupleT& tuple() const { return data_; }
+    };
 };

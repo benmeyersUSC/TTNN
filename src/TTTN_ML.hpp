@@ -226,4 +226,73 @@ namespace TTTN {
         template<typename InputT>
         using Resolve = SoftmaxBlock<Axis, InputT>;
     };
+
+    // ── Loss functions ────────────────────────────────────────────────────────
+    //
+    // LossFunction<L, TensorT>: L must expose static Loss and Grad methods
+    // matching the concrete output tensor type of the network.
+
+    template<typename L, typename TensorT>
+    concept LossFunction =
+        IsTensor<TensorT> &&
+        requires {
+            { L::Loss(std::declval<const TensorT&>(), std::declval<const TensorT&>()) } -> std::same_as<float>;
+            { L::Grad(std::declval<const TensorT&>(), std::declval<const TensorT&>()) } -> std::same_as<TensorT>;
+        };
+
+    // MSE: mean squared error, any-rank tensor.
+    struct MSE {
+        template<size_t... Dims>
+        static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target) {
+            float s = 0.f;
+            for (size_t i = 0; i < Tensor<Dims...>::Size; ++i) {
+                const float d = pred.flat(i) - target.flat(i);
+                s += d * d;
+            }
+            return s / static_cast<float>(Tensor<Dims...>::Size);
+        }
+        template<size_t... Dims>
+        static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target) {
+            constexpr float inv = 2.f / static_cast<float>(Tensor<Dims...>::Size);
+            return pred.zip(target, [](float p, float t) { return inv * (p - t); });
+        }
+    };
+
+    // BinaryCEL: binary cross-entropy, any-rank tensor.
+    // Assumes sigmoid output (one output per independent binary prediction).
+    // Loss = -[t*log(p) + (1-t)*log(1-p)]
+    // Grad = (p-t) / (p*(1-p) + eps)  — after peeling sigmoid in Backward, net grad = p-t.
+    struct BinaryCEL {
+        template<size_t... Dims>
+        static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target) {
+            float s = 0.f;
+            for (size_t i = 0; i < Tensor<Dims...>::Size; ++i) {
+                const float p = std::max(std::min(pred.flat(i), 1.f - EPS), EPS);
+                s -= target.flat(i) * std::log(p) + (1.f - target.flat(i)) * std::log(1.f - p);
+            }
+            return s;
+        }
+        template<size_t... Dims>
+        static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target) {
+            return pred.zip(target, [](float p, float t) {
+                return (p - t) / (p * (1.f - p) + EPS);
+            });
+        }
+    };
+
+    // CEL: cross-entropy loss, any-rank tensor.
+    // Assumes softmax output; gradient = −target / pred.
+    struct CEL {
+        template<size_t... Dims>
+        static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target) {
+            float s = 0.f;
+            for (size_t i = 0; i < Tensor<Dims...>::Size; ++i)
+                s -= target.flat(i) * std::log(std::max(pred.flat(i), EPS));
+            return s;
+        }
+        template<size_t... Dims>
+        static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target) {
+            return pred.zip(target, [](float p, float t) { return -t / std::max(p, EPS); });
+        }
+    };
 };
