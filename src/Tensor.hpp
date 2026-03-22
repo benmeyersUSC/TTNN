@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <cassert>
 #include <fstream>
 #include <iostream>
 #include <numeric>
@@ -99,6 +100,58 @@ namespace TTTN {
         static constexpr std::array<size_t, Rank> Shape = {Dims...};
         // strides = used for seamless indexing
         static constexpr std::array<size_t, Rank> Strides = ComputeStrides<Dims...>::value;
+
+        // FlatToMulti: decompose a flat index into a multi-index
+        // EXAMPLE: Tensor<3, 4, 5>
+        //      Rank = 3, Size = 60, range = 0-59
+        //      Strides = [20, 5, 1]
+        //
+        // suppose: flat = 33
+        //      multi = [_, _, _]; flat = 33
+        //          multi[0] = 33 / Strides[0] = 33 / 20 = 1
+        //          flat = 33 % 20 = 13
+        //      multi = [1, _, _]; flat = 13
+        //          multi[1] = 13 / Strides[1] = 13 / 5 = 2
+        //          flat = 13 % 5 = 3
+        //      multi = [1, 2, _]; flat = 3
+        //          multi[2] = 3 / Strides[2] = 3 / 1 = 3
+        //          flat = 3 % 1 = 0
+        //      multi = [1, 2, 3]
+        //
+        // suppose: flat = 58 (2nd to last item, we should get [2, 3, 3])
+        //      multi[0] = 58 / 20 = 2,  flat = 58 % 20 = 18
+        //      multi[1] = 18 / 5  = 3,  flat = 18 % 5  = 3
+        //      multi[2] =  3 / 1  = 3,  flat =  3 % 1  = 0
+        //      multi = [2, 3, 3]
+        static auto FlatToMulti(size_t flat) -> std::array<size_t, Rank>
+        {
+            assert(flat < Size && "flat index out of bounds");
+            std::array<size_t, Rank> multi{};
+            for (size_t d = 0; d < Rank; d++)
+            {
+                multi[d] = flat / Strides[d];
+                flat %= Strides[d];
+            }
+            return multi;
+        }
+
+        // MultiToFlat: dot a multi-index against Strides to get a flat index
+        // just a dot product between multi index and strides!
+        // EXAMPLE: Tensor<3, 4, 5>
+        //      Rank = 3, Size = 60, Strides = [20, 5, 1]
+        //
+        // suppose multi = [2, 3, 3] (second to last item, should be 58)
+        //      flat = 20*2 + 5*3 + 1*3 = 40 + 15 + 3 = 58
+        static size_t MultiToFlat(const std::array<size_t, Rank>& multi)
+        {
+            size_t flat = 0;
+            for (size_t d = 0; d < Rank; d++)
+            {
+                flat += multi[d] * Strides[d];
+            }
+            assert(flat < Size && "computed flat index out of bounds");
+            return flat;
+        }
 
     private:
         std::array<float, Size> data_{};

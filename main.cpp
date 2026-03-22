@@ -110,8 +110,43 @@ void runParity() {
     }
 }
 
+// XOR full-batch B=4: demonstrates gradient cancellation.
+// XOR's +/- targets are perfectly symmetric, so all 4 gradients sum to zero — stuck at loss=ln(2).
+void runXORFullBatch() {
+    std::cout << "\n=== XOR (full-batch, B=4) — expect gradient cancellation ===\n";
+
+    NetworkBuilder<
+        Input<2>,
+        Dense<4, ActivationFunction::ReLU>,
+        Dense<1, ActivationFunction::Sigmoid>
+    >::type net;
+
+    Tensor<4, 2> X{0.f,0.f, 0.f,1.f, 1.f,0.f, 1.f,1.f};
+    Tensor<4, 1> T{0.f, 1.f, 1.f, 0.f};
+
+    for (int e = 0; e < 1000; ++e) {
+        const auto& Y = std::get<2>(net.BatchedForwardAll<4>(X));
+        Tensor<4, 1> grad;
+        float total_loss = 0.f;
+        for (int i = 0; i < 4; ++i) {
+            const float o = Y(i,0), t = T(i,0);
+            grad(i,0) = (o - t) / (o * (1.f - o) + EPS);
+            total_loss -= t * std::log(std::max(o, EPS)) + (1.f-t) * std::log(std::max(1.f-o, EPS));
+        }
+        if (e % 100 == 0)
+            std::cout << "  epoch " << e << "  loss=" << total_loss / 4.f << "\n";
+        net.BatchTrainStep<4>(X, grad, 0.01f);
+    }
+
+    std::cout << "  predictions:\n";
+    const auto& Y = std::get<2>(net.BatchedForwardAll<4>(X));
+    for (int i = 0; i < 4; ++i)
+        std::cout << "    [" << X(i,0) << "," << X(i,1) << "]"
+                  << " -> " << Y(i,0) << "  (target=" << T(i,0) << ")\n";
+}
 int main() {
     runXOR();
     runParity();
+    runXORFullBatch();
     return 0;
 }

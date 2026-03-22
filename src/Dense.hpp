@@ -34,23 +34,59 @@ namespace TTTN {
             return Activate(z, Act);
         }
 
+        void ZeroGrad() 
+        {
+            dW.fill(0.f);
+            dB.fill(0.f);
+        }
+
         // delta_A is dL/dA (gradient wrt my output activation)
         // a is my output (for ActivatePrime), a_prev is my input (for dW)
         // returns dL/dA_prev
+        // accumulates into dW/dB (caller must ZeroGrad() before first Backward in a step)
         Tensor<In> Backward(const Tensor<Out> &delta_A, const Tensor<Out> &a,
                             const Tensor<In> &a_prev) {
             // peel off activation derivative to get dL/dZ
             const auto delta_Z = ActivatePrime(delta_A, a, Act);
 
-            // dW = OUTER(delta_Z, a_prev)
+            // dW += OUTER(delta_Z, a_prev)
             // delta_Z: Tensor<Out>, a_prev: Tensor<In>....outer prod --> Tensor<Out,In>, same dim as W
-            dW = Einsum(delta_Z, a_prev);
-            dB = delta_Z;
+            dW += Einsum(delta_Z, a_prev);
+            dB += delta_Z;
 
             // pass gradient upstream, defining dL/dA_prev:
             //      W: Tensor<Out,In>, delta_Z: Tensor<Out>...contract first axis of each --> Tensor<In>, same dim as a_prev
             // (same thing as DOT(W.Transpose(), delta_Z), but Einsum obviates Transpose!)
             return Einsum<0, 0>(W, delta_Z);
+        }
+
+        // batched forward: X is Tensor<Batch, In>, returns Tensor<Batch, Out>
+        // Einsum<1,1>(X, W) contracts In-axis of X with In-axis of W --> Tensor<Batch, Out>
+        // then broadcast-adds bias to every row
+        template<size_t Batch>
+        Tensor<Batch, Out> BatchedForward(const Tensor<Batch, In> &X) const {
+            auto Z = Einsum<1, 1>(X, W);
+            return BroadcastAdd<0>(Z, b);
+        }
+
+        // batched backward: accumulates mean gradient across Batch into dW/dB
+        // returns upstream gradient Tensor<Batch, In>
+        template<size_t Batch>
+        Tensor<Batch, In> BatchedBackward(const Tensor<Batch, Out> &delta_A, const Tensor<Batch, Out> &a, const Tensor<Batch, In> &a_prev)
+        {
+            const auto delta_Z = BatchedActivatePrime(delta_A, a, Act);
+            const auto batch_adj = 1.f / static_cast<float>(Batch);
+
+            // Einsum<0,0>: contract Batch-axis --> Tensor<Out,In>
+            // divide gradient by Batch for mean
+            dW += Einsum<0, 0>(delta_Z, a_prev) * batch_adj;
+
+            // dB += reduced sum of bias gradients (reduce to remove Batch dim)
+            // divide gradient by Batch for mean
+            dB += ReduceSum<0>(delta_Z) * batch_adj;
+
+            // upstream: Einsum<1,0>(delta_Z, W) contracts Out-axis --> Tensor<Batch,In>
+            return Einsum<1, 0>(delta_Z, W);
         }
 
         // Adam update.

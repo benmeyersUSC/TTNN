@@ -80,4 +80,75 @@ namespace TTTN {
             default: return grad;
         }
     }
+
+    // BATCHED ACTIVATE
+    // Apply activation per-sample to Tensor<Batch, N>.
+    // For element-wise activations, this degenerates to a flat map/zip over all Batch*N elements.
+    // For Softmax, applies per-row (each row is one sample's pre-activation vector).
+    template<size_t Batch, size_t N>
+    Tensor<Batch, N> BatchedActivate(const Tensor<Batch, N> &Z, const ActivationFunction act) {
+        switch (act) {
+            case ActivationFunction::ReLU:
+                return Z.map([](const float x) { return x > 0.f ? x : 0.f; });
+            case ActivationFunction::Sigmoid:
+                return Z.map([](const float x) { return 1.f / (1.f + std::exp(-x)); });
+            case ActivationFunction::Tanh:
+                return Z.map([](const float x) { return std::tanh(x); });
+            case ActivationFunction::Softmax: {
+                Tensor<Batch, N> A;
+                for (size_t b = 0; b < Batch; b++) {
+                    float maxV = Z(b, 0);
+                    for (size_t i = 1; i < N; i++) {
+                        if (Z(b, i) > maxV) maxV = Z(b, i);
+                    }
+                    float sum = 0.f;
+                    for (size_t i = 0; i < N; i++) {
+                        A(b, i) = std::exp(Z(b, i) - maxV);
+                        sum += A(b, i);
+                    }
+                    for (size_t i = 0; i < N; i++) {
+                        A(b, i) /= sum;
+                    }
+                }
+                return A;
+            }
+            case ActivationFunction::Linear:
+            default: return Z;
+        }
+    }
+
+    // BATCHED ACTIVATE PRIME
+    // Peel off activation derivative for Tensor<Batch, N>.
+    // For element-wise activations, flat zip over all Batch*N elements.
+    // For Softmax, per-row Jacobian-vector product.
+    template<size_t Batch, size_t N>
+    Tensor<Batch, N> BatchedActivatePrime(
+        const Tensor<Batch, N> &grad,
+        const Tensor<Batch, N> &a,
+        const ActivationFunction act)
+    {
+        switch (act) {
+            case ActivationFunction::ReLU:
+                return grad.zip(a, [](const float g, const float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
+            case ActivationFunction::Sigmoid:
+                return grad.zip(a, [](const float g, const float ai) { return g * ai * (1.f - ai); });
+            case ActivationFunction::Tanh:
+                return grad.zip(a, [](const float g, const float ai) { return g * (1.f - ai * ai); });
+            case ActivationFunction::Softmax: {
+                Tensor<Batch, N> result;
+                for (size_t b = 0; b < Batch; b++) {
+                    float dot = 0.f;
+                    for (size_t i = 0; i < N; i++) {
+                        dot += a(b, i) * grad(b, i);
+                    }
+                    for (size_t i = 0; i < N; i++) {
+                        result(b, i) = a(b, i) * (grad(b, i) - dot);
+                    }
+                }
+                return result;
+            }
+            case ActivationFunction::Linear:
+            default: return grad;
+        }
+    }
 };

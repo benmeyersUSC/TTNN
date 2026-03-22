@@ -1,4 +1,5 @@
 #pragma once
+#include <cassert>
 #include <ranges>
 #include "Tensor.hpp"
 
@@ -113,43 +114,32 @@ namespace TTTN {
         Result C;
         C.fill(0.0f);
 
-        constexpr size_t C_Rank = Result::Rank;
-        constexpr auto C_Strides = Result::Strides;
-
         // loop over raw C
         //      to do this, we must decompose a C-array index into a multi C index
         //      map the first (A_Rank - 1) components to A's free indices
         //      map the next/last (B_Rank - 1) components to B's free indices
         //      loop over contracted dimension
 
-#define GET_FREE_AXES(idx, tensor_rank) [] {        \
-std::array<size_t, tensor_rank - 1> result{};       \
-size_t out = 0;                                     \
-for (size_t i = 0; i < tensor_rank; i++) {          \
-if (i != idx) {                                     \
-result[out++] = i;                                  \
-}                                                   \
-}                                                   \
-return result;                                      \
-}();
+        #define GET_FREE_AXES(idx, tensor_rank) [] {        \
+            std::array<size_t, tensor_rank - 1> result{};   \
+            size_t out = 0;                                 \
+            for (size_t i = 0; i < tensor_rank; i++) {      \
+                if (i != idx) {                             \
+                result[out++] = i;                          \
+                }                                           \
+            }                                               \
+            return result;                                  \
+        }();
 
         constexpr auto a_free_axes = GET_FREE_AXES(I, A_Rank)
         constexpr auto b_free_axes = GET_FREE_AXES(J, B_Rank)
-#undef GET_FREE_AXES
+        #undef GET_FREE_AXES
 
 
         // main loop
         for (size_t c_flat = 0; c_flat < Result::Size; c_flat++) {
             // decompose c_flat into multi-index
-            std::array<size_t, C_Rank> c_multi_index{};
-            // starting at the flat index
-            size_t temp = c_flat;
-            // for each dimension (whose strides bumped us to c_flat!)
-            for (size_t dimension = 0; dimension < C_Rank; dimension++) {
-                // reverse the multiplication it contributed, leaving the strided
-                c_multi_index[dimension] = temp / C_Strides[dimension];
-                temp %= C_Strides[dimension];
-            }
+            auto c_multi_index = Result::FlatToMulti(c_flat);
             /*
              * Example: Tensor<3,3> x;
              * x(2, 1) = 3 * 2 + 1 = 7
@@ -249,11 +239,10 @@ return result;                                      \
 
     template<size_t... Perm, size_t... Dims>
     auto Permute(const Tensor<Dims...> &src) {
-        using Result = PermutedTensorType<Tensor<Dims...>, Perm...>::type;
+        using Source = Tensor<Dims...>;
+        using Result = PermutedTensorType<Source, Perm...>::type;
         static constexpr size_t Rank = sizeof...(Dims);
         // [multi-index] . [strides] = flat index
-        static constexpr auto src_strides = Tensor<Dims...>::Strides;
-        static constexpr auto dst_strides = Result::Strides;
         // perm_arr[d], for some dimension index d, is its new position
         // if og dimensions are <3, 4, 5> and we Permute<1, 2, 0>, then:
         //      d = 0: Dims[0] = 3, perm_arr[0] = 1...result will be <_, 3, _>
@@ -269,14 +258,7 @@ return result;                                      \
         Result dst;
         for (size_t i = 0; i < Result::Size; i++) {
             // decompose into dst multi-index
-            std::array<size_t, Rank> dst_idx{}; // [_, _, _]
-            size_t temp = i;
-            for (size_t d = 0; d < Rank; d++) {
-                // standard algo: each dimension needs to factor out its own stride-mult from the flat idx
-                dst_idx[d] = temp / dst_strides[d];
-                // then update temp to factor out that dimension's stride-mult
-                temp %= dst_strides[d];
-            }
+            auto dst_idx = Result::FlatToMulti(i);
             // say i = 33
             // temp = 33
             //      dst_index = [33 / 12 = 2, _, _]
@@ -295,11 +277,12 @@ return result;                                      \
 
 
             // map dst multi-index to src flat index
-            size_t src_index = 0;
-            for (size_t d = 0; d < Rank; d++) {
-                // incr by dst-idx at this dimension times appropriate source stride-mult
-                src_index += dst_idx[d] * src_strides[perm_arr[d]];
-            }
+            // invert the permutation: dst_idx[d] belongs at position perm_arr[d] in src space
+            std::array<size_t, Rank> src_multi{};
+            for (size_t d = 0; d < Rank; d++)
+                src_multi[perm_arr[d]] = dst_idx[d];
+            size_t src_index = Source::MultiToFlat(src_multi);
+            assert(src_index < Source::Size && "permuted src index out of bounds");
             // i = 33 continued...
 
             // src_index = 0
@@ -345,5 +328,82 @@ return result;                                      \
             return Permute<(sizeof...(Dims) - 1 - Is)...>(s);
         };
         return f(t, std::make_index_sequence<sizeof...(Dims)>{});
+    }
+
+    // REDUCE SUM
+    // sum over an axis, collapsing it
+    // Ex: ReduceSum<0>(Tensor<Batch, In>) --> Tensor<In> where each 'row' is summed
+
+    // Tensor<3, 3>
+    // [1, 2, 3]
+    // [3, 4, 5]
+    // [4, 5, 6]
+    // ReduceSum<0> --> [8, 11, 14]
+    template<size_t Axis, size_t... Dims>
+    auto ReduceSum(const Tensor<Dims...> &src) -> typename RemoveAxis<Axis, Dims...>::type {
+        using Source = Tensor<Dims...>;
+        using Result = typename RemoveAxis<Axis, Dims...>::type;
+
+        Result dst;
+        dst.fill(0.f);
+
+        for (size_t i = 0; i < Source::Size; i++) 
+        {
+            auto src_idx = Source::FlatToMulti(i);
+            
+            // map src to new dst axes by dropping skipped axis
+            std::array<size_t, Result::Rank> dst_multi{};
+            size_t dst_d = 0;
+            for (size_t d = 0; d < Source::Rank; d++)
+            {
+                if (d != Axis) 
+                {
+                    dst_multi[dst_d++] = src_idx[d];
+                }
+            }
+            // increment correct destination value by corresponding set of source values on Axis
+            dst.flat(Result::MultiToFlat(dst_multi)) += src.flat(i);
+        }
+        return dst;
+    }
+
+    // BROADCAST ADD
+    // Add a lower-rank tensor to every slice of a higher-rank tensor along Axis.
+    // BroadcastAdd<0>(Tensor<Batch,Out>, Tensor<Out>) --> Tensor<Batch,Out>
+
+    // Tensor<4, 3> A, Tensor<3> b [1, 1, 1]
+    // A:
+    // [1, 2, 3]
+    // [3, 4, 5]
+    // [4, 5, 6]
+    // [7, 8, 9]
+    // BroadcastAdd<0> --> 
+    // [2, 3, 4]
+    // [4, 5, 6]
+    // [5, 6, 7]
+    // [8, 9, 10]
+    template<size_t Axis, size_t... Dims>
+    Tensor<Dims...> BroadcastAdd(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)
+    {
+        using Slice = typename RemoveAxis<Axis, Dims...>::type;
+        using Result = Tensor<Dims...>;
+
+        Result result = A;
+        for (size_t i = 0; i < Result::Size; i++) 
+        {
+            auto idx = Result::FlatToMulti(i);
+            // build b's multi-index by dropping Axis
+            std::array<size_t, Slice::Rank> b_multi{};
+            size_t b_dim_idx = 0;
+            for (size_t d = 0; d < Result::Rank; d++)
+            {
+                if (d != Axis) 
+                {
+                    b_multi[b_dim_idx++] = idx[d];
+                }
+            }
+            result.flat(i) += b.flat(Slice::MultiToFlat(b_multi));
+        }
+        return result;
     }
 };

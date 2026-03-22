@@ -53,6 +53,26 @@ namespace TTTN {
             ));
         };
 
+        // BATCHED TENSOR TUPLE BUILDER
+        // like TensorTupleBuilder but prepends Batch to every tensor dimension
+        // produces std::tuple<Tensor<Batch, B0::InSize>, Tensor<Batch, B0::OutSize>, Tensor<Batch, B1::OutSize>, ...>
+
+        template<size_t Batch, typename... Bs>
+        struct BatchedTensorTupleBuilder;
+
+        template<size_t Batch, typename Last>
+        struct BatchedTensorTupleBuilder<Batch, Last> {
+            using type = std::tuple<Tensor<Batch, Last::InSize>, Tensor<Batch, Last::OutSize> >;
+        };
+
+        template<size_t Batch, typename First, typename... Rest>
+        struct BatchedTensorTupleBuilder<Batch, First, Rest...> {
+            using type = decltype(std::tuple_cat(
+                std::declval<std::tuple<Tensor<Batch, First::InSize> > >(),
+                std::declval<typename BatchedTensorTupleBuilder<Batch, Rest...>::type>()
+            ));
+        };
+
         BlockTuple mBlocks;
         int mT = 0;
         float mCorr = 1.f;
@@ -99,28 +119,54 @@ namespace TTTN {
             }(std::make_index_sequence<NumBlocks>{});
         }
 
+        // zero all Blocks' params (however they're defined)
+        void ZeroGrad() {
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                (std::get<Is>(mBlocks).ZeroGrad(), ...);
+            }(std::make_index_sequence<NumBlocks>{});
+        }
+
         // full train step: client provides x and dL/dA of final output
+        // FIX THIS so they only have to give in X and Y...need to figure out way for dL/dA of final output to be done internally
         void TrainStep(const InputTensor &x, const OutputTensor &grad, float lr) {
             const auto A = ForwardAll(x);
             tick_adam();
+            ZeroGrad();
             BackwardAll(A, grad);
             Update(lr);
         }
 
-        /*
-        
+        // batched train step: X is Tensor<Batch, InSize>, grad is Tensor<Batch, OutSize>
+        // uses einsum over batch dim; same weight matrices, no looping!
         template<size_t Batch>
-        TrainStep(const TensorConcat<InputTensor, Batch> &x, const OutputTensor &grad, float lr){
-
-        - make a new network out of this network's Blocks. grab em by reference if poss (we need a network to be able to expose its blocks...a tuple of references)
-        - this new network's input and all its Activations (the tuple) will have an added dimenion of Batch (add it, don't increment a diff one)
-        - then in this function, we'll manually pass the input and each activation to each block...we will use einsum to contract on the batch dimenion
-        - we'll need some transposes and stuff. 
-        - then we can delete this thin 'training' network
-
+        void BatchTrainStep(const Tensor<Batch, InSize> &X, const Tensor<Batch, OutSize> &grad,float lr)
+        {
+            const auto A = BatchedForwardAll<Batch>(X);
+            tick_adam();
+            ZeroGrad();
+            // grad is accumulated fully...Blocks should scale lr or grad down by Batch internally!
+            BatchedBackwardAll<Batch>(A, grad);
+            Update(lr);
         }
-        
-        */
+
+        // build activations tuple type returned by BatchForwardAll
+        template<size_t Batch>
+        using BatchedActivationsTuple = typename BatchedTensorTupleBuilder<Batch, Blocks...>::type;
+
+        template<size_t Batch>
+        [[nodiscard]] BatchedActivationsTuple<Batch> BatchedForwardAll(const Tensor<Batch, InSize> &X) const 
+        {
+            BatchedActivationsTuple<Batch> A;
+            std::get<0>(A) = X;
+            batched_forward_impl<Batch>(A);
+            return A;
+        }
+
+        template<size_t Batch>
+        void BatchedBackwardAll(const BatchedActivationsTuple<Batch> &A, const Tensor<Batch, OutSize> &grad) 
+        {
+            batched_backward_impl<Batch, NumBlocks>(A, grad);
+        }
 
         void Save(const std::string &path) const {
             std::ofstream f(path, std::ios::binary);
@@ -176,6 +222,27 @@ namespace TTTN {
             }
             // because we have an if-constexpr (compile time if), we must pair it with an else.
             // even when I > 1, this code (if not else-wrapped) would run, causing type errors!
+        }
+
+        // mirrors forward_impl but calls BatchedForward on each block
+        template<size_t Batch, size_t I = 0>
+        void batched_forward_impl(BatchedActivationsTuple<Batch> &A) const {
+            if constexpr (I < NumBlocks) {
+                // Blocks must implement BatchedForward<Batch>!!!
+                std::get<I + 1>(A) = std::get<I>(mBlocks).template BatchedForward<Batch>(std::get<I>(A));
+                batched_forward_impl<Batch, I + 1>(A);
+            }
+        }
+
+        // batched backward impl: mirrors backward_impl but calls BatchedBackward on each block
+        template<size_t Batch, size_t I, size_t... DeltaDims>
+        void batched_backward_impl(const BatchedActivationsTuple<Batch> &A, const Tensor<DeltaDims...> &delta) {
+            // Blocks must implement BatchedBackward<Batch>!!!
+            const auto grad = std::get<I - 1>(mBlocks).template BatchedBackward<Batch>(
+                delta, std::get<I>(A), std::get<I - 1>(A));
+            if constexpr (I > 1) {
+                batched_backward_impl<Batch, I - 1>(A, grad);
+            }
         }
     };
 }

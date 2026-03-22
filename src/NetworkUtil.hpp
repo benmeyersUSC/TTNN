@@ -15,6 +15,7 @@ namespace TTTN {
         { ct.Forward(in) } -> std::same_as<Tensor<T::OutSize> >;
         { t.Backward(out, out, in) } -> std::same_as<Tensor<T::InSize> >;
         { t.Update(0.f, 0.f, 0.f, 0.f, 0.f, 0.f) };
+        { t.ZeroGrad() };
         { ct.Save(of) };
         { t.Load(inf) };
     };
