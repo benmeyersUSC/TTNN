@@ -124,6 +124,7 @@ namespace TTTN {
         //      multi[1] = 18 / 5  = 3,  flat = 18 % 5  = 3
         //      multi[2] =  3 / 1  = 3,  flat =  3 % 1  = 0
         //      multi = [2, 3, 3]
+        /** hwiwh */
         static auto FlatToMulti(size_t flat) -> std::array<size_t, Rank>
         {
             assert(flat < Size && "flat index out of bounds");
@@ -143,6 +144,7 @@ namespace TTTN {
         //
         // suppose multi = [2, 3, 3] (second to last item, should be 58)
         //      flat = 20*2 + 5*3 + 1*3 = 40 + 15 + 3 = 58
+        /** This bal ahakj */
         static size_t MultiToFlat(const std::array<size_t, Rank>& multi)
         {
             size_t flat = 0;

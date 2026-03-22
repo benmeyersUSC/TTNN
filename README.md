@@ -55,10 +55,10 @@ The primary data structure. `Dims...` encodes the full shape at compile time.
 
 **Static methods:**
 - **[`static auto FlatToMulti(size_t flat) -> std::array<size_t, Rank>`](src/Tensor.hpp)**
-  -
+  - hwiwh
 
 - **[`static size_t MultiToFlat(const std::array<size_t, Rank>& multi)`](src/Tensor.hpp)**
-  -
+  - This bal ahakj
 
 **Constructors / Rule of Five:**
 - **[`Tensor()`](src/Tensor.hpp)**

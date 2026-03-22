@@ -196,7 +196,7 @@ void runRankNineAutoencoder() {
     for (size_t i = 0; i < 512; ++i)
         x.flat(i) = 0.5f + 0.45f * std::sin(static_cast<float>(i) * 3.14159f / 32.f);
 
-    constexpr size_t N = decltype(x)::Size;  // 512
+    // constexpr size_t N = decltype(x)::Size;  // 512
 
     for (int e = 0; e < 300; ++e) {
         const float loss = net.Fit<MSE>(x, x, 0.0001f);
@@ -254,24 +254,26 @@ void runAttentionAutoencoder() {
 //   format: label,pixel0,pixel1,...,pixel783  (header row, 60000 data rows)
 //   download from: https://www.kaggle.com/datasets/oddrationale/mnist-in-csv
 void runMNIST() {
-    std::cout << "\n=== MNIST (784 -> 128 -> 64 -> 10, Softmax + CEL) ===\n";
+    std::cout << "\n=== MNIST (784 -> 128 -> 64 -> 10 -> Softmax, CEL) ===\n";
 
     // Shape stated at compile time — the type IS the schema.
-    auto train_data = LoadCSV<60000, 785>("../mnist_train.csv", /*skip_header=*/true);
+    auto train_data = LoadCSV<60000, 785>("mnist_train.csv", /*skip_header=*/true);
 
     NetworkBuilder<
         Input<784>,
         Dense<128, ActivationFunction::ReLU>,
         Dense<64,  ActivationFunction::ReLU>,
-        Dense<10,  ActivationFunction::Softmax>
+        Dense<10>,                  // linear logits
+        SoftmaxLayer<0>             // axis-0 softmax as its own block
     >::type net;
     std::cout << "    params: " << net.TotalParamCount << "\n\n";
 
     std::mt19937 rng{42};
     constexpr size_t Batch = 32;
-    constexpr int    Steps = 200;   // steps per epoch (increase for more training)
+    constexpr int    Steps = 200;
 
-    for (int epoch = 0; epoch < 1; ++epoch) {
+    for (int epoch = 0; epoch < 10; ++epoch) {
+        std::cout << "  epoch " << epoch;
         float total_loss = 0.f;
         int   correct    = 0;
 
@@ -288,27 +290,22 @@ void runMNIST() {
                     Y(b, c) = (c == label) ? 1.f : 0.f;
             }
 
-            // measure loss before the update
-            const auto A_mnist = net.BatchedForwardAll<Batch>(X);
-            const auto& preds = A_mnist.template get<3>();
+            // BatchFit returns pre-update avg loss — no manual CEL call needed
+            total_loss += net.BatchFit<CEL, Batch>(X, Y, 0.001f);
+
+            // accuracy from post-update predictions
+            const auto A = net.BatchedForwardAll<Batch>(X);
+            const auto& preds = A.template get<4>();   // after SoftmaxLayer
             for (size_t b = 0; b < Batch; ++b) {
-                Tensor<10> pred_b, y_b;
-                float best = -1.f; size_t pred_label = 0;
-                for (size_t i = 0; i < 10; ++i) {
-                    pred_b.flat(i) = preds(b, i);
-                    y_b.flat(i)    = Y(b, i);
+                size_t pred_label = 0; float best = preds(b, 0);
+                for (size_t i = 1; i < 10; ++i)
                     if (preds(b, i) > best) { best = preds(b, i); pred_label = i; }
-                }
-                total_loss += CEL::Loss(pred_b, y_b);
                 if (pred_label == static_cast<size_t>(batch(b, 0))) ++correct;
             }
-
-            net.BatchFit<CEL, Batch>(X, Y, 0.001f);
         }
 
         const float n = static_cast<float>(Steps * Batch);
-        std::cout << "  epoch " << epoch
-                  << "  avg CEL = " << std::fixed << std::setprecision(4) << total_loss / n
+        std::cout << "  avg CEL = " << std::fixed << std::setprecision(4) << total_loss / static_cast<float>(Steps)
                   << "  acc = " << std::setprecision(1) << 100.f * static_cast<float>(correct) / n << "%\n";
     }
 }

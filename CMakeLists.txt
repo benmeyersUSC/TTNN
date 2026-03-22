@@ -6,3 +6,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(tttn_test main.cpp)
 target_include_directories(tttn_test PRIVATE src)
+
+# Sync docstrings from README.md into .hpp files before every build.
+# Requires Python 3 on PATH. Pass -DSKIP_SYNC=ON to cmake to disable.
+option(SKIP_SYNC "Skip README → docstring sync step" OFF)
+if(NOT SKIP_SYNC)
+  find_program(PYTHON3 python3 REQUIRED)
+  add_custom_command(
+    TARGET tttn_test PRE_BUILD
+    COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/sync_docs.py ${CMAKE_SOURCE_DIR}/README.md
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Syncing docstrings from README.md..."
+  )
+endif()

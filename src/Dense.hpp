@@ -7,6 +7,7 @@ namespace TTTN {
     // Generalized element-wise activate / activate-prime for any tensor shape.
     // Softmax is intentionally omitted — it requires a designated reduction axis
     // and doesn't generalize to arbitrary rank without specifying it explicitly.
+    // Use SoftmaxLayer<Axis> as a standalone block instead.
     template<size_t... Dims>
     Tensor<Dims...> ActivateMD(const Tensor<Dims...> &z, ActivationFunction act) {
         switch (act) {
