@@ -3,84 +3,76 @@
 
 namespace TTTN {
     // ConcreteBlock (hidden) concept
-    // *any object* which satisfies these criteria should be referenced in a Block::Resolve to be in a TTN
+    // any block in a TTN must define InputTensor and OutputTensor type aliases (must satisfy IsTensor),
+    // and implement Forward/Backward/Update/ZeroGrad/Save/Load with matching signatures
     template<typename T>
-    concept ConcreteBlock = requires(T t, const T ct,
-                                     Tensor<T::InSize> in,
-                                     Tensor<T::OutSize> out,
-                                     std::ofstream &of, std::ifstream &inf)
-    {
-        { T::InSize } -> std::convertible_to<size_t>;
-        { T::OutSize } -> std::convertible_to<size_t>;
-        { ct.Forward(in) } -> std::same_as<Tensor<T::OutSize> >;
-        { t.Backward(out, out, in) } -> std::same_as<Tensor<T::InSize> >;
-        { t.Update(0.f, 0.f, 0.f, 0.f, 0.f, 0.f) };
-        { t.ZeroGrad() };
-        { ct.Save(of) };
-        { t.Load(inf) };
-    };
+    concept ConcreteBlock =
+        requires { typename T::InputTensor; } &&
+        requires { typename T::OutputTensor; } &&
+        IsTensor<typename T::InputTensor> &&      
+        IsTensor<typename T::OutputTensor> &&     
+        requires(T t, const T ct,
+                 typename T::InputTensor  in,
+                 typename T::OutputTensor out,
+                 std::ofstream &of, std::ifstream &inf)
+        {
+            { ct.Forward(in)           } -> std::same_as<typename T::OutputTensor>;
+            { t.Backward(out, out, in) } -> std::same_as<typename T::InputTensor>;
+            { t.Update(0.f, 0.f, 0.f, 0.f, 0.f, 0.f) };
+            { t.ZeroGrad() };
+            { ct.Save(of) };
+            { t.Load(inf) };
+        };
 
-    // Block concept must be a recipe to create a ConcreteBlock
-    // takes in OutSize (and other args, like ActivationFuncton for Dense)
-    template<typename T>
-    concept Block = requires(T t, Tensor<T::OutSize> out)
-    {
-        { T::OutSize } -> std::convertible_to<size_t>;
-        // 'template' keyword tells compiler that we're not saying "(Resolve < 1)..." as an expr
-    } && ConcreteBlock<typename T::template Resolve<1> >;
+    // Block concept: a recipe type that advertises its OutputTensor and can be Resolved
+    // with any input tensor type into a ConcreteBlock.
+    // Self-composition check: Resolve<OutputTensor> must itself satisfy ConcreteBlock --
+    // proves the recipe mechanism is valid for at least one instantiation (pure SFINAE).
+    template<typename B>
+    concept Block =
+        requires { typename B::OutputTensor; } &&
+        IsTensor<typename B::OutputTensor> &&
+        ConcreteBlock<typename B::template Resolve<typename B::OutputTensor>>;
 
-    template<ConcreteBlock... Blocks>
-    class TrainableTensorNetwork;
+    
 
 
     template<typename In, Block... Recipes>
     struct BuildChain;
 
-    // base case, one last Block to parse
+    // base case: one last Block to parse
     template<typename Prev, Block Last>
     struct BuildChain<Prev, Last> {
-        // type is a tuple of: the type of the Last Resolve (full concrete block) when its InSize is Prev's OutSize
-
-        // if our final layer is a Dense which returns 10 items, and the block before it returns 15,
-        // then, here, type is std::tuple<DenseBlock<15,10>>
-        using type = std::tuple<typename Last::template Resolve<Prev::OutSize> >;
+        // Resolve the last recipe using the previous block's OutputTensor as its InputTensor
+        using type = std::tuple<typename Last::template Resolve<typename Prev::OutputTensor>>;
     };
 
-    // typename (not Block) because Input is not a Block, though has OutSize
+    // typename (not Block) because Input is not a Block, though it has OutputTensor
     template<typename Prev, Block Next, Block... Rest>
     struct BuildChain<Prev, Next, Rest...> {
-        // make the type for the Next block
-        using Resolved = typename Next::template Resolve<Prev::OutSize>;
+        // resolve Next with the previous OutputTensor
+        using Resolved = typename Next::template Resolve<typename Prev::OutputTensor>;
 
-        // type is tuple cat of:
         using type = decltype(std::tuple_cat(
-            // the Resolved Block 'here' +
-            std::declval<std::tuple<Resolved> >(),
-            // recurse on the rest of the Blocks, with Prev now being Resolved
+            std::declval<std::tuple<Resolved>>(),
             std::declval<typename BuildChain<Resolved, Rest...>::type>()
         ));
     };
 
-    // thin input struct which has an OutSize (== InSize)
-    // all it needs is OutSize (not Resolve) because the recursive kickoff of BuildChain only grabs Prev's OutSize
-    template<size_t N>
+    // Input<Dims...>: the entry point of a NetworkBuilder chain.
+    // Exposes OutputTensor = Tensor<Dims...> so BuildChain can thread it into the first Block's Resolve.
+    template<size_t... Dims>
     struct Input {
-        static constexpr size_t OutSize = N;
+        using OutputTensor = Tensor<Dims...>;
     };
 
-    // typename (not Block) because Input is not a Block
-    template<typename In, Block... Blocks>
-    struct NetworkBuilder {
-        using BlockTuple = typename BuildChain<In, Blocks...>::type;
 
-        template<typename Tuple>
-        struct Apply;
+    // prepends a Batch dimension to any Tensor<Dims...> type
+    template<size_t Batch, typename T>
+    struct PrependBatch;
 
-        template<typename... Bs>
-        struct Apply<std::tuple<Bs...> > {
-            using type = TrainableTensorNetwork<Bs...>;
-        };
-
-        using type = typename Apply<BlockTuple>::type;
+    template<size_t Batch, size_t... Dims>
+    struct PrependBatch<Batch, Tensor<Dims...>> {
+        using type = Tensor<Batch, Dims...>;
     };
 };

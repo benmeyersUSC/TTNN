@@ -77,131 +77,6 @@ namespace TTTN {
     };
 
 
-    // now ready for Einsum
-
-    template<size_t I, size_t J, typename TA, typename TB>
-    struct EinsumResultType;
-
-    template<size_t I, size_t J, size_t... ADims, size_t... BDims>
-    struct EinsumResultType<I, J, Tensor<ADims...>, Tensor<BDims...> > {
-        static_assert(
-            SizeTemplateGet<I, ADims...>::value == SizeTemplateGet<J, BDims...>::value,
-            "axis I from A and axis J from B must be same size!"
-        );
-
-        using A_Reduced = RemoveAxis<I, ADims...>::type;
-        using B_Reduced = RemoveAxis<J, BDims...>::type;
-        using type = TensorConcat<A_Reduced, B_Reduced>::type;
-    };
-
-
-    // EINSUM FUNCTION
-    // Einsum<I, J>(A, B) contracts axis I from A with axis J from B
-    //
-    // we iterate over free indices in EinsumResultType, and sum over contracted indices
-
-    template<size_t I, size_t J, size_t... ADims, size_t... BDims>
-    auto Einsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
-        using Result = EinsumResultType<I, J, Tensor<ADims...>, Tensor<BDims...> >::type;
-
-        constexpr size_t A_Rank = Tensor<ADims...>::Rank;
-        constexpr size_t B_Rank = Tensor<BDims...>::Rank;
-        constexpr size_t ContractDimSize = SizeTemplateGet<I, ADims...>::value;
-
-        constexpr auto A_Strides = Tensor<ADims...>::Strides;
-        constexpr auto B_Strides = Tensor<BDims...>::Strides;
-
-        Result C;
-        C.fill(0.0f);
-
-        // loop over raw C
-        //      to do this, we must decompose a C-array index into a multi C index
-        //      map the first (A_Rank - 1) components to A's free indices
-        //      map the next/last (B_Rank - 1) components to B's free indices
-        //      loop over contracted dimension
-
-        #define GET_FREE_AXES(idx, tensor_rank) [] {        \
-            std::array<size_t, tensor_rank - 1> result{};   \
-            size_t out = 0;                                 \
-            for (size_t i = 0; i < tensor_rank; i++) {      \
-                if (i != idx) {                             \
-                result[out++] = i;                          \
-                }                                           \
-            }                                               \
-            return result;                                  \
-        }();
-
-        constexpr auto a_free_axes = GET_FREE_AXES(I, A_Rank)
-        constexpr auto b_free_axes = GET_FREE_AXES(J, B_Rank)
-        #undef GET_FREE_AXES
-
-
-        // main loop
-        for (size_t c_flat = 0; c_flat < Result::Size; c_flat++) {
-            // decompose c_flat into multi-index
-            auto c_multi_index = Result::FlatToMulti(c_flat);
-            /*
-             * Example: Tensor<3,3> x;
-             * x(2, 1) = 3 * 2 + 1 = 7
-             * ---the array is 0-8 inclusive, [2][1] is second to last item!
-             *
-             * Example: Tensor<3,3,3> x;
-             * x(0, 1, 2) = 9 * 0 + 3 * 1 + 2 = 5
-             * ---harder to picture array, but this is first row, second column, third matrix.
-             * x(2, 2, 1) = 9 * 2 + 3 * 2 + 1 = 25
-             * ---array is 0-26 inclusive, [2][2][1] is second to last item!
-             */
-
-            // build A's and B's base flat indices (which will get us to the right zone to iterate over ContractDim)
-            // a_base brings us to A[contracted_index][0]
-            size_t a_base = 0;
-            // for each free axis in A
-            for (size_t freeA = 0; freeA < A_Rank - 1; freeA++) {
-                // get that axis from C's multi-index and adjust with proper A stride
-                // a_free_axes[] maps from free-space to A_Rank space
-                a_base += c_multi_index[freeA] * A_Strides[a_free_axes[freeA]];
-            }
-            size_t b_base = 0;
-            for (size_t freeB = 0; freeB < B_Rank - 1; freeB++) {
-                // need to adjust for dimensions already taken by A
-                b_base += c_multi_index[A_Rank - 1 + freeB] * B_Strides[b_free_axes[freeB]];
-            }
-
-            // CONTRACTION
-            float sum = 0.0f;
-            for (size_t k = 0; k < ContractDimSize; k++) {
-                // go to base starting point, add dimension-adjusted stride for k-th item in that array
-                const float a_val = A.flat(a_base + k * A_Strides[I]);
-                const float b_val = B.flat(b_base + k * B_Strides[J]);
-                sum += a_val * b_val;
-            }
-
-            C.flat(c_flat) = sum;
-        }
-        return C;
-    }
-
-    // outer product (no contraction) specialization
-    template<size_t... ADims, size_t... BDims>
-    auto Einsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
-        Tensor<ADims..., BDims...> C;
-        // for each value of A
-        for (size_t i = 0; i < Tensor<ADims...>::Size; i++) {
-            // for each value of B
-            for (size_t j = 0; j < Tensor<BDims...>::Size; j++) {
-                C.flat(i * Tensor<BDims...>::Size + j) = A.flat(i) * B.flat(j);
-                /*
-                 * Example: Tensor<3, 1> A; Tensor<1, 2> B;
-                 * [1][1] --> 1 * 2 + 1 = 3
-                 *
-                 * essentially, every new dimension of A (in the array) is separated by a full subarray 'from B', scaled by A[i]
-                 */
-            }
-        }
-        return C;
-    }
-
-
     template<size_t... Dims>
     Tensor<Dims...> operator+(const Tensor<Dims...> &a, const Tensor<Dims...> &b) {
         return a.zip(b, [](float x, float y) { return x + y; });
@@ -317,15 +192,176 @@ namespace TTTN {
         return dst;
     }
 
+
+
+
+    // TENSOR SLICE
+    // Select a contiguous range [Start, Start+Len) of dims, producing a new Tensor type.
+    // Peer to RemoveAxis — same ArrayToTensor machinery, different selection predicate.
+    template<size_t Start, size_t Len, size_t... Dims>
+    struct SliceDimsHolder {
+        static constexpr auto value = [] {
+            constexpr std::array<size_t, sizeof...(Dims)> all = {Dims...};
+            std::array<size_t, Len> result{};
+            for (size_t i = 0; i < Len; ++i)
+                result[i] = all[Start + i];
+            return result;
+        }();
+    };
+
+    template<size_t Start, size_t Len, size_t... Dims>
+    struct TensorSlice {
+        using type = ArrayToTensor<
+            SliceDimsHolder<Start, Len, Dims...>,
+            std::make_index_sequence<Len>
+        >::type;
+    };
+
+
+    // SIGMA PI (Σ Π)
+    // SigmaPi<N>(A, B): contract the last N axes of A with the first N axes of B.
+    // Name: Σ over contracted indices of Π(A element, B element) — the sum-of-products that
+    // is the kernel of every tensor contraction, generalised to any rank and N axes at once.
+    // The contracted axes must have matching sizes.
+    // Result shape: Tensor< (A's first RankA-N dims)..., (B's last RankB-N dims)... >
+    //
+    // Natural Dense convention: W = Tensor<OutDims..., InDims...>, x = Tensor<InDims...>
+    //      SigmaPi<sizeof...(InDims)>(W, x)  -->  Tensor<OutDims...>
+    //
+    // Special cases:
+    //      N=0           : outer product
+    //      N=RankA=RankB : full contraction (scalar result, Tensor<>)
+
+    template<size_t N, size_t... ADims, size_t... BDims>
+    auto ΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
+        constexpr size_t RankA = sizeof...(ADims);
+        constexpr size_t RankB = sizeof...(BDims);
+        static_assert(N <= RankA, "N exceeds rank of A");
+        static_assert(N <= RankB, "N exceeds rank of B");
+
+        // validate that last N dims of A match first N dims of B
+        static_assert([] {
+            constexpr std::array<size_t, RankA> a = {ADims...};
+            constexpr std::array<size_t, RankB> b = {BDims...};
+            for (size_t i = 0; i < N; ++i)
+                if (a[RankA - N + i] != b[i]) return false;
+            return true;
+        }(), "last N dims of A must match first N dims of B");
+
+        using A_Free     = TensorSlice<0,        RankA - N, ADims...>::type;
+        using B_Free     = TensorSlice<N,        RankB - N, BDims...>::type;
+        using Contracted = TensorSlice<RankA - N, N,        ADims...>::type;
+        using ResultType = TensorConcat<A_Free, B_Free>::type;
+
+        constexpr size_t a_free_rank = A_Free::Rank;
+        constexpr size_t b_free_rank = B_Free::Rank;
+
+        ResultType result;
+        result.fill(0.f);
+
+        for (size_t out_i = 0; out_i < ResultType::Size; ++out_i) {
+            auto out_multi = ResultType::FlatToMulti(out_i);    
+
+            // split output multi-index into A's free part and B's free part
+            std::array<size_t, RankA - N> a_free{};
+            std::array<size_t, RankB - N> b_free{};
+            for (size_t i = 0; i < a_free_rank; ++i) a_free[i] = out_multi[i];
+            for (size_t i = 0; i < b_free_rank; ++i) b_free[i] = out_multi[a_free_rank + i];
+
+            // Σ over every contracted index combination
+            for (size_t c = 0; c < Contracted::Size; ++c) {
+                auto c_multi = Contracted::FlatToMulti(c);
+
+                // A's full multi-index: [a_free..., c...]
+                std::array<size_t, RankA> a_multi{};
+                for (size_t i = 0; i < a_free_rank; ++i) a_multi[i]              = a_free[i];
+                for (size_t i = 0; i < N;            ++i) a_multi[a_free_rank+i]  = c_multi[i];
+
+                // B's full multi-index: [c..., b_free...]
+                std::array<size_t, RankB> b_multi{};
+                for (size_t i = 0; i < N;            ++i) b_multi[i]     = c_multi[i];
+                for (size_t i = 0; i < b_free_rank; ++i) b_multi[N + i]  = b_free[i];
+
+                result(out_multi) += A(a_multi) * B(b_multi);  // Π
+            }
+        }
+        return result;
+    }
+
+    template<size_t N, size_t... ADims, size_t... BDims>
+    auto SigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B){
+        return ΣΠ<N>(A, B);
+    }
+
+
+
+
+    // Permutation helpers for Einsum: move one axis to last or first position,
+    // preserving the relative order of all other axes.
+    template<size_t Src, size_t P>
+    struct MoveToLastPerm {
+        static constexpr auto value = [] {
+            std::array<size_t, P> p{};
+            size_t out = 0;
+            for (size_t i = 0; i < P; ++i)
+                if (i != Src) p[out++] = i;
+            p[P - 1] = Src;
+            return p;
+        }();
+    };
+
+    template<size_t Src, size_t P>
+    struct MoveToFirstPerm {
+        static constexpr auto value = [] {
+            std::array<size_t, P> p{};
+            p[0] = Src;
+            size_t out = 1;
+            for (size_t i = 0; i < P; ++i)
+                if (i != Src) p[out++] = i;
+            return p;
+        }();
+    };
+
+    // unpack a constexpr perm array into Permute<perm[I]...> via index_sequence
+    template<typename PermHolder, size_t... I, size_t... Dims>
+    auto PermuteFromHolder(const Tensor<Dims...> &t, std::index_sequence<I...>) {
+        return Permute<PermHolder::value[I]...>(t);
+    }
+
+    
+
+    // EINSUM
+    // Einsum<I, J>(A, B): contract axis I of A with axis J of B.
+    // Derived from primitives: move I to last in A, J to first in B, then ΣΠ<1>.
+    template<size_t I, size_t J, size_t... ADims, size_t... BDims>
+    auto Einsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
+        static_assert(
+            SizeTemplateGet<I, ADims...>::value == SizeTemplateGet<J, BDims...>::value,
+            "axis I of A and axis J of B must have the same size"
+        );
+        constexpr size_t RankA = sizeof...(ADims);
+        constexpr size_t RankB = sizeof...(BDims);
+        return ΣΠ<1>(
+            PermuteFromHolder<MoveToLastPerm<I,  RankA>>(A, std::make_index_sequence<RankA>{}),
+            PermuteFromHolder<MoveToFirstPerm<J, RankB>>(B, std::make_index_sequence<RankB>{})
+        );
+    }
+
+    // outer product: no axes contracted — SigmaPi<0>
+    template<size_t... ADims, size_t... BDims>
+    auto Einsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
+        return ΣΠ<0>(A, B);
+    }
+
+
+
     // Reverse all dimensions by calling Permute<NumDims-1, NumDims-2, ..., 0>
     template<size_t... Dims>
     auto Transpose(const Tensor<Dims...> &t) {
-        auto f = []<size_t... Is>(const Tensor<Is...> &s, std::index_sequence<Is...>) {
-            // this iterates over Is...
-
+        auto f = []<size_t... I>(const Tensor<I...> &s, std::index_sequence<I...>) {
             // so if Dims are <3, 5, 4> (sizeof = 3) we will have:
             //      Permute<(3-1) - 0 = 2, 2 - 1 = 1, 0>
-            return Permute<(sizeof...(Dims) - 1 - Is)...>(s);
+            return Permute<(sizeof...(Dims) - 1 - I)...>(s);
         };
         return f(t, std::make_index_sequence<sizeof...(Dims)>{});
     }
@@ -403,6 +439,117 @@ namespace TTTN {
                 }
             }
             result.flat(i) += b.flat(Slice::MultiToFlat(b_multi));
+        }
+        return result;
+    }
+
+    // TENSOR INDEX
+    // Extract the rank-(R-1) subtensor at position idx along Axis, peeling that dimension off.
+    // TensorIndex<0>(Tensor<SeqLen, EmbDims...>, s) --> Tensor<EmbDims...>
+    //
+    // Inverse of TensorIndexAdd: iterates over the result, inserts idx at Axis to address the source.
+    template<size_t Axis, size_t... Dims>
+    auto TensorIndex(const Tensor<Dims...>& src, size_t idx)
+        -> typename RemoveAxis<Axis, Dims...>::type
+    {
+        using Source = Tensor<Dims...>;
+        // we're decrementing rank
+        using Result = typename RemoveAxis<Axis, Dims...>::type;
+
+        Result dst;
+        // for each value we're returning
+        for (size_t i = 0; i < Result::Size; ++i) {
+            // where are we going in result in terms of dims?
+            auto dst_multi = Result::FlatToMulti(i);
+
+            // rebuild source multi-index by inserting idx at Axis
+            std::array<size_t, Source::Rank> src_multi{};
+            size_t dst_d = 0;
+            for (size_t d = 0; d < Source::Rank; ++d)
+                src_multi[d] = (d == Axis) ? idx : dst_multi[dst_d++];
+            dst.flat(i) = src.flat(Source::MultiToFlat(src_multi));
+        }
+        return dst;
+    }
+
+    // TENSOR INDEX ADD
+    // Accumulate a rank-(R-1) tensor into one slice of a rank-R tensor along Axis at position idx.
+    // Used in backward passes to scatter per-token gradients back into the full sequence gradient.
+    // TensorIndexAdd<0>(dX, s, dx_s): dX[s, ...] += dx_s[...]
+    template<size_t Axis, size_t... Dims>
+    void TensorIndexAdd(Tensor<Dims...>& dst, size_t idx,
+                        const typename RemoveAxis<Axis, Dims...>::type& src)
+    {
+        using Dest = Tensor<Dims...>;
+        using Slice = typename RemoveAxis<Axis, Dims...>::type;
+
+        for (size_t i = 0; i < Slice::Size; ++i) {
+            auto src_multi = Slice::FlatToMulti(i);
+            // rebuild destination multi-index by inserting idx at Axis
+            std::array<size_t, Dest::Rank> dst_multi{};
+            size_t src_d = 0;
+            for (size_t d = 0; d < Dest::Rank; ++d)
+                dst_multi[d] = (d == Axis) ? idx : src_multi[src_d++];
+            dst.flat(Dest::MultiToFlat(dst_multi)) += src.flat(i);
+        }
+    }
+
+    // SOFTMAX
+    // Normalizes over the Axis dimension: for each (outer, inner) pair the Axis-slice is
+    // exp-normalized to sum to 1.  Max-subtraction ensures numerical stability.
+    //
+    // Flat-index layout:
+    //   axis_dim   = Dims[Axis]
+    //   inner_size = stride[Axis] = product of all dims after Axis
+    //   outer_size = Size / (axis_dim * inner_size)
+    //   element k in pool (outer, inner): outer*(axis_dim*inner_size) + k*inner_size + inner
+    template<size_t Axis, size_t... Dims>
+    Tensor<Dims...> Softmax(const Tensor<Dims...>& x) {
+        using T = Tensor<Dims...>;
+        static constexpr size_t axis_dim   = SizeTemplateGet<Axis, Dims...>::value;
+        static constexpr size_t inner_size = ComputeStrides<Dims...>::value[Axis];
+        static constexpr size_t outer_size = T::Size / (axis_dim * inner_size);
+
+        T result;
+        for (size_t outer = 0; outer < outer_size; ++outer) {
+            for (size_t inner = 0; inner < inner_size; ++inner) {
+                const size_t base = outer * (axis_dim * inner_size) + inner;
+                float maxV = x.flat(base);
+                for (size_t k = 1; k < axis_dim; ++k)
+                    maxV = std::max(maxV, x.flat(base + k * inner_size));
+                float sum = 0.f;
+                for (size_t k = 0; k < axis_dim; ++k) {
+                    result.flat(base + k * inner_size) = std::exp(x.flat(base + k * inner_size) - maxV);
+                    sum += result.flat(base + k * inner_size);
+                }
+                for (size_t k = 0; k < axis_dim; ++k)
+                    result.flat(base + k * inner_size) /= sum;
+            }
+        }
+        return result;
+    }
+
+    // SOFTMAX BACKWARD
+    // Vector-Jacobian product of softmax: δx_i = a_i * (δy_i - dot(δy, a))
+    // One dot product per pool, then pointwise scale — O(axis_dim) per pool, no Jacobian matrix.
+    template<size_t Axis, size_t... Dims>
+    Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...>& grad, const Tensor<Dims...>& a) {
+        using T = Tensor<Dims...>;
+        static constexpr size_t axis_dim   = SizeTemplateGet<Axis, Dims...>::value;
+        static constexpr size_t inner_size = ComputeStrides<Dims...>::value[Axis];
+        static constexpr size_t outer_size = T::Size / (axis_dim * inner_size);
+
+        T result;
+        for (size_t outer = 0; outer < outer_size; ++outer) {
+            for (size_t inner = 0; inner < inner_size; ++inner) {
+                const size_t base = outer * (axis_dim * inner_size) + inner;
+                float dot = 0.f;
+                for (size_t k = 0; k < axis_dim; ++k)
+                    dot += a.flat(base + k * inner_size) * grad.flat(base + k * inner_size);
+                for (size_t k = 0; k < axis_dim; ++k)
+                    result.flat(base + k * inner_size) =
+                        a.flat(base + k * inner_size) * (grad.flat(base + k * inner_size) - dot);
+            }
         }
         return result;
     }

@@ -234,6 +234,14 @@ namespace TTTN {
         float operator()(Indices... idxs) const ACCESS_IMPL
 #undef ACCESS_IMPL
 
+        // array multi-index overload — runtime values, no compile-time bounds check
+        float &operator()(const std::array<size_t, Rank> &multi) {
+            return data_[MultiToFlat(multi)];
+        }
+        float operator()(const std::array<size_t, Rank> &multi) const {
+            return data_[MultiToFlat(multi)];
+        }
+
         // these functions are extremely easy because the Tensor type itself (prereq to calling the function)
         // already has all the metadata
         void Save(std::ofstream &f) const {

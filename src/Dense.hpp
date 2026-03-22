@@ -1,108 +1,191 @@
 #pragma once
 #include "TensorOps.hpp"
-#include "TensorMLUtil.hpp"
+#include "TTTN_ML.hpp"
 
 namespace TTTN {
+
+    // Generalized element-wise activate / activate-prime for any tensor shape.
+    // Softmax is intentionally omitted — it requires a designated reduction axis
+    // and doesn't generalize to arbitrary rank without specifying it explicitly.
+    template<size_t... Dims>
+    Tensor<Dims...> ActivateMD(const Tensor<Dims...> &z, ActivationFunction act) {
+        switch (act) {
+            case ActivationFunction::ReLU:
+                return z.map([](float x) { return x > 0.f ? x : 0.f; });
+            case ActivationFunction::Sigmoid:
+                return z.map([](float x) { return 1.f / (1.f + std::exp(-x)); });
+            case ActivationFunction::Tanh:
+                return z.map([](float x) { return std::tanh(x); });
+            case ActivationFunction::Linear:
+            default:
+                return z;
+        }
+    }
+
+    template<size_t... Dims>
+    Tensor<Dims...> ActivatePrimeMD(const Tensor<Dims...> &grad, const Tensor<Dims...> &a,
+                                    ActivationFunction act) {
+        switch (act) {
+            case ActivationFunction::ReLU:
+                return grad.zip(a, [](float g, float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
+            case ActivationFunction::Sigmoid:
+                return grad.zip(a, [](float g, float ai) { return g * ai * (1.f - ai); });
+            case ActivationFunction::Tanh:
+                return grad.zip(a, [](float g, float ai) { return g * (1.f - ai * ai); });
+            case ActivationFunction::Linear:
+            default:
+                return grad;
+        }
+    }
+
+    // Permutation that block-swaps the two halves of W's axis list:
+    //   W   = Tensor<OutDims..., InDims...>   (N_out axes then N_in axes)
+    //   W_T = Tensor<InDims..., OutDims...>   (N_in  axes then N_out axes)
+    // Perm[i]          = N_out + i   for i < N_in    (InDims move to front)
+    // Perm[N_in + i]   = i           for i < N_out   (OutDims move to back)
+    template<size_t N_out, size_t N_in>
+    struct WTBlockSwapPerm {
+        static constexpr auto value = [] {
+            std::array<size_t, N_out + N_in> p{};
+            for (size_t i = 0; i < N_in;  ++i) p[i]        = N_out + i;
+            for (size_t i = 0; i < N_out; ++i) p[N_in + i] = i;
+            return p;
+        }();
+    };
+
+
     // DENSE BLOCK
-    // weights, bias, activation, Adam moments
-    // implements the Block interface for a fully-connected layer with activation
-    // InSize and OutSize define the Block's tensor contract; Act is applied in Forward/Backward
-    template<size_t In, size_t Out, ActivationFunction Act_ = ActivationFunction::Linear>
-    struct DenseBlock {
-        static constexpr size_t InSize = In;
-        static constexpr size_t OutSize = Out;
+    // Weights, bias, activation, Adam moments.
+    // Implements the Block interface for a fully-connected layer with activation.
+    // InputTensor and OutputTensor can be any rank — this is the fully general version.
+    //
+    // W = Tensor<OutDims..., InDims...>   linear map from In-space to Out-space
+    // b = Tensor<OutDims...>              bias in Out-space
+    //
+    // Forward:  z = ΣΠ<N_in>(W, x) + b        contracts W's last N_in axes with x (generalised matvec)
+    //           a = Activate(z)
+    //
+    // Backward: delta_z  = ActivatePrime(delta_A, a)          peel off activation derivative → dL/dZ
+    //           dW      += ΣΠ<0>(delta_z, a_prev)             outer product → Tensor<OutDims...,InDims...>
+    //           dB      += delta_z
+    //           dL/dx    = ΣΠ<N_out>(W_T, delta_z)            generalises W^T · delta_z; W_T = Tensor<InDims...,OutDims...>
+    //
+    // caller must ZeroGrad() before the first Backward in each training step
+
+    template<typename InT, typename OutT, ActivationFunction Act_ = ActivationFunction::Linear>
+    class DenseMDBlock;
+
+    template<size_t... InDims, size_t... OutDims, ActivationFunction Act_>
+    class DenseMDBlock<Tensor<InDims...>, Tensor<OutDims...>, Act_> {
+    public:
+        using InputTensor  = Tensor<InDims...>;
+        using OutputTensor = Tensor<OutDims...>;
         static constexpr ActivationFunction Act = Act_;
 
-        Tensor<Out, In> W;
-        Tensor<Out> b{};
+    private:
+        static constexpr size_t N_in  = sizeof...(InDims);
+        static constexpr size_t N_out = sizeof...(OutDims);
+        using W_Type = Tensor<OutDims..., InDims...>;
 
-        Tensor<Out, In> dW{};
-        Tensor<Out> dB{};
+        W_Type       W;
+        OutputTensor b{};
+        W_Type       dW{};
+        OutputTensor dB{};
+        W_Type       mW{}, vW{};
+        OutputTensor mb{}, vb{};
 
-        // Adam first and second moments (0 init)
-        Tensor<Out, In> mW{}, vW{};
-        Tensor<Out> mb{}, vb{};
+    public:
+        static constexpr size_t ParamCount = W_Type::Size + OutputTensor::Size;
 
-        DenseBlock() { XavierInit(W); }
+        DenseMDBlock() { XavierInitMD(W, InputTensor::Size, OutputTensor::Size); }
 
-        // forward pass
-        // uses Einsum to contract 2nd and 1st dimensions from W and x, respectively
-        // then calls activation
-        Tensor<Out> Forward(const Tensor<In> &x) const {
-            // MATVEC contracts matrix's columns with column-vec's rows --> Tensor<NumRowsInWeight>
-            auto z = Einsum<1, 0>(W, x) + b;
-            return Activate(z, Act);
+        // ΣΠ<N_in>(W, x) contracts W's last N_in axes with x — generalises matrix-vector product
+        OutputTensor Forward(const InputTensor &x) const {
+            return ActivateMD(ΣΠ<N_in>(W, x) + b, Act);
         }
 
-        void ZeroGrad() 
-        {
-            dW.fill(0.f);
-            dB.fill(0.f);
-        }
+        void ZeroGrad() { dW.fill(0.f); dB.fill(0.f); }
 
         // delta_A is dL/dA (gradient wrt my output activation)
         // a is my output (for ActivatePrime), a_prev is my input (for dW)
         // returns dL/dA_prev
-        // accumulates into dW/dB (caller must ZeroGrad() before first Backward in a step)
-        Tensor<In> Backward(const Tensor<Out> &delta_A, const Tensor<Out> &a,
-                            const Tensor<In> &a_prev) {
+        InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a,
+                             const InputTensor  &a_prev) {
             // peel off activation derivative to get dL/dZ
-            const auto delta_Z = ActivatePrime(delta_A, a, Act);
+            const auto delta_z = ActivatePrimeMD(delta_A, a, Act);
 
-            // dW += OUTER(delta_Z, a_prev)
-            // delta_Z: Tensor<Out>, a_prev: Tensor<In>....outer prod --> Tensor<Out,In>, same dim as W
-            dW += Einsum(delta_Z, a_prev);
-            dB += delta_Z;
+            // dW += outer product of delta_z and a_prev → Tensor<OutDims..., InDims...>, same shape as W
+            dW += ΣΠ<0>(delta_z, a_prev);
+            dB += delta_z;
 
-            // pass gradient upstream, defining dL/dA_prev:
-            //      W: Tensor<Out,In>, delta_Z: Tensor<Out>...contract first axis of each --> Tensor<In>, same dim as a_prev
-            // (same thing as DOT(W.Transpose(), delta_Z), but Einsum obviates Transpose!)
-            return Einsum<0, 0>(W, delta_Z);
+            // pass gradient upstream: W_T contracts its OutDims axes with delta_z → Tensor<InDims...>
+            // generalises W^T · delta_z
+            const auto W_T = PermuteFromHolder<WTBlockSwapPerm<N_out, N_in>>(
+                W, std::make_index_sequence<N_out + N_in>{}
+            );
+            return ΣΠ<N_out>(W_T, delta_z);
         }
 
-        // batched forward: X is Tensor<Batch, In>, returns Tensor<Batch, Out>
-        // Einsum<1,1>(X, W) contracts In-axis of X with In-axis of W --> Tensor<Batch, Out>
-        // then broadcast-adds bias to every row
+        // batched forward: runs Forward per sample over leading Batch dimension
+        // X is Tensor<Batch, InDims...>, returns Tensor<Batch, OutDims...>
         template<size_t Batch>
-        Tensor<Batch, Out> BatchedForward(const Tensor<Batch, In> &X) const {
-            auto Z = Einsum<1, 1>(X, W);
-            return BroadcastAdd<0>(Z, b);
+        Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...> &X) const {
+            Tensor<Batch, OutDims...> result;
+            for (size_t b = 0; b < Batch; ++b) {
+                InputTensor x_b;
+                for (size_t i = 0; i < InputTensor::Size; ++i)
+                    x_b.flat(i) = X.flat(b * InputTensor::Size + i);
+                const auto out = Forward(x_b);
+                for (size_t i = 0; i < OutputTensor::Size; ++i)
+                    result.flat(b * OutputTensor::Size + i) = out.flat(i);
+            }
+            return result;
         }
 
         // batched backward: accumulates mean gradient across Batch into dW/dB
-        // returns upstream gradient Tensor<Batch, In>
+        // returns upstream gradient Tensor<Batch, InDims...>
         template<size_t Batch>
-        Tensor<Batch, In> BatchedBackward(const Tensor<Batch, Out> &delta_A, const Tensor<Batch, Out> &a, const Tensor<Batch, In> &a_prev)
-        {
-            const auto delta_Z = BatchedActivatePrime(delta_A, a, Act);
-            const auto batch_adj = 1.f / static_cast<float>(Batch);
+        Tensor<Batch, InDims...> BatchedBackward(const Tensor<Batch, OutDims...> &delta_A,
+                                                 const Tensor<Batch, OutDims...> &a,
+                                                 const Tensor<Batch, InDims...>  &a_prev) {
+            Tensor<Batch, InDims...> result;
+            const float batch_adj = 1.f / static_cast<float>(Batch);
+            const auto W_T = PermuteFromHolder<WTBlockSwapPerm<N_out, N_in>>(
+                W, std::make_index_sequence<N_out + N_in>{}
+            );
+            for (size_t b = 0; b < Batch; ++b) {
+                OutputTensor delta_A_b, a_b;
+                InputTensor  a_prev_b;
+                for (size_t i = 0; i < OutputTensor::Size; ++i) {
+                    delta_A_b.flat(i) = delta_A.flat(b * OutputTensor::Size + i);
+                    a_b.flat(i)       = a.flat(b * OutputTensor::Size + i);
+                }
+                for (size_t i = 0; i < InputTensor::Size; ++i)
+                    a_prev_b.flat(i) = a_prev.flat(b * InputTensor::Size + i);
 
-            // Einsum<0,0>: contract Batch-axis --> Tensor<Out,In>
-            // divide gradient by Batch for mean
-            dW += Einsum<0, 0>(delta_Z, a_prev) * batch_adj;
+                const auto delta_z = ActivatePrimeMD(delta_A_b, a_b, Act);
+                dW += ΣΠ<0>(delta_z, a_prev_b) * batch_adj;
+                dB += delta_z * batch_adj;
 
-            // dB += reduced sum of bias gradients (reduce to remove Batch dim)
-            // divide gradient by Batch for mean
-            dB += ReduceSum<0>(delta_Z) * batch_adj;
-
-            // upstream: Einsum<1,0>(delta_Z, W) contracts Out-axis --> Tensor<Batch,In>
-            return Einsum<1, 0>(delta_Z, W);
+                const auto upstream = ΣΠ<N_out>(W_T, delta_z);
+                for (size_t i = 0; i < InputTensor::Size; ++i)
+                    result.flat(b * InputTensor::Size + i) = upstream.flat(i);
+            }
+            return result;
         }
 
-        // Adam update.
-        // mCorr and vCorr are precomputed by NN. at the beginning, (low mT), corrections amplify
-        // moments from 0-bias, but eventually corrections approach 1
-        void Update(float adamBeta1, float adamBeta2, float lr, float mCorr, float vCorr, float eps = 1e-8) {
-            // for each Weight and Bias, subtract LR * adjusted_First_Moment / sqrt(adjusted_Second_Moment)
-            //      first moment approximates consistency of direction of update
-            //      second moment approximates inverse of smoothness of local terrain on loss landscape
-            for (size_t i = 0; i < Out * In; ++i) {
+        // Adam update. mCorr and vCorr are precomputed by the network.
+        // first moment approximates consistency of direction of update
+        // second moment approximates inverse of smoothness of local terrain on loss landscape
+        void Update(float adamBeta1, float adamBeta2, float lr,
+                    float mCorr, float vCorr, float eps = 1e-8f) {
+            for (size_t i = 0; i < W_Type::Size; ++i) {
                 const float g = dW.flat(i);
                 mW.flat(i) = adamBeta1 * mW.flat(i) + (1.f - adamBeta1) * g;
                 vW.flat(i) = adamBeta2 * vW.flat(i) + (1.f - adamBeta2) * g * g;
                 W.flat(i) -= lr * (mW.flat(i) * mCorr) / (std::sqrt(vW.flat(i) * vCorr) + eps);
             }
-            for (size_t i = 0; i < Out; ++i) {
+            for (size_t i = 0; i < OutputTensor::Size; ++i) {
                 const float g = dB.flat(i);
                 mb.flat(i) = adamBeta1 * mb.flat(i) + (1.f - adamBeta1) * g;
                 vb.flat(i) = adamBeta2 * vb.flat(i) + (1.f - adamBeta2) * g * g;
@@ -110,24 +193,27 @@ namespace TTTN {
             }
         }
 
-        void Save(std::ofstream &f) const {
-            W.Save(f);
-            b.Save(f);
-        }
-
-        void Load(std::ifstream &f) {
-            W.Load(f);
-            b.Load(f);
-        }
+        void Save(std::ofstream &f) const { W.Save(f); b.Save(f); }
+        void Load(std::ifstream &f)       { W.Load(f); b.Load(f); }
     };
 
-    template<size_t Out, ActivationFunction Act_ = ActivationFunction::Linear>
-    struct Dense {
-        static constexpr size_t OutSize = Out;
-        static constexpr ActivationFunction Act = Act_;
 
-        // given an input size_t, we can make the full concrete type
-        template<size_t In>
-        using Resolve = DenseBlock<In, Out, Act>;
+    // DenseMD recipe: specify the output tensor type; input is inferred at chain time via Resolve.
+    //
+    // Usage:
+    //   NetworkBuilder<
+    //       Input<3, 4>,                              // Tensor<3,4> input
+    //       DenseMD<Tensor<5>>,                       // → Tensor<5>
+    //       DenseMD<Tensor<2, 3>, ReLU>               // → Tensor<2,3>
+    //   >::type net;
+    template<typename OutT, ActivationFunction Act_ = ActivationFunction::Linear>
+    struct DenseMD {
+        using OutputTensor = OutT;
+        template<typename InputT>
+        using Resolve = DenseMDBlock<InputT, OutT, Act_>;
     };
-};
+
+    // Dense<N, Act>: rank-1 shorthand for DenseMD<Tensor<N>, Act>
+    template<size_t N, ActivationFunction Act_ = ActivationFunction::Linear>
+    using Dense = DenseMD<Tensor<N>, Act_>;
+}

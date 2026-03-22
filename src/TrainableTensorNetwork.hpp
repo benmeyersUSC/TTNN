@@ -9,7 +9,6 @@ namespace TTTN {
     //      Blocks[N-1] = last block   (network OutSize = its OutSize)
     // network is a std::tuple<Blocks...>; connectivity Blocks[I]::OutSize == Blocks[I+1]::InSize
     //      is enforced at compile time
-
     template<ConcreteBlock... Blocks>
     class TrainableTensorNetwork {
         static_assert(sizeof...(Blocks) >= 1, "Need at least one block");
@@ -17,12 +16,13 @@ namespace TTTN {
         static constexpr size_t NumBlocks = sizeof...(Blocks);
         using BlockTuple = std::tuple<Blocks...>;
 
-        // connectivity check: every Blocks[I]::OutSize must equal Blocks[I+1]::InSize
+        // connectivity check: every Blocks[I]::OutputTensor must equal Blocks[I+1]::InputTensor
         static constexpr bool check_connected() {
             return []<size_t... Is>(std::index_sequence<Is...>) -> bool {
                 return (
-                    (std::tuple_element_t<Is, BlockTuple>::OutSize ==
-                     std::tuple_element_t<Is + 1, BlockTuple>::InSize) &&
+                    std::is_same_v<
+                        typename std::tuple_element_t<Is,     BlockTuple>::OutputTensor,
+                        typename std::tuple_element_t<Is + 1, BlockTuple>::InputTensor> &&
                     ...);
             }(std::make_index_sequence<NumBlocks - 1>{});
         }
@@ -32,43 +32,45 @@ namespace TTTN {
 
         // TENSOR TUPLE BUILDER
         // walks Blocks to produce
-        //      std::tuple<Tensor<B0::InSize>, Tensor<B0::OutSize>, Tensor<B1::OutSize>, ...>
-        // (consecutive OutSize/InSize are equal by the connectivity check, so no duplicates)
+        //      std::tuple<B0::InputTensor, B0::OutputTensor, B1::OutputTensor, ...>
+        // (consecutive OutputTensor/InputTensor are identical by the connectivity check, so no duplicates)
 
         template<typename... Bs>
         struct TensorTupleBuilder;
 
-        // base case: single block --> (input, output)
+        // base case: single block --> (InputTensor, OutputTensor)
         template<typename Last>
         struct TensorTupleBuilder<Last> {
-            using type = std::tuple<Tensor<Last::InSize>, Tensor<Last::OutSize> >;
+            using type = std::tuple<typename Last::InputTensor, typename Last::OutputTensor>;
         };
 
-        // recursive case: emit Tensor<First::InSize>, then recurse on <Rest...>
+        // recursive case: emit First::InputTensor, then recurse on <Rest...>
         template<typename First, typename... Rest>
         struct TensorTupleBuilder<First, Rest...> {
             using type = decltype(std::tuple_cat(
-                std::declval<std::tuple<Tensor<First::InSize> > >(),
+                std::declval<std::tuple<typename First::InputTensor>>(),
                 std::declval<typename TensorTupleBuilder<Rest...>::type>()
             ));
         };
 
         // BATCHED TENSOR TUPLE BUILDER
-        // like TensorTupleBuilder but prepends Batch to every tensor dimension
-        // produces std::tuple<Tensor<Batch, B0::InSize>, Tensor<Batch, B0::OutSize>, Tensor<Batch, B1::OutSize>, ...>
+        // like TensorTupleBuilder but prepends Batch to every tensor's dims via PrependBatch
+        // produces std::tuple<Tensor<Batch, B0InputDims...>, Tensor<Batch, B0OutputDims...>, ...>
 
         template<size_t Batch, typename... Bs>
         struct BatchedTensorTupleBuilder;
 
         template<size_t Batch, typename Last>
         struct BatchedTensorTupleBuilder<Batch, Last> {
-            using type = std::tuple<Tensor<Batch, Last::InSize>, Tensor<Batch, Last::OutSize> >;
+            using type = std::tuple<
+                typename PrependBatch<Batch, typename Last::InputTensor>::type,
+                typename PrependBatch<Batch, typename Last::OutputTensor>::type>;
         };
 
         template<size_t Batch, typename First, typename... Rest>
         struct BatchedTensorTupleBuilder<Batch, First, Rest...> {
             using type = decltype(std::tuple_cat(
-                std::declval<std::tuple<Tensor<Batch, First::InSize> > >(),
+                std::declval<std::tuple<typename PrependBatch<Batch, typename First::InputTensor>::type>>(),
                 std::declval<typename BatchedTensorTupleBuilder<Batch, Rest...>::type>()
             ));
         };
@@ -79,11 +81,14 @@ namespace TTTN {
         float vCorr = 1.f;
 
     public:
-        static constexpr size_t InSize = std::tuple_element_t<0, BlockTuple>::InSize;
-        static constexpr size_t OutSize = std::tuple_element_t<NumBlocks - 1, BlockTuple>::OutSize;
+        // tensor types flow directly from the first and last blocks
+        using InputTensor  = typename std::tuple_element_t<0,             BlockTuple>::InputTensor;
+        using OutputTensor = typename std::tuple_element_t<NumBlocks - 1, BlockTuple>::OutputTensor;
 
-        using InputTensor = Tensor<InSize>;
-        using OutputTensor = Tensor<OutSize>;
+        // scalar convenience aliases derived from the tensor types
+        static constexpr size_t InSize  = InputTensor::Size;
+        static constexpr size_t OutSize = OutputTensor::Size;
+        static constexpr size_t TotalParamCount = (Blocks::ParamCount + ...);
 
         // tuple of Tensors representing every activation: input + one per block output
         using ActivationsTuple = TensorTupleBuilder<Blocks...>::type;
@@ -139,8 +144,7 @@ namespace TTTN {
         // batched train step: X is Tensor<Batch, InSize>, grad is Tensor<Batch, OutSize>
         // uses einsum over batch dim; same weight matrices, no looping!
         template<size_t Batch>
-        void BatchTrainStep(const Tensor<Batch, InSize> &X, const Tensor<Batch, OutSize> &grad,float lr)
-        {
+        void BatchTrainStep(const Tensor<Batch, InSize> &X, const Tensor<Batch, OutSize> &grad, float lr) {
             const auto A = BatchedForwardAll<Batch>(X);
             tick_adam();
             ZeroGrad();
@@ -154,8 +158,7 @@ namespace TTTN {
         using BatchedActivationsTuple = typename BatchedTensorTupleBuilder<Batch, Blocks...>::type;
 
         template<size_t Batch>
-        [[nodiscard]] BatchedActivationsTuple<Batch> BatchedForwardAll(const Tensor<Batch, InSize> &X) const 
-        {
+        [[nodiscard]] BatchedActivationsTuple<Batch> BatchedForwardAll(const Tensor<Batch, InSize> &X) const {
             BatchedActivationsTuple<Batch> A;
             std::get<0>(A) = X;
             batched_forward_impl<Batch>(A);
@@ -163,8 +166,7 @@ namespace TTTN {
         }
 
         template<size_t Batch>
-        void BatchedBackwardAll(const BatchedActivationsTuple<Batch> &A, const Tensor<Batch, OutSize> &grad) 
-        {
+        void BatchedBackwardAll(const BatchedActivationsTuple<Batch> &A, const Tensor<Batch, OutSize> &grad) {
             batched_backward_impl<Batch, NumBlocks>(A, grad);
         }
 
@@ -211,9 +213,11 @@ namespace TTTN {
         // calls Block.Backward --> which peels off ActivatePrime and stores dW/db
 
         // 'I' starts as NumBlocks, so it starts by peeling off last block (that's how backprop works)
-        // delta is dL/dA[I]: gradient wrt block I-1's output activation
-        template<size_t I, size_t DeltaSize>
-        void backward_impl(const ActivationsTuple &A, const Tensor<DeltaSize> &delta) {
+        // delta is dL/dA[I]: must be a Tensor and must match A[I]'s exact type
+        template<size_t I, typename Delta>
+            requires IsTensor<Delta> &&
+                     std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple>>
+        void backward_impl(const ActivationsTuple &A, const Delta &delta) {
             // block I-1 outputs A[I] and takes input A[I-1]
             // Backward peels off ActivatePrime, stores dW/db, returns dL/dA[I-1]
             const auto grad = std::get<I - 1>(mBlocks).Backward(delta, std::get<I>(A), std::get<I - 1>(A));
@@ -235,8 +239,11 @@ namespace TTTN {
         }
 
         // batched backward impl: mirrors backward_impl but calls BatchedBackward on each block
-        template<size_t Batch, size_t I, size_t... DeltaDims>
-        void batched_backward_impl(const BatchedActivationsTuple<Batch> &A, const Tensor<DeltaDims...> &delta) {
+        // delta must be a Tensor and must match A[I]'s exact type
+        template<size_t Batch, size_t I, typename Delta>
+            requires IsTensor<Delta> &&
+                     std::is_same_v<Delta, std::tuple_element_t<I, BatchedActivationsTuple<Batch>>>
+        void batched_backward_impl(const BatchedActivationsTuple<Batch> &A, const Delta &delta) {
             // Blocks must implement BatchedBackward<Batch>!!!
             const auto grad = std::get<I - 1>(mBlocks).template BatchedBackward<Batch>(
                 delta, std::get<I>(A), std::get<I - 1>(A));
@@ -244,5 +251,22 @@ namespace TTTN {
                 batched_backward_impl<Batch, I - 1>(A, grad);
             }
         }
+    };
+
+
+    // typename (not Block) because Input is not a Block
+    template<typename In, Block... Blocks>
+    struct NetworkBuilder {
+        using BlockTuple = typename BuildChain<In, Blocks...>::type;
+
+        template<typename Tuple>
+        struct Apply;
+
+        template<typename... Bs>
+        struct Apply<std::tuple<Bs...>> {
+            using type = TrainableTensorNetwork<Bs...>;
+        };
+
+        using type = typename Apply<BlockTuple>::type;
     };
 }
