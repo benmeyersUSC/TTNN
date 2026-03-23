@@ -3,6 +3,8 @@
 #include "TensorOps.hpp"
 
 namespace TTTN {
+    static constexpr float EPS = 1e-8f;
+
     enum class ActivationFunction { Linear, Sigmoid, ReLU, Softmax, Tanh };
 
     // CROSS ENTROPY LOSS

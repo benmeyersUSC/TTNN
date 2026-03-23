@@ -249,21 +249,21 @@ void runRankNineAutoencoder() {
     std::cout << "...\n";
 }
 
-// Attention autoencoder: 6 tokens, embedding dim 8, 2 heads of dim 4.
+// Attention autoencoder: 8 tokens, rank-3 embedding Tensor<4,6> (24 dims), 12 heads of dim 2.
 // Single MHAttention layer learns to reconstruct a sine-wave sequence via MSE.
 // Cross-token mixing is the only tool available — no dense projection, no skip.
 void runAttentionAutoencoder() {
-    std::cout << "\n=== Attention Autoencoder (seq=6, emb=8, heads=2) ===\n";
+    std::cout << "\n=== Attention Autoencoder (seq=8, emb=4x6, heads=12) ===\n";
 
     NetworkBuilder<
-        Input<6, 8>,
-        MHAttention<2, 8>
+        Input<8, 6, 6>,
+        MHAttention<36, 6, 6>
     >::type net;
     std::cout << "    params: " << net.TotalParamCount << "\n\n";
 
-    // 6 tokens × 8 dims, values from a sine wave
-    Tensor<6, 8> x;
-    for (size_t i = 0; i < 48; ++i)
+    // 8 tokens × 4×6 embedding, values from a sine wave
+    Tensor<8, 6, 6> x;
+    for (size_t i = 0; i < 192; ++i)
         x.flat(i) = 0.5f + 0.4f * std::sin(static_cast<float>(i) * 3.14159f / 8.f);
 
     for (int e = 0; e < 500; ++e) {
@@ -275,18 +275,15 @@ void runAttentionAutoencoder() {
 
     const auto out = net.Forward(x);
     std::cout << "\n  target : ";
-    for (size_t i = 0; i < 8; ++i)
+    for (size_t i = 0; i < 36; ++i)
         std::cout << std::fixed << std::setprecision(2) << x.flat(i) << " ";
     std::cout << "...\n  output : ";
-    for (size_t i = 0; i < 8; ++i)
+    for (size_t i = 0; i < 36; ++i)
         std::cout << std::fixed << std::setprecision(2) << out.flat(i) << " ";
     std::cout << "...\n";
 }
 
-// MNIST: 784 inputs -> 128 (ReLU) -> 64 (ReLU) -> 10 (Softmax), trained with CEL.
-// Expects mnist_train.csv in the working directory:
-//   format: label,pixel0,pixel1,...,pixel783  (header row, 60000 data rows)
-//   download from: https://www.kaggle.com/datasets/oddrationale/mnist-in-csv
+// MNIST: 784 inputs -> 128 (ReLU) -> 64 (ReLU) -> 10 (Softmax), trained with CEL
 void runMNIST() {
     std::cout << "\n=== MNIST (784 -> 128 -> 64 -> 10 -> Softmax, CEL) ===\n";
 
@@ -303,45 +300,20 @@ void runMNIST() {
     std::cout << "    params: " << net.TotalParamCount << "\n\n";
 
     std::mt19937 rng{42};
-    constexpr size_t Batch = 64;
-    constexpr int    Steps = 200;
+    constexpr size_t Batch = 108;
+
+    auto prep = [](const auto& batch, Tensor<Batch, 784>& X, Tensor<Batch, 10>& Y) {
+        for (size_t b = 0; b < Batch; ++b) {
+            const auto label = static_cast<size_t>(batch(b, 0));
+            for (size_t p = 0; p < 784; ++p) X(b, p) = batch(b, p + 1) / 255.f;
+            for (size_t c = 0; c < 10;  ++c) Y(b, c) = (c == label) ? 1.f : 0.f;
+        }
+    };
 
     for (int epoch = 0; epoch < 10; ++epoch) {
         std::cout << "  epoch " << epoch;
-        float total_loss = 0.f;
-        int   correct    = 0;
-
-        for (int step = 0; step < Steps; ++step) {
-            auto batch = RandomBatch<Batch>(train_data, rng);
-
-            Tensor<Batch, 784> X;
-            Tensor<Batch, 10>  Y;
-            for (size_t b = 0; b < Batch; ++b) {
-                const auto label = static_cast<size_t>(batch(b, 0));
-                for (size_t p = 0; p < 784; ++p)
-                    X(b, p) = batch(b, p + 1) / 255.f;
-                for (size_t c = 0; c < 10; ++c)
-                    Y(b, c) = (c == label) ? 1.f : 0.f;
-            }
-
-            // BatchFit returns pre-update avg loss — no manual CEL call needed
-            total_loss += net.BatchFit<CEL, Batch>(X, Y, 0.001f);
-
-            // accuracy from post-update predictions
-            // const auto A = net.BatchedForwardAll<Batch>(X);
-            const auto preds = net.BatchedForward<Batch>(X);
-            // const auto& preds = A.template get<>();   // after SoftmaxLayer
-            for (size_t b = 0; b < Batch; ++b) {
-                size_t pred_label = 0; float best = preds(b, 0);
-                for (size_t i = 1; i < 10; ++i)
-                    if (preds(b, i) > best) { best = preds(b, i); pred_label = i; }
-                if (pred_label == static_cast<size_t>(batch(b, 0))) ++correct;
-            }
-        }
-
-        const float n = static_cast<float>(Steps * Batch);
-        std::cout << "  avg CEL = " << std::fixed << std::setprecision(4) << total_loss / static_cast<float>(Steps)
-                  << "  acc = " << std::setprecision(1) << 100.f * static_cast<float>(correct) / n << "%\n";
+        const float avg_loss = RunEpoch<CEL, Batch>(net, train_data, rng, 0.001f, prep);
+        std::cout << "  avg CEL = " << std::fixed << std::setprecision(4) << avg_loss << "\n";
     }
 }
 
@@ -352,6 +324,6 @@ int main() {
     runCombineNetworks();
     runRankNineAutoencoder();
     runAttentionAutoencoder();
-    runMNIST();   // uncomment after placing mnist_train.csv in the working directory
+    runMNIST();
     return 0;
 }

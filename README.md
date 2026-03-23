@@ -63,112 +63,171 @@ the requested index in the flat array.
 
 ### `class Tensor<size_t... Dims>`
 
-The primary data structure. `Dims...` encodes the full shape at compile time.
+The primary data structure. `Dims...` encodes the full shape at compile time, informs statics `Shape`, `Rank`, `Size`,
+`Strides`, and several static functions.
 
 **Static members:**
 
 - **[`static constexpr size_t Rank`](src/Tensor.hpp)**
-  -
+    - Number of dimensions
 - **[`static constexpr size_t Size`](src/Tensor.hpp)**
-  -
+    - Product of all dimensions = total distinct values in `Tensor`
 - **[`static constexpr std::array<size_t, Rank> Shape`](src/Tensor.hpp)**
-  -
+    - `<size_t... Dims>` captured into an array
 - **[`static constexpr std::array<size_t, Rank> Strides`](src/Tensor.hpp)**
-  -
+    - Uses `ComputeStrides` to create array
+    - The `Tensor::Strides` array is vital to mapping from indices into `Tensor::Shape` to flat indices for the
+      backing array
+    - In general, for a `Tensor` with `Tensor::Shape = [A, B, ..., N]`, its
+      `Tensor::Strides = [A * B * ... * N, B * ... * N, ..., 1]`
 
 **Static methods:**
 
-- **[`static auto FlatToMulti(size_t flat) -> std::array<size_t, Rank>`](src/Tensor.hpp)**
-    - .
+- **[`static constexpr std::array<size_t, Rank> FlatToMulti(size_t flat)`](src/Tensor.hpp)**
+    - Inverse of `MultiToFlat`; map a flat index `[0, Size)` to its `Rank`-term index
+    - Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (= `[0, ..., Rank]`) and unpacks
+      into an array: `[(flat / Strides[0]) % Shape[0], ..., (flat / Strides[Rank]) % Shape[Rank]]`
 
-- **[`static size_t MultiToFlat(const std::array<size_t, Rank>& multi)`](src/Tensor.hpp)**
-    - .
+- **[`static constexpr size_t MultiToFlat(const std::array<size_t, Rank>& multi)`](src/Tensor.hpp)**
+    - Inverse of `FlatToMulti`; map a `Rank`-term index to its flat index `[0, Size)`
+    - Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (= `[0, ..., Rank]`) and `+`-folds
+      terms `multi[0] * Strides[0] + ... + multi[Rank] * Strides[Rank]`
+    - Dot product of given `multi` index and `Strides`
 
 **Constructors / Rule of Five:**
 
 - **[`Tensor()`](src/Tensor.hpp)**
-  -
+    - Default constructor
+    - Initialize `float[Size]` on the heap
 
 - **[`Tensor(std::initializer_list<float> init)`](src/Tensor.hpp)**
-  -
+    - Initializer list constructor
+    - Fill the first `Size` elements of `std::initializer_list<float> init` to flat indices of backing array
 
 - **[`~Tensor() = default`](src/Tensor.hpp)**
-  -
+    - Default destructor
+    - RAII: destructs `std::unique_ptr` to `float[Size]` on heap
 
 - **[`Tensor(const Tensor& other)`](src/Tensor.hpp)**
-  -
+    - Deep copy constructor
+    - Allocate new `float[Size]` on heap and `std::memcpy` from `other.data()`
 
 - **[`Tensor& operator=(const Tensor& other)`](src/Tensor.hpp)**
-  -
+    - Deep copy assignment operator
+    - `std::memcpy` from `other.data()`
 
 - **[`Tensor(Tensor&&) noexcept = default`](src/Tensor.hpp)**
-  -
+    - Default move constructor
+    - `std::unique_ptr` to data handles this already
 
 - **[`Tensor& operator=(Tensor&&) noexcept = default`](src/Tensor.hpp)**
-  -
+    - Default move assigment operator
+    - `std::unique_ptr` to data handles this already
 
 **Data access:**
 
-- **[`void fill(float v)`](src/Tensor.hpp)**
-  -
+- **[`void fill(const float v) const`](src/Tensor.hpp)**
+    - Fill a `Tensor`'s underlying array with some `float v`
 
 - **[`float* data()`](src/Tensor.hpp)**
-  -
+    - Returns pointer to `Tensor`'s underlying array
 
 - **[`const float* data() const`](src/Tensor.hpp)**
-  -
+    - Returns `const` pointer to `Tensor`'s underlying array
 
 - **[`float& flat(size_t idx)`](src/Tensor.hpp)**
-  -
+    - Returns `float&` reference to item at `idx` in underlying array
 
 - **[`float flat(size_t idx) const`](src/Tensor.hpp)**
-  -
+    - Returns `const float&` reference to item at `idx` in underlying array
 
 **Functional transforms:**
 
 - **[`template<typename F> Tensor map(F f) const`](src/Tensor.hpp)**
-  -
+    - Use `std::execution::par_unseq` to `std::transform` `Tensor`'s underlying data by `float -> float` map `f`,
+      returning a new `Tensor`
 
 - **[`template<typename F> Tensor zip(const Tensor& other, F f) const`](src/Tensor.hpp)**
-  -
+    - Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data by `float -> float -> float`
+      map `f`, returning a new `Tensor`
 
 - **[`template<typename F> void apply(F f)`](src/Tensor.hpp)**
-  -
+    - Use `std::execution::par_unseq` + `std::for_each` to apply `float -> float` map `f` to `Tensor`'s underlying data
+      in-place
 
 - **[`template<typename F> void zip_apply(const Tensor& other, F f)`](src/Tensor.hpp)**
-  -
+    - Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data in-place by
+      `float -> float -> float` map `f`
 
 **Indexing operators:**
 
 - **[`float& operator()(Indices... idxs)`](src/Tensor.hpp)**
-  -
+    - Variadic multi-index access, returns reference
+    - Uses compile-time-templated `MultiToFlat` for efficient access
 
 - **[`float operator()(Indices... idxs) const`](src/Tensor.hpp)**
-  -
+    - Variadic multi-index access, returns copy
+    - Uses compile-time-templated `MultiToFlat` for efficient access
 
 - **[`float& operator()(const std::array<size_t, Rank>& multi)`](src/Tensor.hpp)**
-  -
+    - Array-based multi-index access, returns reference
+    - Uses compile-time-templated `MultiToFlat` for efficient access
 
 - **[`float operator()(const std::array<size_t, Rank>& multi) const`](src/Tensor.hpp)**
-  -
+    - Array-based multi-index access, returns copy
+    - Uses compile-time-templated `MultiToFlat` for efficient access
 
 **Serialization:**
 
 - **[`void Save(std::ofstream& f) const`](src/Tensor.hpp)**
-  -
+    - Writes entirety of flat backing array (`float[Size]`) to binary file
 
 - **[`void Load(std::ifstream& f)`](src/Tensor.hpp)**
-  -
+    - Reads binary file into flat backing array (`float[Size]`)
 
 ---
 
 ### Type Traits
 
 - **[`struct is_tensor<T>`](src/Tensor.hpp)**
-  -
+    - SFINAE type traits for verifying that a type is a `Tensor`
+        - Specialize `<size_t...Dims>`: matches into `<Tensor<Dims...>`, inherits from `std::true_type`
+        - Specialize <>: inherits from `std::false_type`, backup when former fails
+
 
 - **[`concept IsTensor<T>`](src/Tensor.hpp)**
-  -
+    - Wrapper `concept` around `is_tensor` type trait, satisfied if `T` is a `Tensor`
+
+### Tensor Demonstration
+
+```cpp
+// shapes are types — different shapes are different types
+Tensor<3, 4> mat;                                  // 3x4 matrix
+Tensor<2, 3, 4> cube;                              // rank-3 tensor
+
+// compile-time statics
+static_assert(decltype(mat)::Rank == 2);
+static_assert(decltype(mat)::Size == 12);
+static_assert(decltype(mat)::Shape[0] == 3);
+static_assert(decltype(mat)::Strides[0] == 4);     // row-major: stride[0] = cols
+
+// multi-index and flat access (same element)
+mat(1, 2) = 9.27f;
+mat.flat(6) == 9.27f;                              // 1*4 + 2 = 6
+
+// index conversion
+auto multi = Tensor<3,4>::FlatToMulti(6);          // -> [1, 2]
+size_t f = Tensor<3,4>::MultiToFlat({1, 2});       // -> 6
+
+// initializer list
+Tensor<3> vec = {1.0f, 2.0f, 3.0f};
+
+// functional transforms (all parallel under the hood)
+auto tripled = vec.map([](float x){ return 3.0f * x; });
+auto summed  = vec.zip(tripled, [](float a, float b){ return a + b; });
+vec.apply([](float& x){ x *= -1.0f; });            // in-place
+
+```
 
 ---
 
@@ -177,34 +236,35 @@ The primary data structure. `Dims...` encodes the full shape at compile time.
 Generalized tensor algebra: contractions, permutations, reductions, slicing, and broadcast operations. All shapes are
 derived at compile time.
 
-**Constants:**
-
-- **[`static constexpr float EPS`](src/TensorOps.hpp)**
-  -
-- **[`static constexpr float ADAM_BETA_1`](src/TensorOps.hpp)**
-  -
-- **[`static constexpr float ADAM_BETA_2`](src/TensorOps.hpp)**
-  -
-
 ### Shape Manipulation Helpers
 
 - **[`struct TensorConcat<typename T1, typename T2>`](src/TensorOps.hpp)**
-  -
-
-- **[`struct ArrayToTensor<typename KeptIdxs, typename Iota>`](src/TensorOps.hpp)**
-  -
+    - Templated utility struct for concatenating the dimensions of two `Tensor` objects
+        - Templated for two types, `<typename T1, typename T2>`
+        - Specialized for two `Tensor`s, `<size_t... Ds1, size_t... Ds2>` and pattern-matched to
+          `<Tensor<Ds1...>, Tensor<Ds2...>>`, creating `type = Tensor<Ds1..., Ds2...>`
 
 - **[`struct KeptDimsHolder<size_t Skip, size_t... Dims>`](src/TensorOps.hpp)**
-  -
+    - Given a pack `Dims...` and an axis to `Skip`, produce `Tensor<remaining dims...>`
+    - `static constexpr value` holds the new array of `sizeof...(Dims) - 1` dimensions
+
+- **[`struct ArrayToTensor<typename KeptIdxs, typename Iota>`](src/TensorOps.hpp)**
+    - Unpack `KeptDimsHolder::value` into new `Tensor` type defined by those kept dimensions
+    - Beautiful syntax: `type = Tensor<arr[Iota]...>`, where `arr = KeptDimsHolder::value` and `Iota...` represents the
+      `[0, arr.size())` indices
 
 - **[`struct RemoveAxis<size_t Skip, size_t... Dims>`](src/TensorOps.hpp)**
-  -
+    - Compact operator to make new `Tensor` type by removing `Skip` dimension from given `Tensor`
+    - `type = ArrayToTensor<KeptDimsHolder<Skip, Dims...>, std::make_index_sequence<sizeof...(Dims) - 1>`
 
 - **[`struct SliceDimsHolder<size_t Start, size_t Len, size_t... Dims>`](src/TensorOps.hpp)**
-  -
+    - Helper struct to hold `std::array<size_t, Len> value` representing contiguous dimensions `[Start, Start+Len)` of a
+      `Tensor<Dims...>`
+    - Will not compile if `Start + Len > Rank`
 
 - **[`struct TensorSlice<size_t Start, size_t Len, size_t... Dims>`](src/TensorOps.hpp)**
-  -
+    - Using `ArrayToTensor` and `SliceDimsHolder`, create new `Tensor` object out of a set of dimensions,
+      `[Start, Start+Len)`, from original `Tensor<Dims...>`
 
 ---
 
@@ -213,83 +273,163 @@ derived at compile time.
 - **[
   `template<size_t... Dims> Tensor<Dims...> operator+(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
   **
-    -
+    - Element-wise add, uses parallel functional `zip`
 
 - **[
   `template<size_t... Dims> Tensor<Dims...> operator-(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
   **
-    -
+    - Element-wise subtract, uses parallel functional `zip`
 
 - **[
   `template<size_t... Dims> Tensor<Dims...>& operator+=(Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
   **
-    -
+    - Element-wise add-to, uses parallel functional `zip_apply`
 
 - **[`template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, float s)`](src/TensorOps.hpp)**
-  -
+    - Scalar multiply, uses parallel functional `map`
 
 - **[`template<size_t... Dims> Tensor<Dims...> operator*(float s, const Tensor<Dims...>& a)`](src/TensorOps.hpp)**
-  -
+    - Scalar multiply, uses parallel functional `map`
 
-- **[`template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)**
-  -
+- **[
+  `template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
+  **
+    - Hadamard (element-wise) product, uses parallel functional `zip`
 
 ---
 
 ### Permutation
 
 - **[`struct PermutedTensorType<typename T, size_t... Perm>`](src/TensorOps.hpp)**
-  -
+    - Type for a permuted `Tensor`
+    - Arbitrary reorganization of a `Tensor`'s `Shape`
+        - Templated to `<typename T, size_t... Perm>`
+        - Specialized by `<size_t... Dims, size_t... Perm>` and matched to `<Tensor<Dims...>, Perm...>`
+            - Unpack and reassign `Shape`'s indices according to `Perm`:
+              `Tensor<Tensor<Dims...>::Shape[Perm]...>`
+    - Example: `PermutedTensorType<Tensor<4, 5, 3>, 2, 0, 1>::type = Tensor<3, 4, 5>`
 
 - **[`template<size_t... Perm, size_t... Dims> auto Permute(const Tensor<Dims...>& src)`](src/TensorOps.hpp)**
-  -
+    - Parallelized arbitrary permutation of `Tensor`'s indices
+    - Returns `PermutedTensorType`
+    - Algorithm:
+        - `using Source = Tensor<Dims...>`
+        - `using Result = PermutedTensorType<Source, Perm>::type`
+        - `std::array<size_t, Rank> perm_arr = {Perm...}`
+        - `Result dst;`
+        - For each (parallelized) individual index in `Result::Size`:
+            - `auto dst_idx = Result::FlatToMulti(i)`
+                - get `Result` multi-index
+            - `std::array<size_t, Rank> src_multi = [perm_arr[Rank]...]`
+                - get `Source` multi-index
+            - `size_t src_index = Source::MultiToFlat(src_multi)`
+                - get `Source` flat index
+            - dst.flat(i) = src.flat(src_index)
+                - Assign `Source` value at that index to `Result`
 
-- **[`struct MoveToLastPerm<size_t Src, size_t P>`](src/TensorOps.hpp)**
-  -
+- **[`struct MoveToLastPerm<size_t Src, size_t Rank>`](src/TensorOps.hpp)**
+    - Compile-time helper to rearrange `Tensor`'s shape such that `Src` is at index `[Rank - 1]` and all others are kept
+      in order
 
-- **[`struct MoveToFirstPerm<size_t Src, size_t P>`](src/TensorOps.hpp)**
-  -
+- **[`struct MoveToFirstPerm<size_t Src, size_t Rank>`](src/TensorOps.hpp)**
+    - Compile-time helper to rearrange `Tensor`'s shape such that `Src` is at index `[0]` and all others are kept
+      in order
 
 - **[
   `template<typename PermHolder, size_t... I, size_t... Dims> auto PermuteFromHolder(const Tensor<Dims...>& t, std::index_sequence<I...>)`](src/TensorOps.hpp)
   **
-    -
+    - Unpack a `constexpr` permutation indices array into a proper `Permute`-given `Tensor` type
+    - `PermHolder` is an array of permutation indices, typically the result of `MoveToLastPerm` or `MoveToFirstPerm`
+    - Call with `PermHolder` as template arg, `Tensor<Dims...>` as first arg,
+      `std::make_index_sequence<sizeof...(Dims)>{}` as second arg
 
 - **[`template<size_t... Dims> auto Transpose(const Tensor<Dims...>& t)`](src/TensorOps.hpp)**
-  -
+    - Reverse all dimensions of a `Tensor<Dims...>`
+    - `Permute<(sizeof...(Dims) - 1 - I)...>(s)`, for `I` in `Dims...`
+    - so if `Dims` are `<3, 5, 4>` (`sizeof = 3`) we will have:
+        - `Permute<`(3-1) - 0 = `2,` (3-1) - 1 = `1,` (3-1) - 2 = `0>`
 
 ---
 
-### Tensor Contraction
+### Tensor Contraction : ΣΠ
+
+Tensor contraction is the generalized ***Sum of Products*** operation on `Tensor`s. `Dot`, `Matmul`, `Outer`, and
+`Einsum` are all special cases of this powerful operation.
+
+- **[`template<size_t N, typename TA, typename TB> struct SigmaPiKernel`](src/TensorOps.hpp)**
+    - Struct templated on `<size_t N, size_t... ADims, size_t... BDims>`, matched to
+      `<N, Tensor<ADims...>, Tensor<BDims...>>`
+    - Compile-time `static constexpr`:
+        - `RankA = sizeof...(ADims)`
+        - `RankB = sizeof...(BDims)`
+        - Asserts that `N <= RankA && N <= RankB`
+        - Asserts that last `N` dimensions of `ADims...` are each equal in size to the first `N` dimensions of
+          `BDims...`
+        - Free dimensions of `A` and `B`
+        - `A_Free = TensorSlice<0, RankA - N, ADims...>::type`
+            - `B_Free = TensorSlice<N, RankB - N, BDims...>::type`
+        - Types for contracted and resulting `Tensor`s
+            - `Contracted = TensorSlice<RankA - N, N, ADims...>::type`
+            - `ResultType = TensorConcat<A_Free, B_Free>::type`
+        - Index tables
+            - `struct { std::array<size_t, Contracted::Size> a, b; } offsets;`
+                - Precomputes flat-index contribution of every contracted position for A and B
+            - `struct { std::array<size_t, ResultType::Size> a, b; } bases;`
+                - Precomputes free-dimension base offset in A and B for every output index
+        - **These pay real dividends for [TrainableTensorNetwork](./src/TrainableTensorNetwork.hpp) training schedules.
+          Any weight `Tensor`'s `Dot`s, `Matmul`s, and `Outer`s (*in forward and backward passes*) are saved structs,
+          and
+          the runtime computations are parallelized and vectorized, following known, saved paths**
 
 - **[
   `template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)
   **
-    -
+    - For every ***product*** in Union(Free Axes of A, Free Axes of B), ***Sum every Product*** of contracted axes.
+        - We obtain the free axes of `A` and `B` and combine them into a `Tensor` as such:
+          `ResultType = TensorConcat<A_Free, B_Free>::type`, where `A_Free = TensorSlice<0, RankA - N, ADims...>::type`
+          and `B_Free = TensorSlice<N, RankB - N, BDims...>::type`
+    - `result.flat(o) = Σ_c A[A_Free(o), c] * B[c, B_Free(o)]`, for `o ∈ [0, ResultType::Size)` — where `A_Free(o)` and
+      `B_Free(o)` are the first `RankA−N` and last `RankB−N` components of output multi-index `o`, and `c` ranges over
+      `Contracted`
+
+
+- **[
+  `template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)
+  **
+    - Wrapper function around `SigmaPiKernel::Compute`
+    - returns `SigmaPiKernel<N, Tensor<ADims...>, Tensor<BDims...> >::compute(A, B)`
+
 
 - **[
   `template<size_t N, size_t... ADims, size_t... BDims> auto SigmaPi(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)
   **
-    -
+    - English wrapper around greek-aliased function
+    - returns `ΣΠ<N>(A, B)`
 
 - **[
   `template<size_t I, size_t J, size_t... ADims, size_t... BDims> auto Einsum(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)
   **
-    -
-
-- **[
-  `template<size_t... ADims, size_t... BDims> auto Einsum(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)
-  ** *(outer product overload — no axis arguments)*
-    -
+    - `ΣΠ`-contracts over single selected indices, `I` and `J`, from `Tensor<ADims...>` and `Tensor<BDims...>`,
+      respectively
+    - Calls `ΣΠ<1>` on `PermuteFromHolder<MoveToLastPerm<I, sizeof...(ADims)>...>` and
+      `PermuteFromHolder<MoveToFirstPerm<J, sizeof...(BDims)>...>`
 
 - **[`template<size_t N> auto Dot(const Tensor<N>& a, const Tensor<N>& b)`](src/TensorOps.hpp)**
-    -
+    - `ΣΠ`-contracts over `1` (the only) inner dimension of two `Tensor<N>`s, `a` and `b`, returning a `Tensor<>` with
+      `Rank = 0`
 
-- **[`template<size_t M, size_t K, size_t N> auto Matmul(const Tensor<M,K>& A, const Tensor<K,N>& B)`](src/TensorOps.hpp)**
-    -
+- **[
+  `template<size_t M, size_t K, size_t N> auto Matmul(const Tensor<M,K>& A, const Tensor<K,N>& B)`](src/TensorOps.hpp)
+  **
+    - `ΣΠ`-contracts over `1` inner dimension of two `Tensor<_,K>`s, `A` and `A`, returning a `Tensor<M,N>` with
+      `Rank = 2`
 
-- **[`template<size_t... ADims, size_t... BDims> auto Outer(const Tensor<ADims...>& a, const Tensor<BDims...>& b)`](src/TensorOps.hpp)**
-    -
+- **[
+  `template<size_t... ADims, size_t... BDims> auto Outer(const Tensor<ADims...>& a, const Tensor<BDims...>& b)`](src/TensorOps.hpp)
+  **
+    - `ΣΠ`-contracts over `0` inner dimension of `Tensor<ADims...> a` and `Tensor<BDims...> b`, returning a
+      `Tensor<ADims..., BDims...>` with
+      `Rank = sizeof...(ADims) + sizeof...(BDims)`
 
 ---
 
@@ -341,11 +481,21 @@ derived at compile time.
   **
     -
 
+### Parallel Loop Helper
+
+- **[`template<typename F> void ParForEach(size_t n, F f)`](src/TensorOps.hpp)**
+  -
+
 ---
 
 ## [TTTN_ML.hpp](src/TTTN_ML.hpp) — ML Primitives
 
 Activation functions, their derivatives, loss functions, and the `SoftmaxBlock` layer. Depends on `TensorOps.hpp`.
+
+**Constants:**
+
+- **[`static constexpr float EPS`](src/TTTN_ML.hpp)**
+  -
 
 ### Activation Function Enum
 
@@ -658,6 +808,13 @@ and backward passes, and manages Adam optimizer state (bias-correction counters)
 
 ### `class TrainableTensorNetwork<ConcreteBlock... Blocks>`
 
+**Constants:**
+
+- **[`static constexpr float ADAM_BETA_1`](src/TrainableTensorNetwork.hpp)**
+  -
+- **[`static constexpr float ADAM_BETA_2`](src/TrainableTensorNetwork.hpp)**
+  -
+
 **Type aliases and constants:**
 
 - **[`using InputTensor`](src/TrainableTensorNetwork.hpp)** — tensor type of the first block's input
@@ -678,10 +835,10 @@ and backward passes, and manages Adam optimizer state (bias-correction counters)
 **Single-sample interface:**
 
 - **[`Activations ForwardAll(const InputTensor& x) const`](src/TrainableTensorNetwork.hpp)**
-  - Run forward pass through entire network, returning `Activations` tuple of `Tensor`s from each layer
+    - Run forward pass through entire network, returning `Activations` tuple of `Tensor`s from each layer
 
 - **[`OutputTensor Forward(const InputTensor& x) const`](src/TrainableTensorNetwork.hpp)**
-  - Run forward pass through entire network, returning a `Tensor` of type: `OutputTensor`, the final activation
+    - Run forward pass through entire network, returning a `Tensor` of type: `OutputTensor`, the final activation
 
 - **[`void BackwardAll(const Activations& A, const OutputTensor& grad)`](src/TrainableTensorNetwork.hpp)**
   -
@@ -710,8 +867,9 @@ and backward passes, and manages Adam optimizer state (bias-correction counters)
 - **[
   `template <size_t Batch> PrependBatch<Batch, OutputTensor>::type BatchedForward(const typename PrependBatch<Batch, InputTensor>::type& X)`](src/TrainableTensorNetwork.hpp)
   **
-    - Inference the model with a batch dimension, getting in return a `Tensor` of type: `PrependBatch<Batch, OutputTensor>::type`
-      
+    - Inference the model with a batch dimension, getting in return a `Tensor` of type:
+      `PrependBatch<Batch, OutputTensor>::type`
+
 
 - **[
   `template<size_t Batch> void BatchedBackwardAll(const BatchedActivations<Batch>& A, const typename PrependBatch<Batch, OutputTensor>::type& grad)`](src/TrainableTensorNetwork.hpp)
@@ -735,6 +893,15 @@ and backward passes, and manages Adam optimizer state (bias-correction counters)
 
 - **[`void Load(const std::string& path)`](src/TrainableTensorNetwork.hpp)**
   -
+
+---
+
+### Free Functions
+
+- **[
+  `template<typename Loss, size_t Batch, ConcreteBlock... Blocks, size_t N, size_t... DataDims, typename PrepFn> float RunEpoch(TrainableTensorNetwork<Blocks...>& net, const Tensor<N, DataDims...>& dataset, std::mt19937& rng, float lr, PrepFn prep)`](src/TrainableTensorNetwork.hpp)
+  **
+    -
 
 ---
 
@@ -764,7 +931,8 @@ Autoencoder ae;    // train end-to-end — all blocks update together
 ```
 
 - **[`using type`](src/TrainableTensorNetwork.hpp)** — the combined `TrainableTensorNetwork<BlocksA..., BlocksB...>`
-  - Result of splicing the block lists of `NetA` and `NetB`; a complete network supporting all single-sample and batched interfaces
+    - Result of splicing the block lists of `NetA` and `NetB`; a complete network supporting all single-sample and
+      batched interfaces
 
 ---
 

@@ -126,64 +126,48 @@ namespace TTTN {
     class Tensor {
     public:
         // rank = number of dimensions
+        // @doc: static constexpr size_t Rank
+        /** Number of dimensions */
         static constexpr size_t Rank = sizeof...(Dims);
         // size = total number of values (size of array)
+        // @doc: static constexpr size_t Size
+        /** Product of all dimensions = total distinct values in `Tensor` */
         static constexpr size_t Size = TensorDimsProduct<Dims...>::value;
         // shape = array of dims
+        // @doc: static constexpr std::array<size_t, Rank> Shape
+        /** `<size_t... Dims>` captured into an array */
         static constexpr std::array<size_t, Rank> Shape = {Dims...};
         // strides = used for seamless indexing
+        // @doc: static constexpr std::array<size_t, Rank> Strides
+        /**
+         * Uses `ComputeStrides` to create array
+         * The `Tensor::Strides` array is vital to mapping from indices into `Tensor::Shape` to flat indices for the backing array
+         * In general, for a `Tensor` with `Tensor::Shape = [A, B, ..., N]`, its `Tensor::Strides = [A * B * ... * N, B * ... * N, ..., 1]`
+         */
         static constexpr std::array<size_t, Rank> Strides = ComputeStrides<Dims...>::value;
 
-        // FlatToMulti: decompose a flat index into a multi-index
-        // EXAMPLE: Tensor<3, 4, 5>
-        //      Rank = 3, Size = 60, range = 0-59
-        //      Strides = [20, 5, 1]
-        //
-        // suppose: flat = 33
-        //      multi = [_, _, _]; flat = 33
-        //          multi[0] = 33 / Strides[0] = 33 / 20 = 1
-        //          flat = 33 % 20 = 13
-        //      multi = [1, _, _]; flat = 13
-        //          multi[1] = 13 / Strides[1] = 13 / 5 = 2
-        //          flat = 13 % 5 = 3
-        //      multi = [1, 2, _]; flat = 3
-        //          multi[2] = 3 / Strides[2] = 3 / 1 = 3
-        //          flat = 3 % 1 = 0
-        //      multi = [1, 2, 3]
-        //
-        // suppose: flat = 58 (2nd to last item, we should get [2, 3, 3])
-        //      multi[0] = 58 / 20 = 2,  flat = 58 % 20 = 18
-        //      multi[1] = 18 / 5  = 3,  flat = 18 % 5  = 3
-        //      multi[2] =  3 / 1  = 3,  flat =  3 % 1  = 0
-        //      multi = [2, 3, 3]
-        // @doc: static auto FlatToMulti(size_t flat) -> std::array<size_t, Rank>
-        /** . */
-        static auto FlatToMulti(size_t flat) -> std::array<size_t, Rank> {
-            assert(flat < Size && "flat index out of bounds");
-            std::array<size_t, Rank> multi{};
-            for (size_t d = 0; d < Rank; d++) {
-                multi[d] = flat / Strides[d];
-                flat %= Strides[d];
-            }
-            return multi;
+        // @doc: static constexpr std::array<size_t, Rank> FlatToMulti(size_t flat)
+        /**
+         * Inverse of `MultiToFlat`; map a flat index `[0, Size)` to its `Rank`-term index
+         * Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (= `[0, ..., Rank]`) and unpacks into an array: `[(flat / Strides[0]) % Shape[0], ..., (flat / Strides[Rank]) % Shape[Rank]]`
+         */
+        static constexpr std::array<size_t, Rank> FlatToMulti(size_t flat) {
+            return [&]<size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<size_t, Rank>{(flat / Strides[Is]) % Shape[Is]...};
+            }(std::make_index_sequence<Rank>{});
         }
 
-        // MultiToFlat: dot a multi-index against Strides to get a flat index
-        // just a dot product between multi index and strides!
-        // EXAMPLE: Tensor<3, 4, 5>
-        //      Rank = 3, Size = 60, Strides = [20, 5, 1]
-        //
-        // suppose multi = [2, 3, 3] (second to last item, should be 58)
-        //      flat = 20*2 + 5*3 + 1*3 = 40 + 15 + 3 = 58
-        // @doc: static size_t MultiToFlat(const std::array<size_t, Rank>& multi)
-        /** . */
-        static size_t MultiToFlat(const std::array<size_t, Rank> &multi) {
-            size_t flat = 0;
-            for (size_t d = 0; d < Rank; d++) {
-                flat += multi[d] * Strides[d];
-            }
-            assert(flat < Size && "computed flat index out of bounds");
-            return flat;
+
+        // @doc: static constexpr size_t MultiToFlat(const std::array<size_t, Rank>& multi)
+        /**
+         * Inverse of `FlatToMulti`; map a `Rank`-term index to its flat index `[0, Size)`
+         * Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (= `[0, ..., Rank]`) and `+`-folds terms `multi[0] * Strides[0] + ... + multi[Rank] * Strides[Rank]`
+         * Dot product of given `multi` index and `Strides`
+         */
+        static constexpr size_t MultiToFlat(const std::array<size_t, Rank> &multi) {
+            return [&]<size_t... Is>(std::index_sequence<Is...>) {
+                return (... + (multi[Is] * Strides[Is]));
+            }(std::make_index_sequence<Rank>{});
         }
 
     private:
@@ -191,34 +175,68 @@ namespace TTTN {
 
     public:
         // Default: heap-allocate and zero-initialize.
+        // @doc: Tensor()
+        /**
+         * Default constructor
+         * Initialize `float[Size]` on the heap
+         */
         Tensor() : data_(std::make_unique<float[]>(Size)) {
         }
 
         // Initializer list: heap-allocate, fill from list (remaining elements stay zero).
+        // @doc: Tensor(std::initializer_list<float> init)
+        /**
+         * Initializer list constructor
+         * Fill the first `Size` elements of `std::initializer_list<float> init` to flat indices of backing array
+         */
         Tensor(std::initializer_list<float> init) : data_(std::make_unique<float[]>(Size)) {
             size_t i = 0;
-            for (auto v: init)
-                if (i < Size) data_[i++] = v;
+            for (const auto v: init) {
+                if (i < Size) {
+                    data_[i++] = v;
+                }
+            }
         }
 
         // Rule of Five ─────────────────────────────────────────────────────────
 
         // Destructor: unique_ptr<float[]> calls delete[] automatically.
+        // @doc: ~Tensor() = default
+        /**
+         * Default destructor
+         * RAII: destructs `std::unique_ptr` to `float[Size]` on heap
+         */
         ~Tensor() = default;
 
         // Copy ctor: deep copy — allocate a new buffer and memcpy the data.
+        // @doc: Tensor(const Tensor& other)
+        /**
+         * Deep copy constructor
+         * Allocate new `float[Size]` on heap and `std::memcpy` from `other.data()`
+         */
         Tensor(const Tensor &other) : data_(std::make_unique<float[]>(Size)) {
-            for (size_t i = 0; i < Size; ++i) data_[i] = other.data_[i];
+            std::memcpy(data_.get(), other.data_.get(), sizeof(float) * Size);
         }
 
         // Copy assignment: destination already owns a live buffer, just overwrite it.
+        // @doc: Tensor& operator=(const Tensor& other)
+        /**
+         * Deep copy assignment operator
+         * `std::memcpy` from `other.data()`
+         */
         Tensor &operator=(const Tensor &other) {
-            if (this != &other)
-                for (size_t i = 0; i < Size; ++i) data_[i] = other.data_[i];
+            if (this != &other) {
+                std::memcpy(data_.get(), other.data_.get(), sizeof(float) * Size);
+            }
             return *this;
         }
 
         // Move ctor / move assignment: unique_ptr transfers ownership for free.
+        // @doc: Tensor(Tensor&&) noexcept = default
+        /**
+         * Default move constructor
+         * `std::unique_ptr` to data handles this already
+         */
         Tensor(Tensor &&) noexcept = default;
 
         Tensor &operator=(Tensor &&) noexcept = default;
@@ -226,17 +244,26 @@ namespace TTTN {
         // ──────────────────────────────────────────────────────────────────────
 
         // fill with a value
-        void fill(float v) { for (size_t i = 0; i < Size; ++i) data_[i] = v; }
+        // @doc: void fill(const float v) const
+        /** Fill a `Tensor`'s underlying array with some `float v` */
+        void fill(const float v) const { std::fill_n(data_.get(), Size, v); }
 
         // get underlying array
+        // @doc: const float* data() const
+        /** Returns `const` pointer to `Tensor`'s underlying array */
         float *data() { return data_.get(); }
         [[nodiscard]] const float *data() const { return data_.get(); }
 
         // flat indexing
+        // @doc: float flat(size_t idx) const
+        // @doc: float& flat(size_t idx)
+        /** Returns `float&` reference to item at `idx` in underlying array */
         float &flat(size_t idx) { return data_[idx]; }
         [[nodiscard]] float flat(size_t idx) const { return data_[idx]; }
 
         // map: apply f(float) -> float element-wise, return new tensor
+        // @doc: template<typename F> Tensor map(F f) const
+        /** Use `std::execution::par_unseq` to `std::transform` `Tensor`'s underlying data by `float -> float` map `f`, returning a new `Tensor` */
         template<typename F>
         Tensor map(F f) const {
             Tensor out;
@@ -246,6 +273,8 @@ namespace TTTN {
         }
 
         // zip: apply f(float, float) -> float element-wise with another tensor, return new tensor
+        // @doc: template<typename F> Tensor zip(const Tensor& other, F f) const
+        /** Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data by `float -> float -> float` map `f`, returning a new `Tensor` */
         template<typename F>
         Tensor zip(const Tensor &other, F f) const {
             Tensor out;
@@ -255,36 +284,63 @@ namespace TTTN {
         }
 
         // apply: mutate each element in-place with f(float&)
+        // @doc: template<typename F> void apply(F f)
+        /** Use `std::execution::par_unseq` + `std::for_each` to apply `float -> float` map `f` to `Tensor`'s underlying data in-place */
         template<typename F>
         void apply(F f) {
             std::for_each(std::execution::par_unseq, data_.get(), data_.get() + Size, f);
         }
 
         // zip_apply: mutate each element in-place using corresponding element from other with f(float&, float)
+        // @doc: template<typename F> void zip_apply(const Tensor& other, F f)
+        /** Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data in-place by `float -> float -> float` map `f` */
         template<typename F>
         void zip_apply(const Tensor &other, F f) {
             std::transform(std::execution::par_unseq,
                            data_.get(), data_.get() + Size, other.data_.get(), data_.get(),
-                           [&f](float a, float b) -> float { f(a, b); return a; });
+                           [&f](float a, float b) -> float {
+                               f(a, b);
+                               return a;
+                           });
         }
 
 #define ACCESS_IMPL {                                                                       \
-        static_assert(sizeof...(idxs) == Rank,"Number of indices must match tensor rank");  \
-        const size_t idx_arr[] = {static_cast<size_t>(idxs)...};                            \
-        size_t flat_index = 0;                                                              \
-        for (size_t i = 0; i < Rank; i++)                                                   \
-            flat_index += idx_arr[i] * Strides[i];                                          \
-        return data_[flat_index];                                                           \
-    }
+                static_assert(sizeof...(idxs) == Rank, "Number of indices must match tensor rank");  \
+                const size_t idx_arr[] = {static_cast<size_t>(idxs)...};                            \
+                size_t flat_index = 0;                                                              \
+                for (size_t i = 0; i < Rank; i++)                                                   \
+                    flat_index += idx_arr[i] * Strides[i];                                          \
+                return data_[flat_index];                                                           \
+            }
 
+        // @doc: float& operator()(Indices... idxs)
+        /**
+         * Variadic multi-index access, returns reference
+         * Uses compile-time-templated `MultiToFlat` for efficient access
+         */
         template<typename... Indices>
         float &operator()(Indices... idxs) ACCESS_IMPL
 
+        // @doc: float operator()(Indices... idxs) const
+        /**
+         * Variadic multi-index access, returns copy
+         * Uses compile-time-templated `MultiToFlat` for efficient access
+         */
         template<typename... Indices>
         float operator()(Indices... idxs) const ACCESS_IMPL
 #undef ACCESS_IMPL
 
         // array multi-index overload — runtime values, no compile-time bounds check
+        // @doc: float operator()(const std::array<size_t, Rank>& multi) const
+        /**
+         * Array-based multi-index access, returns copy
+         * Uses compile-time-templated `MultiToFlat` for efficient access
+         */
+        // @doc: float& operator()(const std::array<size_t, Rank>& multi)
+        /**
+         * Array-based multi-index access, returns reference
+         * Uses compile-time-templated `MultiToFlat` for efficient access
+         */
         float &operator()(const std::array<size_t, Rank> &multi) {
             return data_[MultiToFlat(multi)];
         }
@@ -293,10 +349,14 @@ namespace TTTN {
             return data_[MultiToFlat(multi)];
         }
 
+        // @doc: void Save(std::ofstream& f) const
+        /** Writes entirety of flat backing array (`float[Size]`) to binary file */
         void Save(std::ofstream &f) const {
             f.write(reinterpret_cast<const char *>(data_.get()), Size * sizeof(float));
         }
 
+        // @doc: void Load(std::ifstream& f)
+        /** Reads binary file into flat backing array (`float[Size]`) */
         void Load(std::ifstream &f) {
             f.read(reinterpret_cast<char *>(data_.get()), Size * sizeof(float));
         }
@@ -305,6 +365,12 @@ namespace TTTN {
     // IS_TENSOR type trait -> concept
     // allows us to make sure Block parameters are Tensors
     // dummy SFINAE backup
+    // @doc: struct is_tensor<T>
+    /**
+     * SFINAE type traits for verifying that a type is a `Tensor`
+     *   - Specialize `<size_t...Dims>`: matches into `<Tensor<Dims...>`, inherits from `std::true_type`
+     *   - Specialize <>: inherits from `std::false_type`, backup when former fails
+     */
     template<typename T>
     struct is_tensor : std::false_type {
     };
@@ -315,6 +381,8 @@ namespace TTTN {
     };
 
     // concept to wrap it
+    // @doc: concept IsTensor<T>
+    /** Wrapper `concept` around `is_tensor` type trait, satisfied if `T` is a `Tensor` */
     template<typename T>
     concept IsTensor = is_tensor<T>::value;
 }

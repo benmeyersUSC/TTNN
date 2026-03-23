@@ -36,6 +36,8 @@ namespace TTTN {
     //   W_O_T = WTBlockSwapPerm<N_emb, 2>(W_O) → Tensor<Heads, HeadDim, EmbDims...>
     //   upstream dX: ΣΠ<2>(W_Q_T, dq_s) + ΣΠ<2>(W_K_T, dk_s) + ΣΠ<2>(W_V_T, dv_s)
 
+
+
     template<size_t SeqLen, size_t Heads, size_t... EmbDims>
     class MultiHeadAttentionBlock {
     public:
@@ -46,7 +48,7 @@ namespace TTTN {
         static constexpr size_t EmbSize = TensorDimsProduct<EmbDims...>::value;
         static constexpr size_t HeadDim = EmbSize / Heads;
         static_assert(EmbSize % Heads == 0,
-                      "MultiHeadAttentionBlock: EmbSize must be divisible by Heads");
+            "Heads must be a factor of EmbSize (the product of all EmbDims)");
 
         using W_QKV_Type  = Tensor<Heads, HeadDim, EmbDims...>;   // shape of W_Q, W_K, W_V
         using W_O_Type    = Tensor<EmbDims..., Heads, HeadDim>;    // shape of W_O

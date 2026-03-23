@@ -4,6 +4,9 @@
 #include "TTTN_ML.hpp"
 
 namespace TTTN {
+    static constexpr float ADAM_BETA_1 = 0.9f;
+    static constexpr float ADAM_BETA_2 = 0.999f;
+
     // TRAINABLE TENSOR NETWORK
     // templatized by Block-concept-compliant types
     //      Blocks[0]   = first block  (network InSize  = its InSize)
@@ -348,6 +351,40 @@ namespace TTTN {
             "CombineNetworks: OutputTensor of first network must equal InputTensor of second");
         using type = TrainableTensorNetwork<BlocksA..., BlocksB...>;
     };
+
+
+    // RUN EPOCH
+    // Runs `Steps` batched train steps, returning the average loss.
+    // `prep(batch, X, Y)` is a user-provided lambda that fills X and Y from a raw data batch —
+    // keeping all dataset-specific logic (label extraction, normalization, one-hot encoding) at the call site.
+    //
+    // Usage (MNIST):
+    //   float avg_loss = RunEpoch<CEL, 108, 200>(net, train_data, rng, 0.001f,
+    //       [](const auto& batch, auto& X, auto& Y) {
+    //           for (size_t b = 0; b < 108; ++b) {
+    //               const auto label = static_cast<size_t>(batch(b, 0));
+    //               for (size_t p = 0; p < 784; ++p) X(b, p) = batch(b, p+1) / 255.f;
+    //               for (size_t c = 0; c < 10;  ++c) Y(b, c) = (c == label) ? 1.f : 0.f;
+    //           }
+    //       });
+    template<typename Loss, size_t Batch,
+             ConcreteBlock... Blocks, size_t N, size_t... DataDims, typename PrepFn>
+    float RunEpoch(TrainableTensorNetwork<Blocks...>& net,
+                   const Tensor<N, DataDims...>& dataset,
+                   std::mt19937& rng, float lr, PrepFn prep) {
+        static constexpr size_t Steps = N / Batch;
+        using Net    = TrainableTensorNetwork<Blocks...>;
+        using BatchX = typename PrependBatch<Batch, typename Net::InputTensor>::type;
+        using BatchY = typename PrependBatch<Batch, typename Net::OutputTensor>::type;
+        float total = 0.f;
+        for (size_t s = 0; s < Steps; ++s) {
+            auto batch = RandomBatch<Batch>(dataset, rng);
+            BatchX X; BatchY Y;
+            prep(batch, X, Y);
+            total += net.template BatchFit<Loss, Batch>(X, Y, lr);
+        }
+        return total / static_cast<float>(Steps);
+    }
 
 
     // typename (not Block) because Input is not a Block
