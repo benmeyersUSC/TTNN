@@ -262,7 +262,7 @@ void runMNIST() {
     NetworkBuilder<
         Input<784>,
         Dense<128, ActivationFunction::ReLU>,
-        Dense<64,  ActivationFunction::ReLU>,
+        Dense<64, ActivationFunction::ReLU>,
         Dense<10>,                  // linear logits
         SoftmaxLayer<0>             // axis-0 softmax as its own block
     >::type net;
@@ -294,8 +294,9 @@ void runMNIST() {
             total_loss += net.BatchFit<CEL, Batch>(X, Y, 0.001f);
 
             // accuracy from post-update predictions
-            const auto A = net.BatchedForwardAll<Batch>(X);
-            const auto& preds = A.template get<4>();   // after SoftmaxLayer
+            // const auto A = net.BatchedForwardAll<Batch>(X);
+            const auto preds = net.BatchedForward<Batch>(X);
+            // const auto& preds = A.template get<>();   // after SoftmaxLayer
             for (size_t b = 0; b < Batch; ++b) {
                 size_t pred_label = 0; float best = preds(b, 0);
                 for (size_t i = 1; i < 10; ++i)

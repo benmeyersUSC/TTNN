@@ -105,6 +105,8 @@ namespace TTTN {
 
         // ForwardAll: returns an ActivationsWrap (input + one tensor per block).
         // Bind to a named variable — calling .get<N>() on a temporary is a compile error.
+        // @doc: Activations ForwardAll(const InputTensor& x) const
+        /** Run forward pass through entire network, returning `Activations` tuple of `Tensor`s from each layer */
         [[nodiscard]] Activations ForwardAll(const InputTensor& x) const {
             ActivationsTuple A;
             std::get<0>(A) = x;
@@ -112,6 +114,8 @@ namespace TTTN {
             return Activations{std::move(A)};
         }
 
+        // @doc: OutputTensor Forward(const InputTensor& x) const
+        /** Run forward pass through entire network, returning a `Tensor` of type: `OutputTensor`, the final activation */
         [[nodiscard]] OutputTensor Forward(const InputTensor& x) const {
             auto A = ForwardAll(x);
             return A.template get<NumBlocks>();
@@ -164,6 +168,8 @@ namespace TTTN {
         }
 
         // BatchedForwardAll: returns a BatchedActivations wrapper (same safety guarantee).
+        // @doc: template<size_t Batch> BatchedActivations<Batch> BatchedForwardAll(const typename PrependBatch<Batch, InputTensor>::type& X) const
+        /** Inference a batch and get a `Tensor` of type: `BatchedActivations<Batch>` */
         template<size_t Batch>
         [[nodiscard]] BatchedActivations<Batch> BatchedForwardAll(
                 const typename PrependBatch<Batch, InputTensor>::type& X) const {
@@ -171,6 +177,16 @@ namespace TTTN {
             std::get<0>(A) = X;
             batched_forward_impl<Batch>(A);
             return BatchedActivations<Batch>{std::move(A)};
+        }
+
+        // BatchedForward
+        // @doc: template <size_t Batch> PrependBatch<Batch, OutputTensor>::type BatchedForward(const typename PrependBatch<Batch, InputTensor>::type& X)
+        /** Inference the model with a batch dimension, getting in return a `Tensor` of type: `PrependBatch<Batch, OutputTensor>::type` */
+        template <size_t Batch> 
+        [[nodiscard]] PrependBatch<Batch, OutputTensor>::type BatchedForward(const typename PrependBatch<Batch, InputTensor>::type& X)
+        {
+            const auto A = BatchedForwardAll<Batch>(X);
+            return A.template get<NumBlocks>();
         }
 
         // BatchedBackwardAll: takes the wrapper produced by BatchedForwardAll.

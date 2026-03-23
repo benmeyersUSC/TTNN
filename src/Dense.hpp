@@ -127,52 +127,41 @@ namespace TTTN {
             return ΣΠ<N_out>(W_T, delta_z);
         }
 
-        // batched forward: runs Forward per sample over leading Batch dimension
-        // X is Tensor<Batch, InDims...>, returns Tensor<Batch, OutDims...>
+        // batched forward: ONE ΣΠ over the whole batch — no per-sample loop.
+        // ΣΠ<N_in>(X, W_T) contracts InDims of X with InDims of W_T → Tensor<Batch, OutDims...>
+        // This gives Batch×OutSize parallel jobs in a single dispatch instead of Batch serial dispatches.
         template<size_t Batch>
         Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...> &X) const {
-            Tensor<Batch, OutDims...> result;
-            for (size_t b = 0; b < Batch; ++b) {
-                InputTensor x_b;
-                for (size_t i = 0; i < InputTensor::Size; ++i)
-                    x_b.flat(i) = X.flat(b * InputTensor::Size + i);
-                const auto out = Forward(x_b);
-                for (size_t i = 0; i < OutputTensor::Size; ++i)
-                    result.flat(b * OutputTensor::Size + i) = out.flat(i);
-            }
-            return result;
+            // permute to Tensor<In, Out>
+            const auto W_T = PermuteFromHolder<WTBlockSwapPerm<N_out, N_in>>(W, std::make_index_sequence<N_out + N_in>{});
+            // contract only on input dimensions
+            // add bias
+            // apply activation
+            return ActivateMD(BroadcastAdd<0>(ΣΠ<N_in>(X, W_T), b), Act);
         }
 
-        // batched backward: accumulates mean gradient across Batch into dW/dB
-        // returns upstream gradient Tensor<Batch, InDims...>
+        // batched backward: ONE ΣΠ per gradient term — no per-sample loop.
+        //   delta_z = ActivatePrime(delta_A, a)             element-wise, any rank
+        //   dW     += (1/B) * ΣΠ<1>(delta_z_BL, a_prev)   batch dim moved to last in delta_z
+        //   dB     += (1/B) * ReduceSum<0>(delta_z)
+        //   upstream = ΣΠ<N_out>(delta_z, W)               contracts OutDims of delta_z with W
         template<size_t Batch>
         Tensor<Batch, InDims...> BatchedBackward(const Tensor<Batch, OutDims...> &delta_A,
                                                  const Tensor<Batch, OutDims...> &a,
                                                  const Tensor<Batch, InDims...>  &a_prev) {
-            Tensor<Batch, InDims...> result;
-            const float batch_adj = 1.f / static_cast<float>(Batch);
-            const auto W_T = PermuteFromHolder<WTBlockSwapPerm<N_out, N_in>>(
-                W, std::make_index_sequence<N_out + N_in>{}
-            );
-            for (size_t b = 0; b < Batch; ++b) {
-                OutputTensor delta_A_b, a_b;
-                InputTensor  a_prev_b;
-                for (size_t i = 0; i < OutputTensor::Size; ++i) {
-                    delta_A_b.flat(i) = delta_A.flat(b * OutputTensor::Size + i);
-                    a_b.flat(i)       = a.flat(b * OutputTensor::Size + i);
-                }
-                for (size_t i = 0; i < InputTensor::Size; ++i)
-                    a_prev_b.flat(i) = a_prev.flat(b * InputTensor::Size + i);
+            const float inv_batch = 1.f / static_cast<float>(Batch);
 
-                const auto delta_z = ActivatePrimeMD(delta_A_b, a_b, Act);
-                dW += ΣΠ<0>(delta_z, a_prev_b) * batch_adj;
-                dB += delta_z * batch_adj;
+            const auto delta_z = ActivatePrimeMD(delta_A, a, Act);
 
-                const auto upstream = ΣΠ<N_out>(W_T, delta_z);
-                for (size_t i = 0; i < InputTensor::Size; ++i)
-                    result.flat(b * InputTensor::Size + i) = upstream.flat(i);
-            }
-            return result;
+            // move batch dim from front to back: Tensor<Batch, OutDims...> → Tensor<OutDims..., Batch>
+            constexpr size_t BatchOutRank = 1 + N_out;
+            const auto delta_z_BL = PermuteFromHolder<MoveToLastPerm<0, BatchOutRank>>(
+                delta_z, std::make_index_sequence<BatchOutRank>{});
+            dW += ΣΠ<1>(delta_z_BL, a_prev) * inv_batch;
+
+            dB += ReduceSum<0>(delta_z) * inv_batch;
+
+            return ΣΠ<N_out>(delta_z, W);
         }
 
         // Adam update. mCorr and vCorr are precomputed by the network.

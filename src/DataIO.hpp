@@ -45,6 +45,7 @@ namespace TTTN {
             : total_(total), label_(std::move(label)) {}
 
         // Advance by n steps. Optional suffix printed to the right (e.g. "loss=0.312").
+        // @doc: void tick(const std::string& suffix = "", size_t n = 1)
         /** Advances by `n` steps and redraws. `suffix` is printed to the right of the bar (e.g. `"loss=0.312"`). */
         void tick(const std::string& suffix = "", size_t n = 1) {
             current_ = std::min(current_ + n, total_);
@@ -63,6 +64,7 @@ namespace TTTN {
     //   <path>.<Rows>x<Cols>.bin
     // Subsequent calls load that file directly (pure fread, no CSV parsing).
     // Delete the .bin file if the underlying CSV changes.
+    // @doc: template<size_t Rows, size_t Cols> Tensor<Rows, Cols> LoadCSV(const std::string& path, bool skip_header = false)
     /** Parses a CSV into a `Tensor<Rows, Cols>`. On first call shows a progress bar, then writes a binary cache at `<path>.<Rows>x<Cols>.bin`; subsequent calls load that file directly (pure binary read, no CSV parsing). Delete the `.bin` file if the underlying CSV changes. */
     template<size_t Rows, size_t Cols>
     Tensor<Rows, Cols> LoadCSV(const std::string& path, bool skip_header = false) {
