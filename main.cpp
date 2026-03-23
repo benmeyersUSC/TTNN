@@ -112,7 +112,7 @@ void runXORFullBatch() {
     >::type net;
     std::cout << "    params: " << net.TotalParamCount << "\n\n";
 
-    Tensor<4, 2> X{0.f,0.f, 0.f,1.f, 1.f,0.f, 1.f,1.f};
+    Tensor<4, 2> X{0.f, 0.f, 0.f, 1.f, 1.f, 0.f, 1.f, 1.f};
     Tensor<4, 1> T{0.f, 1.f, 1.f, 0.f};
 
     for (int e = 0; e < 1000; ++e) {
@@ -123,11 +123,12 @@ void runXORFullBatch() {
 
     std::cout << "  predictions:\n";
     const auto A_final = net.BatchedForwardAll<4>(X);
-    const auto& Y = A_final.template get<2>();
+    const auto &Y = A_final.template get<2>();
     for (int i = 0; i < 4; ++i)
-        std::cout << "    [" << X(i,0) << "," << X(i,1) << "]"
-                  << " -> " << Y(i,0) << "  (target=" << T(i,0) << ")\n";
+        std::cout << "    [" << X(i, 0) << "," << X(i, 1) << "]"
+                << " -> " << Y(i, 0) << "  (target=" << T(i, 0) << ")\n";
 }
+
 // CombineNetworks: encoder + decoder declared separately, combined into an autoencoder.
 // Encoder:     Input<16> -> Dense<8, ReLU> -> Dense<4>   (bottleneck)
 // Decoder:     Input<4>  -> Dense<8, ReLU> -> Dense<16>
@@ -144,60 +145,66 @@ void runCombineNetworks() {
     using Encoder = NetworkBuilder<
         Input<16>,
         Dense<8, ActivationFunction::ReLU>,
-        Dense<4>          // linear bottleneck
+        Dense<4> // linear bottleneck
     >::type;
 
     using Decoder = NetworkBuilder<
         Input<4>,
         Dense<8, ActivationFunction::ReLU>,
-        Dense<16>         // linear reconstruction
+        Dense<16> // linear reconstruction
     >::type;
 
     // compile-time check: Encoder::OutputTensor == Decoder::InputTensor (both Tensor<4>)
     using Autoencoder = CombineNetworks<Encoder, Decoder>::type;
 
-    Encoder     enc;   // standalone encoder — own weights
-    Autoencoder ae;    // full autoencoder   — own weights
+    Encoder enc; // standalone encoder — own weights
+    Autoencoder ae; // full autoencoder   — own weights
 
     std::cout << "    encoder params:     " << enc.TotalParamCount << "\n";
-    std::cout << "    autoencoder params: " << ae.TotalParamCount  << "\n\n";
+    std::cout << "    autoencoder params: " << ae.TotalParamCount << "\n\n";
 
     // four 16-dim training vectors spread across [0,1]
-    std::array<Tensor<16>, 4> xs = {{
-        {0.1f,0.9f,0.4f,0.7f,0.2f,0.8f,0.3f,0.6f,0.5f,0.1f,0.95f,0.05f,0.65f,0.35f,0.75f,0.25f},
-        {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f},
-        {0.0f,0.1f,0.2f,0.3f,0.4f,0.5f,0.6f,0.7f,0.8f,0.9f,1.0f, 0.9f, 0.8f, 0.7f, 0.6f, 0.5f},
-        {1.0f,0.0f,1.0f,0.0f,1.0f,0.0f,1.0f,0.0f,1.0f,0.0f,1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f},
-    }};
+    std::array<Tensor<16>, 4> xs = {
+        {
+            {0.1f, 0.9f, 0.4f, 0.7f, 0.2f, 0.8f, 0.3f, 0.6f, 0.5f, 0.1f, 0.95f, 0.05f, 0.65f, 0.35f, 0.75f, 0.25f},
+            {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f},
+            {0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f, 0.9f, 0.8f, 0.7f, 0.6f, 0.5f},
+            {1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f},
+        }
+    };
 
     // train the autoencoder end-to-end (all 6 blocks update together)
     for (int e = 0; e < 500; ++e) {
         float total = 0.f;
-        for (auto& x : xs)
+        for (auto &x: xs)
             total += ae.Fit<MSE>(x, x, 0.005f);
         if (e % 100 == 0)
             std::cout << "  epoch " << std::setw(4) << e
-                      << "  MSE = " << std::fixed << std::setprecision(6) << total / 4.f << "\n";
+                    << "  MSE = " << std::fixed << std::setprecision(6) << total / 4.f << "\n";
     }
 
     // show reconstruction through the combined network
     std::cout << "\n  autoencoder reconstruction (first sample):\n";
     std::cout << std::fixed << std::setprecision(2);
     const auto recon = ae.Forward(xs[0]);
-    std::cout << "    input  : "; for (size_t i = 0; i < 16; ++i) std::cout << xs[0].flat(i) << " "; std::cout << "\n";
-    std::cout << "    output : "; for (size_t i = 0; i < 16; ++i) std::cout << recon.flat(i)  << " "; std::cout << "\n";
+    std::cout << "    input  : ";
+    for (size_t i = 0; i < 16; ++i) std::cout << xs[0].flat(i) << " ";
+    std::cout << "\n";
+    std::cout << "    output : ";
+    for (size_t i = 0; i < 16; ++i) std::cout << recon.flat(i) << " ";
+    std::cout << "\n";
 
     // use the standalone encoder independently — its weights are separate from ae
     // train it briefly on the same inputs (identity target = embedding of itself)
     std::cout << "\n  encoder standalone: bottleneck embeddings (4-dim) after short solo training:\n";
     for (int e = 0; e < 200; ++e)
-        for (auto& x : xs)
-            enc.Fit<MSE>(x, {0.25f, 0.5f, 0.75f, 1.0f}, 0.005f);  // arbitrary target to show it trains
+        for (auto &x: xs)
+            enc.Fit<MSE>(x, {0.25f, 0.5f, 0.75f, 1.0f}, 0.005f); // arbitrary target to show it trains
     for (size_t s = 0; s < 4; ++s) {
         const auto emb = enc.Forward(xs[s]);
         std::cout << "    sample " << s << " -> [";
         for (size_t i = 0; i < 4; ++i)
-            std::cout << std::setprecision(3) << emb.flat(i) << (i<3?", ":"");
+            std::cout << std::setprecision(3) << emb.flat(i) << (i < 3 ? ", " : "");
         std::cout << "]\n";
     }
 }
@@ -211,22 +218,23 @@ void runCombineNetworks() {
 // Compressed through rank-3 then rank-2 intermediates, reconstructed back to rank-9.
 void runRankNineAutoencoder() {
     std::cout << "\n=== Rank-9 Tensor Autoencoder ===\n";
-    std::cout << "    Tensor<2^9>(512) -> Tensor<4,4,2>(32) -> Tensor<4,2>(8) -> Tensor<4,4,2>(32) -> Tensor<2^9>(512)\n";
+    std::cout <<
+            "    Tensor<2^9>(512) -> Tensor<4,4,2>(32) -> Tensor<4,2>(8) -> Tensor<4,4,2>(32) -> Tensor<2^9>(512)\n";
 
     NetworkBuilder<
-        Input<2,2,2,2,2,2,2,2,2>,
-        DenseMD<Tensor<4,4,2>, ActivationFunction::ReLU>,   // 512 -> 32, rank-3
-        DenseMD<Tensor<4,2>,   ActivationFunction::ReLU>,   // 32  ->  8, rank-2 bottleneck
-        DenseMD<Tensor<1, 2, 2, 1>,   ActivationFunction::ReLU>,
-        DenseMD<Tensor<4,2>,   ActivationFunction::ReLU>,
-        DenseMD<Tensor<4,4,2>, ActivationFunction::ReLU>,   // 8   -> 32, rank-3
-        DenseMD<Tensor<2,2,2,2,2,2,2,2,2>>                  // 32  -> 512, back to rank-9
+        Input<2, 2, 2, 2, 2, 2, 2, 2, 2>,
+        DenseMD<Tensor<4, 4, 2>, ActivationFunction::ReLU>, // 512 -> 32, rank-3
+        DenseMD<Tensor<4, 2>, ActivationFunction::ReLU>, // 32  ->  8, rank-2 bottleneck
+        DenseMD<Tensor<1, 2, 2, 1>, ActivationFunction::ReLU>,
+        DenseMD<Tensor<4, 2>, ActivationFunction::ReLU>,
+        DenseMD<Tensor<4, 4, 2>, ActivationFunction::ReLU>, // 8   -> 32, rank-3
+        DenseMD<Tensor<2, 2, 2, 2, 2, 2, 2, 2, 2> > // 32  -> 512, back to rank-9
     >::type net;
     std::cout << "    params: " << net.TotalParamCount << "\n";
     std::cout << "    one sample, MSE loss, watch backprop trickle through\n\n";
 
     // 512 values in [0,1] generated from a sine wave — varied but deterministic
-    Tensor<2,2,2,2,2,2,2,2,2> x;
+    Tensor<2, 2, 2, 2, 2, 2, 2, 2, 2> x;
     for (size_t i = 0; i < 512; ++i)
         x.flat(i) = 0.5f + 0.45f * std::sin(static_cast<float>(i) * 3.14159f / 32.f);
 
@@ -236,7 +244,7 @@ void runRankNineAutoencoder() {
         const float loss = net.Fit<MSE>(x, x, 0.0001f);
         if (e % 10 == 0)
             std::cout << "  epoch " << std::setw(4) << e
-                      << "  MSE = " << std::fixed << std::setprecision(6) << loss << "\n";
+                    << "  MSE = " << std::fixed << std::setprecision(6) << loss << "\n";
     }
 
     std::cout << "\n  final reconstruction (flat):\n";
@@ -270,7 +278,7 @@ void runAttentionAutoencoder() {
         const float loss = net.Fit<MSE>(x, x, 0.001f);
         if (e % 50 == 0)
             std::cout << "  epoch " << std::setw(4) << e
-                      << "  MSE = " << std::fixed << std::setprecision(6) << loss << "\n";
+                    << "  MSE = " << std::fixed << std::setprecision(6) << loss << "\n";
     }
 
     const auto out = net.Forward(x);
@@ -294,19 +302,19 @@ void runMNIST() {
         Input<784>,
         Dense<128, ActivationFunction::ReLU>,
         Dense<64, ActivationFunction::ReLU>,
-        Dense<10>,                  // linear logits
-        SoftmaxLayer<0>             // axis-0 softmax as its own block
+        Dense<10>, // linear logits
+        SoftmaxLayer<0> // axis-0 softmax as its own block
     >::type net;
     std::cout << "    params: " << net.TotalParamCount << "\n\n";
 
     std::mt19937 rng{42};
-    constexpr size_t Batch = 108;
+    constexpr size_t Batch = 32;
 
-    auto prep = [](const auto& batch, Tensor<Batch, 784>& X, Tensor<Batch, 10>& Y) {
+    auto prep = [](const auto &batch, Tensor<Batch, 784> &X, Tensor<Batch, 10> &Y) {
         for (size_t b = 0; b < Batch; ++b) {
             const auto label = static_cast<size_t>(batch(b, 0));
             for (size_t p = 0; p < 784; ++p) X(b, p) = batch(b, p + 1) / 255.f;
-            for (size_t c = 0; c < 10;  ++c) Y(b, c) = (c == label) ? 1.f : 0.f;
+            for (size_t c = 0; c < 10; ++c) Y(b, c) = (c == label) ? 1.f : 0.f;
         }
     };
 

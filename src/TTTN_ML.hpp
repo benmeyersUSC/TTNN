@@ -153,6 +153,66 @@ namespace TTTN {
         }
     }
 
+    // SOFTMAX
+    // Normalizes over the Axis dimension: for each (outer, inner) pair the Axis-slice is
+    // exp-normalized to sum to 1.  Max-subtraction ensures numerical stability.
+    //
+    // Flat-index layout:
+    //   axis_dim   = Dims[Axis]
+    //   inner_size = stride[Axis] = product of all dims after Axis
+    //   outer_size = Size / (axis_dim * inner_size)
+    //   element k in pool (outer, inner): outer*(axis_dim*inner_size) + k*inner_size + inner
+    template<size_t Axis, size_t... Dims>
+    Tensor<Dims...> Softmax(const Tensor<Dims...> &x) {
+        using T = Tensor<Dims...>;
+        static constexpr size_t axis_dim = SizeTemplateGet<Axis, Dims...>::value;
+        static constexpr size_t inner_size = ComputeStrides<Dims...>::value[Axis];
+        static constexpr size_t outer_size = T::Size / (axis_dim * inner_size);
+
+        T result;
+        for (size_t outer = 0; outer < outer_size; ++outer) {
+            for (size_t inner = 0; inner < inner_size; ++inner) {
+                const size_t base = outer * (axis_dim * inner_size) + inner;
+                float maxV = x.flat(base);
+                for (size_t k = 1; k < axis_dim; ++k)
+                    maxV = std::max(maxV, x.flat(base + k * inner_size));
+                float sum = 0.f;
+                for (size_t k = 0; k < axis_dim; ++k) {
+                    result.flat(base + k * inner_size) = std::exp(x.flat(base + k * inner_size) - maxV);
+                    sum += result.flat(base + k * inner_size);
+                }
+                for (size_t k = 0; k < axis_dim; ++k)
+                    result.flat(base + k * inner_size) /= sum;
+            }
+        }
+        return result;
+    }
+
+    // SOFTMAX BACKWARD
+    // Vector-Jacobian product of softmax: δx_i = a_i * (δy_i - dot(δy, a))
+    // One dot product per pool, then pointwise scale — O(axis_dim) per pool, no Jacobian matrix.
+    template<size_t Axis, size_t... Dims>
+    Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a) {
+        using T = Tensor<Dims...>;
+        static constexpr size_t axis_dim = SizeTemplateGet<Axis, Dims...>::value;
+        static constexpr size_t inner_size = ComputeStrides<Dims...>::value[Axis];
+        static constexpr size_t outer_size = T::Size / (axis_dim * inner_size);
+
+        T result;
+        for (size_t outer = 0; outer < outer_size; ++outer) {
+            for (size_t inner = 0; inner < inner_size; ++inner) {
+                const size_t base = outer * (axis_dim * inner_size) + inner;
+                float dot = 0.f;
+                for (size_t k = 0; k < axis_dim; ++k)
+                    dot += a.flat(base + k * inner_size) * grad.flat(base + k * inner_size);
+                for (size_t k = 0; k < axis_dim; ++k)
+                    result.flat(base + k * inner_size) =
+                            a.flat(base + k * inner_size) * (grad.flat(base + k * inner_size) - dot);
+            }
+        }
+        return result;
+    }
+
     // SOFTMAX BLOCK
     // Shape-preserving, parameter-free block: applies Softmax<Axis> forward and
     // the softmax VJP (SoftmaxPrime<Axis>) backward.
