@@ -270,19 +270,13 @@ derived at compile time.
 
 ### Arithmetic Operators
 
-- **[
-  `template<size_t... Dims> Tensor<Dims...> operator+(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t... Dims> Tensor<Dims...> operator+(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)**
     - Element-wise add, uses parallel functional `zip`
 
-- **[
-  `template<size_t... Dims> Tensor<Dims...> operator-(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t... Dims> Tensor<Dims...> operator-(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)**
     - Element-wise subtract, uses parallel functional `zip`
 
-- **[
-  `template<size_t... Dims> Tensor<Dims...>& operator+=(Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t... Dims> Tensor<Dims...>& operator+=(Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)**
     - Element-wise add-to, uses parallel functional `zip_apply`
 
 - **[`template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, float s)`](src/TensorOps.hpp)**
@@ -291,9 +285,7 @@ derived at compile time.
 - **[`template<size_t... Dims> Tensor<Dims...> operator*(float s, const Tensor<Dims...>& a)`](src/TensorOps.hpp)**
     - Scalar multiply, uses parallel functional `map`
 
-- **[
-  `template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)**
     - Hadamard (element-wise) product, uses parallel functional `zip`
 
 ---
@@ -335,9 +327,7 @@ derived at compile time.
     - Compile-time helper to rearrange `Tensor`'s shape such that `Src` is at index `[0]` and all others are kept
       in order
 
-- **[
-  `template<typename PermHolder, size_t... I, size_t... Dims> auto PermuteFromHolder(const Tensor<Dims...>& t, std::index_sequence<I...>)`](src/TensorOps.hpp)
-  **
+- **[`template<typename PermHolder, size_t... I, size_t... Dims> auto PermuteFromHolder(const Tensor<Dims...>& t, std::index_sequence<I...>)`](src/TensorOps.hpp)**
     - Unpack a `constexpr` permutation indices array into a proper `Permute`-given `Tensor` type
     - `PermHolder` is an array of permutation indices, typically the result of `MoveToLastPerm` or `MoveToFirstPerm`
     - Call with `PermHolder` as template arg, `Tensor<Dims...>` as first arg,
@@ -381,9 +371,7 @@ Tensor contraction is the generalized ***Sum of Products*** operation on `Tensor
           and
           the runtime computations are parallelized and vectorized, following known, saved paths**
 
-- **[
-  `template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)**
     - For every ***product*** in Union(Free Axes of A, Free Axes of B), ***Sum every Product*** of contracted axes.
         - We obtain the free axes of `A` and `B` and combine them into a `Tensor` as such:
           `ResultType = TensorConcat<A_Free, B_Free>::type`, where `A_Free = TensorSlice<0, RankA - N, ADims...>::type`
@@ -393,22 +381,16 @@ Tensor contraction is the generalized ***Sum of Products*** operation on `Tensor
       `Contracted`
 
 
-- **[
-  `template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)**
     - Wrapper function around `SigmaPiKernel::Compute`
     - returns `SigmaPiKernel<N, Tensor<ADims...>, Tensor<BDims...> >::compute(A, B)`
 
 
-- **[
-  `template<size_t N, size_t... ADims, size_t... BDims> auto SigmaPi(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t N, size_t... ADims, size_t... BDims> auto SigmaPi(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)**
     - English wrapper around greek-aliased function
     - returns `ΣΠ<N>(A, B)`
 
-- **[
-  `template<size_t I, size_t J, size_t... ADims, size_t... BDims> auto Einsum(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t I, size_t J, size_t... ADims, size_t... BDims> auto Einsum(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)**
     - `ΣΠ`-contracts over single selected indices, `I` and `J`, from `Tensor<ADims...>` and `Tensor<BDims...>`,
       respectively
     - Calls `ΣΠ<1>` on `PermuteFromHolder<MoveToLastPerm<I, sizeof...(ADims)>...>` and
@@ -418,15 +400,11 @@ Tensor contraction is the generalized ***Sum of Products*** operation on `Tensor
     - `ΣΠ`-contracts over `1` (the only) inner dimension of two `Tensor<N>`s, `a` and `b`, returning a `Tensor<>` with
       `Rank = 0`
 
-- **[
-  `template<size_t M, size_t K, size_t N> auto Matmul(const Tensor<M,K>& A, const Tensor<K,N>& B)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t M, size_t K, size_t N> auto Matmul(const Tensor<M,K>& A, const Tensor<K,N>& B)`](src/TensorOps.hpp)**
     - `ΣΠ`-contracts over `1` inner dimension of two `Tensor<_,K>`s, `A` and `A`, returning a `Tensor<M,N>` with
       `Rank = 2`
 
-- **[
-  `template<size_t... ADims, size_t... BDims> auto Outer(const Tensor<ADims...>& a, const Tensor<BDims...>& b)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t... ADims, size_t... BDims> auto Outer(const Tensor<ADims...>& a, const Tensor<BDims...>& b)`](src/TensorOps.hpp)**
     - `ΣΠ`-contracts over `0` inner dimension of `Tensor<ADims...> a` and `Tensor<BDims...> b`, returning a
       `Tensor<ADims..., BDims...>` with
       `Rank = sizeof...(ADims) + sizeof...(BDims)`
@@ -435,38 +413,26 @@ Tensor contraction is the generalized ***Sum of Products*** operation on `Tensor
 
 ### Reduction and Broadcast
 
-- **[
-  `template<size_t Axis, size_t... Dims> auto ReduceSum(const Tensor<Dims...>& src) -> typename RemoveAxis<Axis, Dims...>::type`](src/TensorOps.hpp)
-  **
+- **[`template<size_t Axis, size_t... Dims> auto ReduceSum(const Tensor<Dims...>& src) -> typename RemoveAxis<Axis, Dims...>::type`](src/TensorOps.hpp)**
     -
 
-- **[
-  `template<size_t Axis, size_t... Dims> Tensor<Dims...> BroadcastAdd(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t Axis, size_t... Dims> Tensor<Dims...> BroadcastAdd(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b)`](src/TensorOps.hpp)**
     -
 
-- **[
-  `template<size_t Axis, size_t... Dims> auto ReduceMean(const Tensor<Dims...>& src) -> typename RemoveAxis<Axis, Dims...>::type`](src/TensorOps.hpp)
-  **
+- **[`template<size_t Axis, size_t... Dims> auto ReduceMean(const Tensor<Dims...>& src) -> typename RemoveAxis<Axis, Dims...>::type`](src/TensorOps.hpp)**
     -
 
-- **[
-  `template<size_t Axis, size_t... Dims> auto ReduceMax(const Tensor<Dims...>& src) -> typename RemoveAxis<Axis, Dims...>::type`](src/TensorOps.hpp)
-  **
+- **[`template<size_t Axis, size_t... Dims> auto ReduceMax(const Tensor<Dims...>& src) -> typename RemoveAxis<Axis, Dims...>::type`](src/TensorOps.hpp)**
     -
 
 ---
 
 ### Indexed Slice Access
 
-- **[
-  `template<size_t Axis, size_t... Dims> auto TensorIndex(const Tensor<Dims...>& src, size_t idx) -> typename RemoveAxis<Axis, Dims...>::type`](src/TensorOps.hpp)
-  **
+- **[`template<size_t Axis, size_t... Dims> auto TensorIndex(const Tensor<Dims...>& src, size_t idx) -> typename RemoveAxis<Axis, Dims...>::type`](src/TensorOps.hpp)**
     -
 
-- **[
-  `template<size_t Axis, size_t... Dims> void TensorIndexAdd(Tensor<Dims...>& dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type& src)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t Axis, size_t... Dims> void TensorIndexAdd(Tensor<Dims...>& dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type& src)`](src/TensorOps.hpp)**
     -
 
 ---
@@ -476,9 +442,7 @@ Tensor contraction is the generalized ***Sum of Products*** operation on `Tensor
 - **[`template<size_t Axis, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...>& x)`](src/TensorOps.hpp)**
   -
 
-- **[
-  `template<size_t Axis, size_t... Dims> Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...>& grad, const Tensor<Dims...>& a)`](src/TensorOps.hpp)
-  **
+- **[`template<size_t Axis, size_t... Dims> Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...>& grad, const Tensor<Dims...>& a)`](src/TensorOps.hpp)**
     -
 
 ### Parallel Loop Helper
@@ -515,19 +479,13 @@ Activation functions, their derivatives, loss functions, and the `SoftmaxBlock` 
 - **[`template<size_t N> Tensor<N> Activate(const Tensor<N>& z, ActivationFunction act)`](src/TTTN_ML.hpp)**
   -
 
-- **[
-  `template<size_t N> Tensor<N> ActivatePrime(const Tensor<N>& grad, const Tensor<N>& a, ActivationFunction act)`](src/TTTN_ML.hpp)
-  **
+- **[`template<size_t N> Tensor<N> ActivatePrime(const Tensor<N>& grad, const Tensor<N>& a, ActivationFunction act)`](src/TTTN_ML.hpp)**
     -
 
-- **[
-  `template<size_t Batch, size_t N> Tensor<Batch, N> BatchedActivate(const Tensor<Batch, N>& Z, ActivationFunction act)`](src/TTTN_ML.hpp)
-  **
+- **[`template<size_t Batch, size_t N> Tensor<Batch, N> BatchedActivate(const Tensor<Batch, N>& Z, ActivationFunction act)`](src/TTTN_ML.hpp)**
     -
 
-- **[
-  `template<size_t Batch, size_t N> Tensor<Batch, N> BatchedActivatePrime(const Tensor<Batch, N>& grad, const Tensor<Batch, N>& a, ActivationFunction act)`](src/TTTN_ML.hpp)
-  **
+- **[`template<size_t Batch, size_t N> Tensor<Batch, N> BatchedActivatePrime(const Tensor<Batch, N>& grad, const Tensor<Batch, N>& a, ActivationFunction act)`](src/TTTN_ML.hpp)**
     -
 
 ---
@@ -543,19 +501,13 @@ A shape-preserving, parameter-free block that applies axis-generalized softmax. 
 - **[`void ZeroGrad()`](src/TTTN_ML.hpp)**
   -
 
-- **[
-  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/TTTN_ML.hpp)
-  **
+- **[`InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/TTTN_ML.hpp)**
     -
 
-- **[
-  `template<size_t Batch> Tensor<Batch, Dims...> BatchedForward(const Tensor<Batch, Dims...>& X) const`](src/TTTN_ML.hpp)
-  **
+- **[`template<size_t Batch> Tensor<Batch, Dims...> BatchedForward(const Tensor<Batch, Dims...>& X) const`](src/TTTN_ML.hpp)**
     -
 
-- **[
-  `template<size_t Batch> Tensor<Batch, Dims...> BatchedBackward(const Tensor<Batch, Dims...>& delta_A, const Tensor<Batch, Dims...>& a, const Tensor<Batch, Dims...>& a_prev)`](src/TTTN_ML.hpp)
-  **
+- **[`template<size_t Batch> Tensor<Batch, Dims...> BatchedBackward(const Tensor<Batch, Dims...>& delta_A, const Tensor<Batch, Dims...>& a, const Tensor<Batch, Dims...>& a_prev)`](src/TTTN_ML.hpp)**
     -
 
 - **[`void Update(float, float, float, float, float, float)`](src/TTTN_ML.hpp)** *(no-op)*
@@ -583,35 +535,23 @@ A shape-preserving, parameter-free block that applies axis-generalized softmax. 
 
 #### `struct MSE`
 
-- **[
-  `template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-  **
+- **[`template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
     -
-- **[
-  `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-  **
+- **[`template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
     -
 
 #### `struct BinaryCEL`
 
-- **[
-  `template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-  **
+- **[`template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
     -
-- **[
-  `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-  **
+- **[`template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
     -
 
 #### `struct CEL`
 
-- **[
-  `template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-  **
+- **[`template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
     -
-- **[
-  `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-  **
+- **[`template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
     -
 
 ---
@@ -624,14 +564,10 @@ state.
 
 ### Multi-Dimensional Activation Helpers
 
-- **[
-  `template<size_t... Dims> Tensor<Dims...> ActivateMD(const Tensor<Dims...>& z, ActivationFunction act)`](src/Dense.hpp)
-  **
+- **[`template<size_t... Dims> Tensor<Dims...> ActivateMD(const Tensor<Dims...>& z, ActivationFunction act)`](src/Dense.hpp)**
     -
 
-- **[
-  `template<size_t... Dims> Tensor<Dims...> ActivatePrimeMD(const Tensor<Dims...>& grad, const Tensor<Dims...>& a, ActivationFunction act)`](src/Dense.hpp)
-  **
+- **[`template<size_t... Dims> Tensor<Dims...> ActivatePrimeMD(const Tensor<Dims...>& grad, const Tensor<Dims...>& a, ActivationFunction act)`](src/Dense.hpp)**
     -
 
 - **[`struct WTBlockSwapPerm<size_t N_out, size_t N_in>`](src/Dense.hpp)**
@@ -652,19 +588,13 @@ The concrete fully-connected block. `W = Tensor<OutDims..., InDims...>`, `b = Te
 - **[`void ZeroGrad()`](src/Dense.hpp)**
   -
 
-- **[
-  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Dense.hpp)
-  **
+- **[`InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Dense.hpp)**
     -
 
-- **[
-  `template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp)
-  **
+- **[`template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp)**
     -
 
-- **[
-  `template<size_t Batch> Tensor<Batch, InDims...> BatchedBackward(const Tensor<Batch, OutDims...>& delta_A, const Tensor<Batch, OutDims...>& a, const Tensor<Batch, InDims...>& a_prev)`](src/Dense.hpp)
-  **
+- **[`template<size_t Batch> Tensor<Batch, InDims...> BatchedBackward(const Tensor<Batch, OutDims...>& delta_A, const Tensor<Batch, OutDims...>& a, const Tensor<Batch, InDims...>& a_prev)`](src/Dense.hpp)**
     -
 
 - **[`void Update(float adamBeta1, float adamBeta2, float lr, float mCorr, float vCorr, float eps)`](src/Dense.hpp)**
@@ -708,23 +638,16 @@ cache is stored as `mutable` members. All four weight matrices (`W_Q`, `W_K`, `W
 - **[`void ZeroGrad()`](src/Attention.hpp)**
   -
 
-- **[
-  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Attention.hpp)
-  **
+- **[`InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Attention.hpp)**
     -
 
-- **[
-  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(const Tensor<Batch, SeqLen, EmbDims...>& X)`](src/Attention.hpp)
-  **
+- **[`template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(const Tensor<Batch, SeqLen, EmbDims...>& X)`](src/Attention.hpp)**
     -
 
-- **[
-  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(const Tensor<Batch, SeqLen, EmbDims...>& delta_A, const Tensor<Batch, SeqLen, EmbDims...>& a, const Tensor<Batch, SeqLen, EmbDims...>& a_prev)`](src/Attention.hpp)
-  **
+- **[`template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(const Tensor<Batch, SeqLen, EmbDims...>& delta_A, const Tensor<Batch, SeqLen, EmbDims...>& a, const Tensor<Batch, SeqLen, EmbDims...>& a_prev)`](src/Attention.hpp)**
     -
 
-- **[`void Update(float adamBeta1, float adamBeta2, float lr, float mCorr, float vCorr, float eps)`](src/Attention.hpp)
-  **
+- **[`void Update(float adamBeta1, float adamBeta2, float lr, float mCorr, float vCorr, float eps)`](src/Attention.hpp)**
     -
 
 - **[`void Save(std::ofstream& f) const`](src/Attention.hpp)**
@@ -744,9 +667,7 @@ cache is stored as `mutable` members. All four weight matrices (`W_Q`, `W_K`, `W
 
 ### `struct MHAttention<size_t Heads, size_t... EmbDims>` *(Block recipe)*
 
-- **[
-  `template<typename InputT> using Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`](src/Attention.hpp)
-  **
+- **[`template<typename InputT> using Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`](src/Attention.hpp)**
     -
 
 ---
@@ -852,38 +773,26 @@ and backward passes, and manages Adam optimizer state (bias-correction counters)
 - **[`void TrainStep(const InputTensor& x, const OutputTensor& grad, float lr)`](src/TrainableTensorNetwork.hpp)**
   -
 
-- **[
-  `template<typename Loss> float Fit(const InputTensor& x, const OutputTensor& target, float lr)`](src/TrainableTensorNetwork.hpp)
-  **
+- **[`template<typename Loss> float Fit(const InputTensor& x, const OutputTensor& target, float lr)`](src/TrainableTensorNetwork.hpp)**
     -
 
 **Batched interface:**
 
-- **[
-  `template<size_t Batch> BatchedActivations<Batch> BatchedForwardAll(const typename PrependBatch<Batch, InputTensor>::type& X) const`](src/TrainableTensorNetwork.hpp)
-  **
+- **[`template<size_t Batch> BatchedActivations<Batch> BatchedForwardAll(const typename PrependBatch<Batch, InputTensor>::type& X) const`](src/TrainableTensorNetwork.hpp)**
     - Inference a batch and get a `Tensor` of type: `BatchedActivations<Batch>`
 
-- **[
-  `template <size_t Batch> PrependBatch<Batch, OutputTensor>::type BatchedForward(const typename PrependBatch<Batch, InputTensor>::type& X)`](src/TrainableTensorNetwork.hpp)
-  **
+- **[`template <size_t Batch> PrependBatch<Batch, OutputTensor>::type BatchedForward(const typename PrependBatch<Batch, InputTensor>::type& X)`](src/TrainableTensorNetwork.hpp)**
     - Inference the model with a batch dimension, getting in return a `Tensor` of type:
       `PrependBatch<Batch, OutputTensor>::type`
 
 
-- **[
-  `template<size_t Batch> void BatchedBackwardAll(const BatchedActivations<Batch>& A, const typename PrependBatch<Batch, OutputTensor>::type& grad)`](src/TrainableTensorNetwork.hpp)
-  **
+- **[`template<size_t Batch> void BatchedBackwardAll(const BatchedActivations<Batch>& A, const typename PrependBatch<Batch, OutputTensor>::type& grad)`](src/TrainableTensorNetwork.hpp)**
     -
 
-- **[
-  `template<size_t Batch> void BatchTrainStep(const typename PrependBatch<Batch, InputTensor>::type& X, const typename PrependBatch<Batch, OutputTensor>::type& grad, float lr)`](src/TrainableTensorNetwork.hpp)
-  **
+- **[`template<size_t Batch> void BatchTrainStep(const typename PrependBatch<Batch, InputTensor>::type& X, const typename PrependBatch<Batch, OutputTensor>::type& grad, float lr)`](src/TrainableTensorNetwork.hpp)**
     -
 
-- **[
-  `template<typename Loss, size_t Batch> float BatchFit(const typename PrependBatch<Batch, InputTensor>::type& X, const typename PrependBatch<Batch, OutputTensor>::type& Y, float lr)`](src/TrainableTensorNetwork.hpp)
-  **
+- **[`template<typename Loss, size_t Batch> float BatchFit(const typename PrependBatch<Batch, InputTensor>::type& X, const typename PrependBatch<Batch, OutputTensor>::type& Y, float lr)`](src/TrainableTensorNetwork.hpp)**
     -
 
 **Serialization:**
@@ -898,9 +807,7 @@ and backward passes, and manages Adam optimizer state (bias-correction counters)
 
 ### Free Functions
 
-- **[
-  `template<typename Loss, size_t Batch, ConcreteBlock... Blocks, size_t N, size_t... DataDims, typename PrepFn> float RunEpoch(TrainableTensorNetwork<Blocks...>& net, const Tensor<N, DataDims...>& dataset, std::mt19937& rng, float lr, PrepFn prep)`](src/TrainableTensorNetwork.hpp)
-  **
+- **[`template<typename Loss, size_t Batch, ConcreteBlock... Blocks, size_t N, size_t... DataDims, typename PrepFn> float RunEpoch(TrainableTensorNetwork<Blocks...>& net, const Tensor<N, DataDims...>& dataset, std::mt19937& rng, float lr, PrepFn prep)`](src/TrainableTensorNetwork.hpp)**
     -
 
 ---
@@ -959,14 +866,10 @@ Lightweight terminal progress bar. Construct with a total step count and optiona
 
 ---
 
-- **[
-  `template<size_t Rows, size_t Cols> Tensor<Rows, Cols> LoadCSV(const std::string& path, bool skip_header = false)`](src/DataIO.hpp)
-  **
+- **[`template<size_t Rows, size_t Cols> Tensor<Rows, Cols> LoadCSV(const std::string& path, bool skip_header = false)`](src/DataIO.hpp)**
     - Parses a CSV into a `Tensor<Rows, Cols>`. On first call shows a progress bar, then writes a binary cache at
       `<path>.<Rows>x<Cols>.bin`; subsequent calls load that file directly (pure binary read, no CSV parsing). Delete
       the `.bin` file if the underlying CSV changes.
 
-- **[
-  `template<size_t Batch, size_t N, size_t... RestDims> Tensor<Batch, RestDims...> RandomBatch(const Tensor<N, RestDims...>& ds, std::mt19937& rng)`](src/DataIO.hpp)
-  **
+- **[`template<size_t Batch, size_t N, size_t... RestDims> Tensor<Batch, RestDims...> RandomBatch(const Tensor<N, RestDims...>& ds, std::mt19937& rng)`](src/DataIO.hpp)**
     -
