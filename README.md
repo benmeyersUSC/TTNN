@@ -745,6 +745,29 @@ and backward passes, and manages Adam optimizer state (bias-correction counters)
 
 ---
 
+### `struct CombineNetworks<typename NetA, typename NetB>`
+
+Type-level composition of two networks into one. Concatenates the block lists of `NetA` and `NetB`
+into a single `TrainableTensorNetwork`. A compile-time `static_assert` enforces that
+`NetA::OutputTensor == NetB::InputTensor`. No shared weight state — the result is an independent
+network whose parameter count equals `NetA::TotalParamCount + NetB::TotalParamCount`. All three
+types (`NetA`, `NetB`, and the combined type) can be instantiated and trained independently.
+
+```cpp
+using Encoder     = NetworkBuilder<Input<784>, Dense<128, ReLU>, Dense<32>>::type;
+using Decoder     = NetworkBuilder<Input<32>,  Dense<128, ReLU>, Dense<784>>::type;
+using Autoencoder = CombineNetworks<Encoder, Decoder>::type;
+
+Encoder     enc;   // train for representations
+Decoder     dec;   // train for generation
+Autoencoder ae;    // train end-to-end — all blocks update together
+```
+
+- **[`using type`](src/TrainableTensorNetwork.hpp)** — the combined `TrainableTensorNetwork<BlocksA..., BlocksB...>`
+  - Result of splicing the block lists of `NetA` and `NetB`; a complete network supporting all single-sample and batched interfaces
+
+---
+
 ## [DataIO.hpp](src/DataIO.hpp) — Data Loading and Batching
 
 Utilities for loading datasets from disk, drawing random mini-batches, and displaying terminal progress bars. Shapes are

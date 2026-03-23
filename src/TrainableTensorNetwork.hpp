@@ -42,6 +42,8 @@ namespace TTTN {
         // base case: single block --> (InputTensor, OutputTensor)
         template<typename Last>
         struct TensorTupleBuilder<Last> {
+            // @doc: using type
+            /** Result of splicing the block lists of `NetA` and `NetB`; a complete network supporting all single-sample and batched interfaces */
             using type = std::tuple<typename Last::InputTensor, typename Last::OutputTensor>;
         };
 
@@ -319,6 +321,32 @@ namespace TTTN {
                 batched_backward_impl<Batch, I - 1>(A, grad);
             }
         }
+    };
+
+
+    // COMBINE NETWORKS
+    // Concatenates the block lists of two networks into one TrainableTensorNetwork.
+    // Compile-time check: OutTensor of A must equal InputTensor of B.
+    //
+    // Usage:
+    //   using Encoder  = NetworkBuilder<Input<784>, Dense<128, ReLU>, Dense<32>>::type;
+    //   using Decoder  = NetworkBuilder<Input<32>,  Dense<128, ReLU>, Dense<784>>::type;
+    //   using Autoencoder = CombineNetworks<Encoder, Decoder>::type;
+    //
+    // All three types can be independently instantiated and trained.
+    // CombineNetworks is a type-level operation — no shared weight state.
+
+    template<typename NetA, typename NetB>
+    struct CombineNetworks;
+
+    template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB>
+    struct CombineNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...>> {
+        static_assert(
+            std::is_same_v<
+                typename TrainableTensorNetwork<BlocksA...>::OutputTensor,
+                typename TrainableTensorNetwork<BlocksB...>::InputTensor>,
+            "CombineNetworks: OutputTensor of first network must equal InputTensor of second");
+        using type = TrainableTensorNetwork<BlocksA..., BlocksB...>;
     };
 
 

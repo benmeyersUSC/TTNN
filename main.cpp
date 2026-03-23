@@ -128,44 +128,78 @@ void runXORFullBatch() {
         std::cout << "    [" << X(i,0) << "," << X(i,1) << "]"
                   << " -> " << Y(i,0) << "  (target=" << T(i,0) << ")\n";
 }
-// Autoencoder: 20 -> 8 -> 4 (bottleneck) -> 8 -> 20, Linear output, MSE loss.
-// One training example. Watch the reconstruction loss fall epoch by epoch.
-void runAutoencoder() {
-    std::cout << "\n=== Autoencoder (20 -> 8 -> 4 -> 8 -> 20) ===\n";
-    std::cout << "    one sample, MSE loss, watch backprop work\n\n";
+// CombineNetworks: encoder + decoder declared separately, combined into an autoencoder.
+// Encoder:     Input<16> -> Dense<8, ReLU> -> Dense<4>   (bottleneck)
+// Decoder:     Input<4>  -> Dense<8, ReLU> -> Dense<16>
+// Autoencoder: CombineNetworks<Encoder, Decoder>::type    (all 6 blocks, end-to-end)
+//
+// Demonstrates:
+//   - type-level network composition with compile-time shape check
+//   - training the combined network end-to-end
+//   - using the encoder standalone (same type, independent weights)
+void runCombineNetworks() {
+    std::cout << "\n=== CombineNetworks: Encoder + Decoder -> Autoencoder ===\n";
 
-    NetworkBuilder<
-        Input<20>,
-        Dense<8,  ActivationFunction::ReLU>,
-        Dense<4,  ActivationFunction::ReLU>,   // bottleneck
-        Dense<8,  ActivationFunction::ReLU>,
-        Dense<20>                               // Linear output
-    >::type net;
-    std::cout << "    params: " << net.TotalParamCount << "\n\n";
+    // --- declare sub-network types independently ---
+    using Encoder = NetworkBuilder<
+        Input<16>,
+        Dense<8, ActivationFunction::ReLU>,
+        Dense<4>          // linear bottleneck
+    >::type;
 
-    // one example: 20 values spread across [0,1]
-    Tensor<20> x{
-        0.10f, 0.90f, 0.40f, 0.70f, 0.20f,
-        0.80f, 0.30f, 0.60f, 0.50f, 0.10f,
-        0.95f, 0.05f, 0.65f, 0.35f, 0.75f,
-        0.25f, 0.85f, 0.45f, 0.55f, 0.15f,
-    };
+    using Decoder = NetworkBuilder<
+        Input<4>,
+        Dense<8, ActivationFunction::ReLU>,
+        Dense<16>         // linear reconstruction
+    >::type;
 
-    for (int e = 0; e < 279; ++e) {
-        const float loss = net.Fit<MSE>(x, x, 0.001f);
-        if (e % 10 == 0)
+    // compile-time check: Encoder::OutputTensor == Decoder::InputTensor (both Tensor<4>)
+    using Autoencoder = CombineNetworks<Encoder, Decoder>::type;
+
+    Encoder     enc;   // standalone encoder — own weights
+    Autoencoder ae;    // full autoencoder   — own weights
+
+    std::cout << "    encoder params:     " << enc.TotalParamCount << "\n";
+    std::cout << "    autoencoder params: " << ae.TotalParamCount  << "\n\n";
+
+    // four 16-dim training vectors spread across [0,1]
+    std::array<Tensor<16>, 4> xs = {{
+        {0.1f,0.9f,0.4f,0.7f,0.2f,0.8f,0.3f,0.6f,0.5f,0.1f,0.95f,0.05f,0.65f,0.35f,0.75f,0.25f},
+        {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f},
+        {0.0f,0.1f,0.2f,0.3f,0.4f,0.5f,0.6f,0.7f,0.8f,0.9f,1.0f, 0.9f, 0.8f, 0.7f, 0.6f, 0.5f},
+        {1.0f,0.0f,1.0f,0.0f,1.0f,0.0f,1.0f,0.0f,1.0f,0.0f,1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f},
+    }};
+
+    // train the autoencoder end-to-end (all 6 blocks update together)
+    for (int e = 0; e < 500; ++e) {
+        float total = 0.f;
+        for (auto& x : xs)
+            total += ae.Fit<MSE>(x, x, 0.005f);
+        if (e % 100 == 0)
             std::cout << "  epoch " << std::setw(4) << e
-                      << "  MSE = " << std::fixed << std::setprecision(6) << loss << "\n";
+                      << "  MSE = " << std::fixed << std::setprecision(6) << total / 4.f << "\n";
     }
 
-    std::cout << "\n  final reconstruction:\n";
-    const auto out = net.Forward(x);
+    // show reconstruction through the combined network
+    std::cout << "\n  autoencoder reconstruction (first sample):\n";
     std::cout << std::fixed << std::setprecision(2);
-    std::cout << "    target : ";
-    for (size_t i = 0; i < 20; ++i) std::cout << x.flat(i) << " ";
-    std::cout << "\n    output : ";
-    for (size_t i = 0; i < 20; ++i) std::cout << out.flat(i) << " ";
-    std::cout << "\n";
+    const auto recon = ae.Forward(xs[0]);
+    std::cout << "    input  : "; for (size_t i = 0; i < 16; ++i) std::cout << xs[0].flat(i) << " "; std::cout << "\n";
+    std::cout << "    output : "; for (size_t i = 0; i < 16; ++i) std::cout << recon.flat(i)  << " "; std::cout << "\n";
+
+    // use the standalone encoder independently — its weights are separate from ae
+    // train it briefly on the same inputs (identity target = embedding of itself)
+    std::cout << "\n  encoder standalone: bottleneck embeddings (4-dim) after short solo training:\n";
+    for (int e = 0; e < 200; ++e)
+        for (auto& x : xs)
+            enc.Fit<MSE>(x, {0.25f, 0.5f, 0.75f, 1.0f}, 0.005f);  // arbitrary target to show it trains
+    for (size_t s = 0; s < 4; ++s) {
+        const auto emb = enc.Forward(xs[s]);
+        std::cout << "    sample " << s << " -> [";
+        for (size_t i = 0; i < 4; ++i)
+            std::cout << std::setprecision(3) << emb.flat(i) << (i<3?", ":"");
+        std::cout << "]\n";
+    }
 }
 
 // Rank-5 tensor autoencoder.
@@ -269,7 +303,7 @@ void runMNIST() {
     std::cout << "    params: " << net.TotalParamCount << "\n\n";
 
     std::mt19937 rng{42};
-    constexpr size_t Batch = 32;
+    constexpr size_t Batch = 64;
     constexpr int    Steps = 200;
 
     for (int epoch = 0; epoch < 10; ++epoch) {
@@ -315,7 +349,7 @@ int main() {
     runXOR();
     runParity();
     runXORFullBatch();
-    runAutoencoder();
+    runCombineNetworks();
     runRankNineAutoencoder();
     runAttentionAutoencoder();
     runMNIST();   // uncomment after placing mnist_train.csv in the working directory
