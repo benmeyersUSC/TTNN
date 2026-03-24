@@ -207,6 +207,11 @@ namespace TTTN {
          */
         Tensor(Tensor &&) noexcept = default;
 
+        // @doc: Tensor &operator=(Tensor&&) noexcept = default
+        /**
+         * Default move assigment operator
+         * `std::unique_ptr` to data handles this already
+         */
         Tensor &operator=(Tensor &&) noexcept = default;
 
         // @doc: void fill(const float v) const
@@ -225,7 +230,7 @@ namespace TTTN {
         [[nodiscard]] float flat(size_t idx) const { return data_[idx]; }
 
         // @doc: operator float() const
-        /** Implicit scalar conversion — only valid for `Tensor<>` (rank-0). Allows `ΣΠ` results used as scalars without `.flat(0)`. */
+        /** Implicit scalar conversion — only valid for `Tensor<>` (rank-0, `Rank == 0`). Allows `Contract(A, B)` results to be used directly as `float` without calling `.flat(0)`. */
         operator float() const requires (Rank == 0) { return data_[0]; }
 
         // @doc: template<typename F> Tensor map(F f) const

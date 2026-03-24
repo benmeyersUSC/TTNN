@@ -95,9 +95,9 @@ namespace TTTN {
             Q_.fill(0.f); K_.fill(0.f); V_.fill(0.f);
             for (size_t s = 0; s < SeqLen; ++s) {
                 const auto x_s = TensorIndex<0>(X, s);
-                TensorIndexAdd<0>(Q_, s, ΣΠ<N_emb>(W_Q_, x_s));
-                TensorIndexAdd<0>(K_, s, ΣΠ<N_emb>(W_K_, x_s));
-                TensorIndexAdd<0>(V_, s, ΣΠ<N_emb>(W_V_, x_s));
+                TensorIndexApply<0>(Q_, s, ΣΠ<N_emb>(W_Q_, x_s), [](float a, float b){ return a + b; });
+                TensorIndexApply<0>(K_, s, ΣΠ<N_emb>(W_K_, x_s), [](float a, float b){ return a + b; });
+                TensorIndexApply<0>(V_, s, ΣΠ<N_emb>(W_V_, x_s), [](float a, float b){ return a + b; });
             }
 
             // 2. Per-head: scale dot-product scores → softmax weights → weighted V
@@ -113,10 +113,10 @@ namespace TTTN {
                 const auto weights_h = Softmax<1>(scores_h);           // Tensor<SeqLen, SeqLen>
 
                 // cache weights for backward
-                TensorIndexAdd<0>(attn_weights_, h, weights_h);
+                TensorIndexApply<0>(attn_weights_, h, weights_h, [](float a, float b){ return a + b; });
 
                 // attended_h = weights_h @ V_h: Tensor<SeqLen,SeqLen> × Tensor<SeqLen,HeadDim>
-                TensorIndexAdd<1>(attended_, h, ΣΠ<1>(weights_h, V_h));
+                TensorIndexApply<1>(attended_, h, ΣΠ<1>(weights_h, V_h), [](float a, float b){ return a + b; });
             }
 
             // 3. Output projection: contract (Heads, HeadDim) → EmbDims per token
@@ -124,7 +124,7 @@ namespace TTTN {
             output.fill(0.f);
             for (size_t s = 0; s < SeqLen; ++s) {
                 const auto att_s = TensorIndex<0>(attended_, s);   // Tensor<Heads, HeadDim>
-                TensorIndexAdd<0>(output, s, ΣΠ<2>(W_O_, att_s)); // Tensor<EmbDims...>
+                TensorIndexApply<0>(output, s, ΣΠ<2>(W_O_, att_s), [](float a, float b){ return a + b; }); // Tensor<EmbDims...>
             }
             return output;
         }
@@ -162,7 +162,7 @@ namespace TTTN {
                 const auto dout_s = TensorIndex<0>(delta_A,  s);   // Tensor<EmbDims...>
                 const auto att_s  = TensorIndex<0>(attended_, s);   // Tensor<Heads, HeadDim>
                 dW_O_ += ΣΠ<0>(dout_s, att_s);                     // outer → Tensor<EmbDims..., Heads, HeadDim>
-                TensorIndexAdd<0>(d_attended, s, ΣΠ<N_emb>(W_O_T, dout_s));
+                TensorIndexApply<0>(d_attended, s, ΣΠ<N_emb>(W_O_T, dout_s), [](float a, float b){ return a + b; });
             }
 
             // Steps 2–4 (one head loop): attended, softmax, scores
@@ -180,14 +180,14 @@ namespace TTTN {
 
                 // Step 2: d_weights_h = d_att_h @ V_h^T,   d_V_h = weights_h^T @ d_att_h
                 const auto d_weights_h = ΣΠ<1>(d_att_h, Permute<1,0>(V_h));         // Tensor<SeqLen, SeqLen>
-                TensorIndexAdd<1>(d_V, h, ΣΠ<1>(Permute<1,0>(weights_h), d_att_h)); // Tensor<SeqLen, HeadDim>
+                TensorIndexApply<1>(d_V, h, ΣΠ<1>(Permute<1,0>(weights_h), d_att_h), [](float a, float b){ return a + b; }); // Tensor<SeqLen, HeadDim>
 
                 // Step 3: peel off softmax (and the 1/√HeadDim scale)
                 const auto d_scores_h = SoftmaxPrime<1>(d_weights_h, weights_h) * inv_sqrt; // Tensor<SeqLen, SeqLen>
 
                 // Step 4: d_Q_h = d_scores_h @ K_h,   d_K_h = d_scores_h^T @ Q_h
-                TensorIndexAdd<1>(d_Q, h, ΣΠ<1>(d_scores_h,           K_h)); // Tensor<SeqLen, HeadDim>
-                TensorIndexAdd<1>(d_K, h, ΣΠ<1>(Permute<1,0>(d_scores_h), Q_h)); // Tensor<SeqLen, HeadDim>
+                TensorIndexApply<1>(d_Q, h, ΣΠ<1>(d_scores_h,           K_h), [](float a, float b){ return a + b; }); // Tensor<SeqLen, HeadDim>
+                TensorIndexApply<1>(d_K, h, ΣΠ<1>(Permute<1,0>(d_scores_h), Q_h), [](float a, float b){ return a + b; }); // Tensor<SeqLen, HeadDim>
             }
 
             // Step 5: backward through Q, K, V projections, accumulate dW and upstream dX
@@ -205,7 +205,7 @@ namespace TTTN {
 
                 // upstream: contract (Heads, HeadDim) axes of transposed weights with per-token grad
                 const auto dx_s = ΣΠ<2>(W_Q_T, dq_s) + ΣΠ<2>(W_K_T, dk_s) + ΣΠ<2>(W_V_T, dv_s);
-                TensorIndexAdd<0>(dX, s, dx_s);
+                TensorIndexApply<0>(dX, s, dx_s, [](float a, float b){ return a + b; });
             }
             return dX;
         }

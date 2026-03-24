@@ -1,11 +1,20 @@
 #pragma once
 #include <cassert>
+#include <concepts>
 #include <limits>
 #include <ranges>
 #include "Tensor.hpp"
 
 
 namespace TTTN {
+    template<typename F>
+    concept FloatUnaryOp  = std::regular_invocable<F, float> &&
+                            std::same_as<std::invoke_result_t<F, float>, float>;
+
+    template<typename F>
+    concept FloatBinaryOp = std::regular_invocable<F, float, float> &&
+                            std::same_as<std::invoke_result_t<F, float, float>, float>;
+
     // @doc: template<std::invocable<size_t> F> void ParForEach(size_t n, F f)
     /** Helper to parallel-execute `std::for_each` on a `std::views::iota(size_t{0}, n)`, calling `f` (something `std::invocable` on `size_t`) on each index */
     template<std::invocable<size_t> F>
@@ -81,6 +90,37 @@ namespace TTTN {
     };
 
 
+    // @doc: struct InsertAxisHolder<size_t Axis, size_t N, size_t... Dims>
+    /**
+     * Dual of `KeptDimsHolder`: inserts `N` at position `Axis` into `Dims...`
+     * `static constexpr value` holds the new array of `sizeof...(Dims) + 1` dimensions
+     */
+    template<size_t Axis, size_t N, size_t... Dims>
+    struct InsertAxisHolder {
+        static constexpr auto value = [] {
+            constexpr std::array<size_t, sizeof...(Dims)> all = {Dims...};
+            std::array<size_t, sizeof...(Dims) + 1> result{};
+            for (size_t i = 0; i < Axis; ++i)        result[i]     = all[i];
+            result[Axis] = N;
+            for (size_t i = Axis; i < sizeof...(Dims); ++i) result[i + 1] = all[i];
+            return result;
+        }();
+    };
+
+    // @doc: struct InsertAxis<size_t Axis, size_t N, size_t... Dims>
+    /**
+     * Dual of `RemoveAxis`: inserts dimension `N` at position `Axis` into `Dims...`
+     * `type = ArrayToTensor<InsertAxisHolder<Axis, N, Dims...>, std::make_index_sequence<sizeof...(Dims) + 1>>`
+     */
+    template<size_t Axis, size_t N, size_t... Dims>
+    struct InsertAxis {
+        using type = ArrayToTensor<
+            InsertAxisHolder<Axis, N, Dims...>,
+            std::make_index_sequence<sizeof...(Dims) + 1>
+        >::type;
+    };
+
+
     // @doc: template<size_t... Dims> Tensor<Dims...> operator+(const Tensor<Dims...>& a, const Tensor<Dims...>& b)
     /** Element-wise add, uses parallel functional `zip` */
     template<size_t... Dims>
@@ -95,6 +135,8 @@ namespace TTTN {
         return a.zip(b, [](float x, float y) { return x - y; });
     }
 
+    // @doc: template<size_t... Dims> Tensor<Dims...>& operator+=(Tensor<Dims...>& a, const Tensor<Dims...>& b)
+    /** Element-wise add-to, uses parallel functional `zip_apply` */
     template<size_t... Dims>
     Tensor<Dims...> &operator+=(Tensor<Dims...> &a, const Tensor<Dims...> &b) {
         a.zip_apply(b, [](float &x, float y) { x += y; });
@@ -516,16 +558,12 @@ namespace TTTN {
 
         // @doc: template<size_t Axis, size_t... Dims> struct ReduceKernel
         /**
-         * Struct templated on `<size_t Axis, size_t... Dims>`, shared across `ReduceSum`, `ReduceMax`, and `BroadcastAdd`
+         * Shared kernel for all axis-reduction and broadcast operations
          * Compile-time `static constexpr`:
          *   - `axis_dim = SizeTemplateGet<Axis, Dims...>::value`
          *   - `axis_stride = Source::Strides[Axis]`
-         *   - `std::array<size_t, Result::Size> bases`
-         *   - flat index in `Source` for each output index with axis set to 0
-         *   - inner loop: `src.flat(bases[out_i] + k * axis_stride)`
-         *   - `static constexpr size_t project(size_t i)`
-         *   - flat index in `Result` for source flat index `i` (axis contribution stripped); closed-form `i - ((i / axis_stride) % axis_dim) * axis_stride`
-         *   - no table, `axis_stride` compile-time so division compiles to multiply-shift
+         *   - `std::array<size_t, Result::Size> bases` — flat index in `Source` for each output index with axis set to 0
+         *   - `static constexpr size_t project(size_t i)` — flat index in `Result` for source flat index `i` (axis contribution stripped); closed-form `i - ((i / axis_stride) % axis_dim) * axis_stride`; no table, `axis_stride` compile-time so division compiles to multiply-shift
          */
     template<size_t Axis, size_t... Dims>
     struct ReduceKernel {
@@ -563,46 +601,109 @@ namespace TTTN {
         }
     };
 
-    // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceSum(const Tensor<Dims...>& src)
+    // @doc: template<size_t Axis, typename ReduceFn, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...>& src, float init, ReduceFn rfn)
     /**
-     * Reduce an axis with `Tensor` addition
-     * `ReduceSum<P>(Tensor<P,Q>) -> Tensor<Q>` where all `Q` final values are the `sum` of `P` collapsed values
-     * `ReduceSum<Axis>(A)` is mathematically equivalent to `Einsum<Axis, 0>(A, ones)`, where `ones = Tensor<SizeTemplateGet<Axis, Dims...>::value>`, i.e., `ones` is a `Rank-1` tensor whose size is the same as the `Axis` dimension in `src`
+     * Generalized axis reduction: collapses `Axis` by folding elements with `rfn(acc, val)` starting from `init`
+     * `ReduceSum`  == `ReduceApply<Axis>(src, 0.f,  std::plus<float>{})`
+     * `ReduceMax`  == `ReduceApply<Axis>(src, -inf, [](float a, float b){ return std::max(a,b); })`
      */
-    template<size_t Axis, size_t... Dims>
-    typename RemoveAxis<Axis, Dims...>::type ReduceSum(const Tensor<Dims...> &src) {
+    template<size_t Axis, FloatBinaryOp ReduceFn, size_t... Dims>
+    typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...> &src, float init, ReduceFn rfn) {
         using K = ReduceKernel<Axis, Dims...>;
-        typename K::Result dst;
         auto k_range = std::views::iota(size_t{0}, K::axis_dim);
+        typename K::Result dst;
+    // @doc: template<size_t Axis, FloatBinaryOp ReduceFn, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...>& src, float init, ReduceFn rfn)
+    /**
+     * Generalized axis reduction: collapses `Axis` by folding elements with `rfn(acc, val)` starting from `init`
+     * `ReduceSum`  == `ReduceApply<Axis>(src, 0.f,  std::plus<float>{})`
+     * `ReduceMax`  == `ReduceApply<Axis>(src, -inf, [](float a, float b){ return std::max(a,b); })`
+     */
         ParForEach(K::Result::Size, [&](size_t out_i) {
             dst.flat(out_i) = std::transform_reduce(
                 std::execution::unseq,
                 k_range.begin(), k_range.end(),
-                0.0f, std::plus<>{},
-                [&](size_t k) {
-                    return src.flat(K::bases[out_i] + k * K::axis_stride);
-                });
+                init, rfn,
+                [&](size_t k) { return src.flat(K::bases[out_i] + k * K::axis_stride); });
         });
         return dst;
     }
 
-    // @doc: template<size_t Axis, size_t... Dims> Tensor<Dims...> BroadcastAdd(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b)
-    /** Add a `RemoveAxis<Axis, Dims...>::type` (`Tensor<sizeof...(Dims) - 1>`, where the removed dimension is `Axis`) to all `Axis` slices of a `Tensor<Dims...>` */
+    // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceSum(const Tensor<Dims...>& src)
+    /**
+     * Reduce an axis with `Tensor` addition — `ReduceSum<P>(Tensor<P,Q>) -> Tensor<Q>`
+     * Routes through `ReduceApply<Axis>(src, 0.f, std::plus<float>{})`
+     */
     template<size_t Axis, size_t... Dims>
-    Tensor<Dims...> BroadcastAdd(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
+    typename RemoveAxis<Axis, Dims...>::type ReduceSum(const Tensor<Dims...> &src) {
+        return ReduceApply<Axis>(src, 0.f, std::plus<float>{});
+    }
+
+    // @doc: template<size_t Axis, size_t N, size_t... Dims> InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...>& src)
+    /**
+     * Dual of `ReduceSum`/`ReduceMax`: broadcasts a reduced tensor back up by repeating it `N` times along `Axis`
+     * `Expand<0, 5>(Tensor<3>)` → `Tensor<5, 3>` — 5 copies stacked along axis 0
+     * Uses `ReduceKernel::project` to map each output element to its source element
+     */
+    template<size_t Axis, size_t N, size_t... Dims>
+    typename InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...> &src) {
+        using Full = typename InsertAxis<Axis, N, Dims...>::type;
+        return [&]<size_t... FullDims>(std::type_identity<Tensor<FullDims...>>) {
+            using K = ReduceKernel<Axis, FullDims...>;
+            Tensor<FullDims...> result;
+            ParForEach(Full::Size, [&](size_t i) {
+                result.flat(i) = src.flat(K::project(i));
+            });
+            return result;
+        }(std::type_identity<Full>{});
+    }
+
+    // @doc: template<size_t Axis, typename F, size_t... Dims> Tensor<Dims...> BroadcastApply(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b, F f)
+    /**
+     * Apply binary `f(a_elem, b_elem) -> float` element-wise between `A` and `b` broadcast along `Axis`
+     * `BroadcastApply<Axis>(A, b, f)` — for each element `i` of `A`, computes `f(A[i], b[project(i)])` where `project` strips the `Axis` contribution
+     * Generalizes `BroadcastAdd`: `BroadcastAdd(A, b)` == `BroadcastApply(A, b, std::plus<>{})`
+     */
+    // @doc: template<size_t Axis, FloatBinaryOp F, size_t... Dims> Tensor<Dims...> BroadcastApply(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b, F f)
+    /**
+     * Apply binary `f(a_elem, b_elem) -> float` element-wise between `A` and `b` broadcast along `Axis`
+     * For each element `i` of `A`: `result[i] = f(A[i], b[project(i)])`
+     * `BroadcastAdd(A, b)` == `BroadcastApply<Axis>(A, b, std::plus<float>{})`
+     */
+    template<size_t Axis, FloatBinaryOp F, size_t... Dims>
+    Tensor<Dims...> BroadcastApply(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b, F f) {
         using K = ReduceKernel<Axis, Dims...>;
         Tensor<Dims...> result;
         ParForEach(Tensor<Dims...>::Size, [&](size_t i) {
-            result.flat(i) = A.flat(i) + b.flat(K::project(i));
+            result.flat(i) = f(A.flat(i), b.flat(K::project(i)));
         });
         return result;
     }
 
-    // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceMean(const Tensor<Dims...>& src)
+    // @doc: template<size_t Axis, typename ReduceFn, typename ApplyFn, size_t... Dims> Tensor<Dims...> ReduceBroadcast(const Tensor<Dims...>& src, float init, ReduceFn rfn, ApplyFn afn)
     /**
-     * Reduce an axis with `Tensor` averaging
-     * `ReduceSum<P>(Tensor<P,Q>) -> Tensor<Q>` where all `Q` final values are the `average` of `P` collapsed values
+     * Compose `ReduceApply` + `BroadcastApply` in one call: reduce along `Axis` with `rfn`, then broadcast the result back with `afn`
+     * `ReduceBroadcast<Axis>(src, init, rfn, afn)` == `BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn)`
      */
+    // @doc: template<size_t Axis, FloatBinaryOp ReduceFn, FloatBinaryOp ApplyFn, size_t... Dims> Tensor<Dims...> ReduceBroadcast(const Tensor<Dims...>& src, float init, ReduceFn rfn, ApplyFn afn)
+    /**
+     * Compose `ReduceApply` + `BroadcastApply` in one call: reduce along `Axis` with `rfn`, then broadcast the result back with `afn`
+     * `ReduceBroadcast<Axis>(src, init, rfn, afn)` == `BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn)`
+     * Powers `Softmax`: two calls — `(max, exp(a-m))` then `(sum, e/s)`
+     */
+    template<size_t Axis, FloatBinaryOp ReduceFn, FloatBinaryOp ApplyFn, size_t... Dims>
+    Tensor<Dims...> ReduceBroadcast(const Tensor<Dims...> &src, float init, ReduceFn rfn, ApplyFn afn) {
+        return BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn);
+    }
+
+    // @doc: template<size_t Axis, size_t... Dims> Tensor<Dims...> BroadcastAdd(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b)
+    /** Add a reduced tensor to all `Axis` slices of `A` — convenience wrapper over `BroadcastApply<Axis>(A, b, std::plus<float>{})` */
+    template<size_t Axis, size_t... Dims>
+    Tensor<Dims...> BroadcastAdd(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
+        return BroadcastApply<Axis>(A, b, std::plus<float>{});
+    }
+
+    // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceMean(const Tensor<Dims...>& src)
+    /** Reduce an axis with `Tensor` averaging — `ReduceMean<P>(Tensor<P,Q>) -> Tensor<Q>` */
     template<size_t Axis, size_t... Dims>
     typename RemoveAxis<Axis, Dims...>::type ReduceMean(const Tensor<Dims...> &src) {
         constexpr float inv = 1.f / static_cast<float>(SizeTemplateGet<Axis, Dims...>::value);
@@ -611,23 +712,13 @@ namespace TTTN {
 
     // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceMax(const Tensor<Dims...>& src)
     /**
-     * Reduce an axis with `Tensor` maxing
-     * `ReduceSum<P>(Tensor<P,Q>) -> Tensor<Q>` where all `Q` final values are the `max` of `P` collapsed values
+     * Reduce an axis with `Tensor` maxing — `ReduceMax<P>(Tensor<P,Q>) -> Tensor<Q>`
+     * Routes through `ReduceApply<Axis>(src, -inf, std::max)`
      */
     template<size_t Axis, size_t... Dims>
     typename RemoveAxis<Axis, Dims...>::type ReduceMax(const Tensor<Dims...> &src) {
-        using K = ReduceKernel<Axis, Dims...>;
-        typename K::Result dst;
-        auto k_range = std::views::iota(size_t{0}, K::axis_dim);
-        ParForEach(K::Result::Size, [&](size_t out_i) {
-            dst.flat(out_i) = std::transform_reduce(
-                std::execution::unseq,
-                k_range.begin(), k_range.end(),
-                -std::numeric_limits<float>::infinity(),
-                [](float a, float b) { return std::max(a, b); },
-                [&](size_t k) { return src.flat(K::bases[out_i] + k * K::axis_stride); });
-        });
-        return dst;
+        return ReduceApply<Axis>(src, -std::numeric_limits<float>::infinity(),
+            [](float a, float b) { return std::max(a, b); });
     }
 
     // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...>& src, size_t idx)
@@ -658,24 +749,24 @@ namespace TTTN {
         return dst;
     }
 
-    // @doc: template<size_t Axis, size_t... Dims> void TensorIndexAdd(Tensor<Dims...>& dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type& src)
-    /** Accumulate (`+=`) a `RemoveAxis<Axis, Dims...>::type` to the `idx`-th sub-`Tensor` of `Tensor<Dims...> dst` on the `Axis` axis */
-    template<size_t Axis, size_t... Dims>
-    void TensorIndexAdd(Tensor<Dims...> &dst, size_t idx,
-                        const typename RemoveAxis<Axis, Dims...>::type &src) {
+    // @doc: template<size_t Axis, typename F, size_t... Dims> void TensorIndexApply(Tensor<Dims...>& dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type& src, F f)
+    // @doc: template<size_t Axis, FloatBinaryOp F, size_t... Dims> void TensorIndexApply(Tensor<Dims...>& dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type& src, F f)
+    /** Apply binary `f(existing, incoming) -> float` to each element of the `idx`-th slice of `dst` along `Axis` using the corresponding element of `src` */
+    template<size_t Axis, FloatBinaryOp F, size_t... Dims>
+    void TensorIndexApply(Tensor<Dims...> &dst, size_t idx,
+                          const typename RemoveAxis<Axis, Dims...>::type &src, F f) {
         using Dest = Tensor<Dims...>;
         using Slice = typename RemoveAxis<Axis, Dims...>::type;
-
         for (size_t i = 0; i < Slice::Size; ++i) {
             auto src_multi = Slice::FlatToMulti(i);
-            // rebuild destination multi-index by inserting idx at Axis
             std::array<size_t, Dest::Rank> dst_multi{};
             size_t src_d = 0;
-            for (size_t d = 0; d < Dest::Rank; ++d) {
+            for (size_t d = 0; d < Dest::Rank; ++d)
                 dst_multi[d] = d == Axis ? idx : src_multi[src_d++];
-            }
-            dst.flat(Dest::MultiToFlat(dst_multi)) += src.flat(i);
+            const size_t flat = Dest::MultiToFlat(dst_multi);
+            dst.flat(flat) = f(dst.flat(flat), src.flat(i));
         }
     }
+
 
 };
