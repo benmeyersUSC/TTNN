@@ -67,6 +67,56 @@ namespace TTTN {
     };
 
 
+    // ── ComposeBlocks: recipe combiner that vanishes at NetworkBuilder time ──────
+    //
+    // Groups sub-recipes into a single type alias.  NetworkBuilder flattens it
+    // into its components before BuildChain runs — no runtime wrapper, no extra
+    // block in the network.  Nesting works: ComposeBlocks<ComposeBlocks<A,B>, C>
+    // flattens to A, B, C.
+    //
+    // Usage:
+    //   using TransformerFFN = ComposeBlocks<
+    //       MapDense<1, Tensor<FFN>, ReLU>,
+    //       MapDense<1, Tensor<Emb>>
+    //   >;
+    //   using TBlock = ComposeBlocks<MHAttention<4, Emb>, TransformerFFN>;
+    //
+    //   NetworkBuilder<Input<Seq, Emb>, TBlock, TBlock, Dense<10>>::type net;
+    //   // ≡  MHAttention, MapDense, MapDense, MHAttention, MapDense, MapDense, Dense
+    template<typename... Recipes>
+    struct ComposeBlocks {};
+
+    // FlattenRecipes: recursively expand ComposeBlocks → std::tuple<Block...>
+    template<typename... Rs> struct FlattenRecipes;
+
+    template<>
+    struct FlattenRecipes<> { using type = std::tuple<>; };
+
+    // ComposeBlocks: splice its sub-recipes into the flat list
+    template<typename... SubRs, typename... Rest>
+    struct FlattenRecipes<ComposeBlocks<SubRs...>, Rest...> {
+        using type = decltype(std::tuple_cat(
+            std::declval<typename FlattenRecipes<SubRs...>::type>(),
+            std::declval<typename FlattenRecipes<Rest...>::type>()));
+    };
+
+    // anything else: keep it and continue
+    template<typename First, typename... Rest>
+    struct FlattenRecipes<First, Rest...> {
+        using type = decltype(std::tuple_cat(
+            std::declval<std::tuple<First>>(),
+            std::declval<typename FlattenRecipes<Rest...>::type>()));
+    };
+
+    // ApplyBuildChain: unpack a tuple of Block recipes into BuildChain
+    template<typename In, typename Tuple> struct ApplyBuildChain;
+
+    template<typename In, Block... Rs>
+    struct ApplyBuildChain<In, std::tuple<Rs...>> {
+        using type = typename BuildChain<In, Rs...>::type;
+    };
+
+
     // prepends a Batch dimension to any Tensor<Dims...> type
     template<size_t Batch, typename T>
     struct PrependBatch;

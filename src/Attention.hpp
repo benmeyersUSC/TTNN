@@ -1,5 +1,6 @@
 #pragma once
 #include "NetworkUtil.hpp"
+#include "Params.hpp"
 
 namespace TTTN {
 
@@ -55,21 +56,12 @@ namespace TTTN {
         using QKV_Type    = Tensor<SeqLen, Heads, HeadDim>;        // projected Q, K, V
         using Scores_Type = Tensor<Heads, SeqLen, SeqLen>;         // attention weight matrix
 
-        static constexpr size_t ParamCount =
-            3 * W_QKV_Type::Size + W_O_Type::Size;
-
     private:
-        // weights
-        W_QKV_Type W_Q_, W_K_, W_V_;
-        W_O_Type   W_O_;
+        Param<W_QKV_Type> WQ_, WK_, WV_;
+        Param<W_O_Type>   WO_;
 
-        // Adam moments
-        W_QKV_Type mW_Q_{}, vW_Q_, mW_K_{}, vW_K_{}, mW_V_{}, vW_V_{};
-        W_O_Type   mW_O_{}, vW_O_{};
-
-        // gradients
-        W_QKV_Type dW_Q_{}, dW_K_{}, dW_V_{};
-        W_O_Type   dW_O_{};
+        auto all_params()       { return std::tie(WQ_, WK_, WV_, WO_); }
+        auto all_params() const { return std::tie(WQ_, WK_, WV_, WO_); }
 
         // forward-pass cache (needed by Backward) — mutable so Forward can be const
         mutable InputTensor  X_cache_{};
@@ -78,11 +70,14 @@ namespace TTTN {
         mutable QKV_Type     attended_{};
 
     public:
+        static constexpr size_t ParamCount =
+            TotalParamSize<Param<W_QKV_Type>, Param<W_QKV_Type>, Param<W_QKV_Type>, Param<W_O_Type>>;
+
         MultiHeadAttentionBlock() {
-            XavierInitMD(W_Q_, EmbSize, HeadDim);
-            XavierInitMD(W_K_, EmbSize, HeadDim);
-            XavierInitMD(W_V_, EmbSize, HeadDim);
-            XavierInitMD(W_O_, EmbSize, EmbSize);
+            XavierInitMD(WQ_.value, EmbSize, HeadDim);
+            XavierInitMD(WK_.value, EmbSize, HeadDim);
+            XavierInitMD(WV_.value, EmbSize, HeadDim);
+            XavierInitMD(WO_.value, EmbSize, EmbSize);
         }
 
         // ─── FORWARD ────────────────────────────────────────────────────────────
@@ -95,9 +90,9 @@ namespace TTTN {
             Q_.fill(0.f); K_.fill(0.f); V_.fill(0.f);
             for (size_t s = 0; s < SeqLen; ++s) {
                 const auto x_s = TensorIndex<0>(X, s);
-                TensorIndexApply<0>(Q_, s, ΣΠ<N_emb>(W_Q_, x_s), [](float a, float b){ return a + b; });
-                TensorIndexApply<0>(K_, s, ΣΠ<N_emb>(W_K_, x_s), [](float a, float b){ return a + b; });
-                TensorIndexApply<0>(V_, s, ΣΠ<N_emb>(W_V_, x_s), [](float a, float b){ return a + b; });
+                TensorIndexApply<0>(Q_, s, ΣΠ<N_emb>(WQ_.value, x_s), [](float a, float b){ return a + b; });
+                TensorIndexApply<0>(K_, s, ΣΠ<N_emb>(WK_.value, x_s), [](float a, float b){ return a + b; });
+                TensorIndexApply<0>(V_, s, ΣΠ<N_emb>(WV_.value, x_s), [](float a, float b){ return a + b; });
             }
 
             // 2. Per-head: scale dot-product scores → softmax weights → weighted V
@@ -124,16 +119,14 @@ namespace TTTN {
             output.fill(0.f);
             for (size_t s = 0; s < SeqLen; ++s) {
                 const auto att_s = TensorIndex<0>(attended_, s);   // Tensor<Heads, HeadDim>
-                TensorIndexApply<0>(output, s, ΣΠ<2>(W_O_, att_s), [](float a, float b){ return a + b; }); // Tensor<EmbDims...>
+                TensorIndexApply<0>(output, s, ΣΠ<2>(WO_.value, att_s), [](float a, float b){ return a + b; }); // Tensor<EmbDims...>
             }
             return output;
         }
 
         // ─── BACKWARD ───────────────────────────────────────────────────────────
 
-        void ZeroGrad() {
-            dW_Q_.fill(0.f); dW_K_.fill(0.f); dW_V_.fill(0.f); dW_O_.fill(0.f);
-        }
+        void ZeroGrad() { ZeroAllGrads(all_params()); }
 
         // delta_A: dL/dOutput.  a: output (unused — attention has no simple pointwise activation).
         // a_prev: input X (same as X_cache_, provided for interface compliance).
@@ -146,13 +139,13 @@ namespace TTTN {
             // W_K_T, W_V_T: same permutation
             // W_O_T: Tensor<Heads, HeadDim, EmbDims...>  (block-swap W_O's two halves)
             const auto W_Q_T = PermuteFromHolder<WTBlockSwapPerm<2, N_emb>>(
-                W_Q_, std::make_index_sequence<2 + N_emb>{});
+                WQ_.value, std::make_index_sequence<2 + N_emb>{});
             const auto W_K_T = PermuteFromHolder<WTBlockSwapPerm<2, N_emb>>(
-                W_K_, std::make_index_sequence<2 + N_emb>{});
+                WK_.value, std::make_index_sequence<2 + N_emb>{});
             const auto W_V_T = PermuteFromHolder<WTBlockSwapPerm<2, N_emb>>(
-                W_V_, std::make_index_sequence<2 + N_emb>{});
+                WV_.value, std::make_index_sequence<2 + N_emb>{});
             const auto W_O_T = PermuteFromHolder<WTBlockSwapPerm<N_emb, 2>>(
-                W_O_, std::make_index_sequence<N_emb + 2>{});
+                WO_.value, std::make_index_sequence<N_emb + 2>{});
 
             // Step 1: backward through output projection W_O
             // out_s = ΣΠ<2>(W_O, att_s)  →  dW_O += outer(dout_s, att_s), d_att_s = ΣΠ<N_emb>(W_O_T, dout_s)
@@ -161,7 +154,7 @@ namespace TTTN {
             for (size_t s = 0; s < SeqLen; ++s) {
                 const auto dout_s = TensorIndex<0>(delta_A,  s);   // Tensor<EmbDims...>
                 const auto att_s  = TensorIndex<0>(attended_, s);   // Tensor<Heads, HeadDim>
-                dW_O_ += ΣΠ<0>(dout_s, att_s);                     // outer → Tensor<EmbDims..., Heads, HeadDim>
+                WO_.grad += ΣΠ<0>(dout_s, att_s);                  // outer → Tensor<EmbDims..., Heads, HeadDim>
                 TensorIndexApply<0>(d_attended, s, ΣΠ<N_emb>(W_O_T, dout_s), [](float a, float b){ return a + b; });
             }
 
@@ -199,9 +192,9 @@ namespace TTTN {
                 const auto dk_s = TensorIndex<0>(d_K, s);
                 const auto dv_s = TensorIndex<0>(d_V, s);
 
-                dW_Q_ += ΣΠ<0>(dq_s, x_s);   // outer → Tensor<Heads, HeadDim, EmbDims...>
-                dW_K_ += ΣΠ<0>(dk_s, x_s);
-                dW_V_ += ΣΠ<0>(dv_s, x_s);
+                WQ_.grad += ΣΠ<0>(dq_s, x_s);   // outer → Tensor<Heads, HeadDim, EmbDims...>
+                WK_.grad += ΣΠ<0>(dk_s, x_s);
+                WV_.grad += ΣΠ<0>(dv_s, x_s);
 
                 // upstream: contract (Heads, HeadDim) axes of transposed weights with per-token grad
                 const auto dx_s = ΣΠ<2>(W_Q_T, dq_s) + ΣΠ<2>(W_K_T, dk_s) + ΣΠ<2>(W_V_T, dv_s);
@@ -213,7 +206,7 @@ namespace TTTN {
         // ─── BATCHED (loop over leading Batch dimension) ─────────────────────────
 
         template<size_t Batch>
-        Tensor<Batch, SeqLen, EmbDims...> BatchedForward(const Tensor<Batch, SeqLen, EmbDims...>& X) {
+        Tensor<Batch, SeqLen, EmbDims...> BatchedForward(const Tensor<Batch, SeqLen, EmbDims...>& X) const {
             Tensor<Batch, SeqLen, EmbDims...> result;
             constexpr size_t sample_size = InputTensor::Size;
             for (size_t b = 0; b < Batch; ++b) {
@@ -234,7 +227,6 @@ namespace TTTN {
             const Tensor<Batch, SeqLen, EmbDims...>& a_prev)
         {
             Tensor<Batch, SeqLen, EmbDims...> result;
-            const float batch_adj = 1.f / static_cast<float>(Batch);
             constexpr size_t sample_size = InputTensor::Size;
             for (size_t b = 0; b < Batch; ++b) {
                 InputTensor dA_b, a_b, ap_b;
@@ -244,40 +236,26 @@ namespace TTTN {
                     ap_b.flat(i) = a_prev.flat(b * sample_size + i);
                 }
                 const auto upstream = Backward(dA_b, a_b, ap_b);
-                // scale each sample's weight gradients by 1/Batch
-                dW_Q_ *= batch_adj; dW_K_ *= batch_adj; dW_V_ *= batch_adj; dW_O_ *= batch_adj;
                 for (size_t i = 0; i < sample_size; ++i)
                     result.flat(b * sample_size + i) = upstream.flat(i);
             }
+            // scale weight gradients by 1/Batch ONCE after all samples accumulate
+            const float batch_adj = 1.f / static_cast<float>(Batch);
+            WQ_.grad = WQ_.grad * batch_adj; WK_.grad = WK_.grad * batch_adj;
+            WV_.grad = WV_.grad * batch_adj; WO_.grad = WO_.grad * batch_adj;
             return result;
         }
 
         // ─── ADAM UPDATE ────────────────────────────────────────────────────────
 
-        void Update(float adamBeta1, float adamBeta2, float lr,
-                    float mCorr, float vCorr, float eps = 1e-8f) {
-            auto update_param = [&](auto& W, auto& m, auto& v, const auto& dW) {
-                for (size_t i = 0; i < std::decay_t<decltype(W)>::Size; ++i) {
-                    const float g = dW.flat(i);
-                    m.flat(i) = adamBeta1 * m.flat(i) + (1.f - adamBeta1) * g;
-                    v.flat(i) = adamBeta2 * v.flat(i) + (1.f - adamBeta2) * g * g;
-                    W.flat(i) -= lr * (m.flat(i) * mCorr) / (std::sqrt(v.flat(i) * vCorr) + eps);
-                }
-            };
-            update_param(W_Q_, mW_Q_, vW_Q_, dW_Q_);
-            update_param(W_K_, mW_K_, vW_K_, dW_K_);
-            update_param(W_V_, mW_V_, vW_V_, dW_V_);
-            update_param(W_O_, mW_O_, vW_O_, dW_O_);
+        void Update(float b1, float b2, float lr, float mCorr, float vCorr, float eps = 1e-8f) {
+            UpdateAll(all_params(), b1, b2, lr, mCorr, vCorr, eps);
         }
 
         // ─── SAVE / LOAD ─────────────────────────────────────────────────────────
 
-        void Save(std::ofstream& f) const {
-            W_Q_.Save(f); W_K_.Save(f); W_V_.Save(f); W_O_.Save(f);
-        }
-        void Load(std::ifstream& f) {
-            W_Q_.Load(f); W_K_.Load(f); W_V_.Load(f); W_O_.Load(f);
-        }
+        void Save(std::ofstream& f) const { SaveAll(all_params(), f); }
+        void Load(std::ifstream& f)       { LoadAll(all_params(), f); }
     };
 
 

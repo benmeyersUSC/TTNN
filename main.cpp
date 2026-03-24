@@ -257,26 +257,34 @@ void runRankNineAutoencoder() {
     std::cout << "...\n";
 }
 
-// Attention autoencoder: 8 tokens, rank-3 embedding Tensor<4,6> (24 dims), 12 heads of dim 2.
-// Single MHAttention layer learns to reconstruct a sine-wave sequence via MSE.
-// Cross-token mixing is the only tool available — no dense projection, no skip.
+// Transformer autoencoder: attention + per-token FFN (MapDense), the real transformer block.
+// ComposeBlocks vanishes at build time — the network is a flat chain of concrete blocks.
+// With MapDense providing per-token nonlinear capacity, the model can actually learn identity.
 void runAttentionAutoencoder() {
-    std::cout << "\n=== Attention Autoencoder (seq=8, emb=4x6, heads=12) ===\n";
+    std::cout << "\n=== Transformer Autoencoder (seq=8, emb=6x6, 2 blocks: attn+FFN) ===\n";
+
+    // Define a transformer block: attention + expand/project FFN
+    using TBlock = ComposeBlocks<
+        MHAttention<4, 6, 6>,
+        MapDense<1, Tensor<72>, ActivationFunction::ReLU>, // per-token FFN: 36 → 72
+        MapDense<1, Tensor<6, 6> > // per-token FFN: 72 → 36
+    >;
 
     NetworkBuilder<
         Input<8, 6, 6>,
-        MHAttention<36, 6, 6>
+        TBlock,
+        TBlock
     >::type net;
     std::cout << "    params: " << net.TotalParamCount << "\n\n";
 
-    // 8 tokens × 4×6 embedding, values from a sine wave
+    // 8 tokens × 6×6 embedding, values from a sine wave
     Tensor<8, 6, 6> x;
-    for (size_t i = 0; i < 192; ++i)
+    for (size_t i = 0; i < 288; ++i)
         x.flat(i) = 0.5f + 0.4f * std::sin(static_cast<float>(i) * 3.14159f / 8.f);
 
-    for (int e = 0; e < 500; ++e) {
-        const float loss = net.Fit<MSE>(x, x, 0.001f);
-        if (e % 50 == 0)
+    for (int e = 0; e < 3000; ++e) {
+        const float loss = net.Fit<MSE>(x, x, 0.003f);
+        if (e % 100 == 0)
             std::cout << "  epoch " << std::setw(4) << e
                     << "  MSE = " << std::fixed << std::setprecision(6) << loss << "\n";
     }
@@ -291,30 +299,111 @@ void runAttentionAutoencoder() {
     std::cout << "...\n";
 }
 
+// MNIST with transformer: attention + per-token FFN + Dense classifier.
+// ComposeBlocks defines a reusable transformer block that flattens at build time.
+void runMNISTAttention() {
+    std::cout << "\n=== MNIST Transformer (28 tokens x 28 dims, attn+FFN -> Dense -> Softmax+CEL) ===\n";
+
+    auto train_data = LoadCSV<60000, 785>("mnist_train.csv", true);
+    auto test_data = LoadCSV<10000, 785>("mnist_test.csv", true);
+
+    using TBlock = ComposeBlocks<
+        MHAttention<4, 28>,
+        MapDense<1, Tensor<56>, ActivationFunction::ReLU>, // per-row FFN: 28 → 56
+        MapDense<1, Tensor<28> > // per-row FFN: 56 → 28
+    >;
+
+    // TBlock flattens to 3 concrete blocks; total = 6 blocks + Dense + Softmax = 8
+    typename NetworkBuilder<
+        Input<28, 28>,
+        TBlock,
+        Dense<10>,
+        SoftmaxLayer<0>
+    >::type net;
+    std::cout << "    params: " << net.TotalParamCount << "\n\n";
+
+    std::mt19937 rng{42};
+    constexpr size_t Batch = 32;
+    constexpr size_t EvalN = 500;
+    // NumBlocks after flattening: MHAttention, MapDense, MapDense, Dense, Softmax = 5
+    constexpr size_t FinalIdx = 5;
+
+    auto prep = [](const auto &batch, Tensor<Batch, 28, 28> &X, Tensor<Batch, 10> &Y) {
+        for (size_t b = 0; b < Batch; ++b) {
+            const auto label = static_cast<size_t>(batch(b, 0));
+            for (size_t p = 0; p < 784; ++p)
+                X.flat(b * 784 + p) = batch(b, p + 1) / 255.f;
+            for (size_t c = 0; c < 10; ++c)
+                Y(b, c) = (c == label) ? 1.f : 0.f;
+        }
+    };
+
+    auto sample_acc = [&](const auto &dataset) -> float {
+        auto eval = RandomBatch<EvalN>(dataset, rng);
+        Tensor<EvalN, 28, 28> X_eval;
+        Tensor<EvalN, 10> Y_eval;
+        for (size_t b = 0; b < EvalN; ++b) {
+            const auto label = static_cast<size_t>(eval(b, 0));
+            for (size_t p = 0; p < 784; ++p)
+                X_eval.flat(b * 784 + p) = eval(b, p + 1) / 255.f;
+            for (size_t c = 0; c < 10; ++c)
+                Y_eval(b, c) = (c == label) ? 1.f : 0.f;
+        }
+        const auto A = net.template BatchedForwardAll<EvalN>(X_eval);
+        const auto &pred = A.template get<FinalIdx>();
+        return BatchAccuracy(pred, Y_eval);
+    };
+
+    for (int epoch = 0; epoch < 3; ++epoch) {
+        const float acc_before = sample_acc(train_data);
+        const float avg_loss = RunEpoch<CEL, Batch>(net, train_data, rng, 0.001f, prep);
+        const float acc_after = sample_acc(train_data);
+        std::cout << "  after epoch " << std::setw(2) << epoch
+                << "  CEL=" << std::fixed << std::setprecision(4) << avg_loss
+                << "  train: " << std::setprecision(1) << acc_before << "% -> " << acc_after << "%\n";
+    }
+
+    // test accuracy
+    auto raw = RandomBatch<EvalN>(test_data, rng);
+    Tensor<EvalN, 28, 28> X_test;
+    Tensor<EvalN, 10> Y_test;
+    for (size_t b = 0; b < EvalN; ++b) {
+        const auto label = static_cast<size_t>(raw(b, 0));
+        for (size_t p = 0; p < 784; ++p)
+            X_test.flat(b * 784 + p) = raw(b, p + 1) / 255.f;
+        for (size_t c = 0; c < 10; ++c)
+            Y_test(b, c) = (c == label) ? 1.f : 0.f;
+    }
+    const auto A_test = net.template BatchedForwardAll<EvalN>(X_test);
+    const auto &pred_test = A_test.template get<FinalIdx>();
+    std::cout << "\n  test accuracy (" << EvalN << " held-out): "
+            << std::fixed << std::setprecision(1) << BatchAccuracy(pred_test, Y_test) << "%\n";
+}
+
 // Generic CSV classifier: col 0 = integer class label, cols 1..Cols-1 = features.
 // Network is hardcoded: Input<Cols-1> -> Dense<128,ReLU> -> Dense<64,ReLU> -> Dense<NumClasses> -> Softmax
 // Features are normalized by `norm` (default 255 for pixel data).
 template<size_t TrainRows, size_t TestRows, size_t Cols, size_t NumClasses,
-         size_t Batch = 32, size_t EvalN = 1000, size_t TestBatch = 1000>
-void RunCSVClassifier(const std::string& name,
-                      const std::string& train_csv,
-                      const std::string& test_csv,
-                      float lr       = 0.001f,
-                      int   epochs   = 5,
-                      float norm     = 255.f,
-                      bool  skip_hdr = true) {
+    size_t Batch = 32, size_t EvalN = 1000, size_t TestBatch = 1000>
+void RunCSVClassifier(const std::string &name,
+                      const std::string &train_csv,
+                      const std::string &test_csv,
+                      float lr = 0.001f,
+                      int epochs = 5,
+                      float norm = 255.f,
+                      bool skip_hdr = true) {
     constexpr size_t Features = Cols - 1;
 
     std::cout << "\n=== " << name << " ("
-              << Features << " -> 128 -> 64 -> " << NumClasses << ", Softmax+CEL) ===\n";
+            << Features << " -> 128 -> 64 -> " << NumClasses << ", Softmax+CEL) ===\n";
 
     auto train_data = LoadCSV<TrainRows, Cols>(train_csv, skip_hdr);
-    auto test_data  = LoadCSV<TestRows,  Cols>(test_csv,  skip_hdr);
+    auto test_data = LoadCSV<TestRows, Cols>(test_csv, skip_hdr);
 
     typename NetworkBuilder<
         Input<Features>,
         Dense<128, ActivationFunction::ReLU>,
-        Dense<64,  ActivationFunction::ReLU>,
+        Dense<64, ActivationFunction::ReLU>,
         Dense<NumClasses>,
         SoftmaxLayer<0>
     >::type net;
@@ -322,50 +411,50 @@ void RunCSVClassifier(const std::string& name,
 
     std::mt19937 rng{42};
 
-    auto prep = [norm](const auto& batch, Tensor<Batch, Features>& X, Tensor<Batch, NumClasses>& Y) {
+    auto prep = [norm](const auto &batch, Tensor<Batch, Features> &X, Tensor<Batch, NumClasses> &Y) {
         for (size_t b = 0; b < Batch; ++b) {
             const auto label = static_cast<size_t>(batch(b, 0));
-            for (size_t p = 0; p < Features;   ++p) X(b, p) = batch(b, p + 1) / norm;
+            for (size_t p = 0; p < Features; ++p) X(b, p) = batch(b, p + 1) / norm;
             for (size_t c = 0; c < NumClasses; ++c) Y(b, c) = (c == label) ? 1.f : 0.f;
         }
     };
 
-    auto sample_acc = [&](const auto& dataset) -> float {
+    auto sample_acc = [&](const auto &dataset) -> float {
         auto eval = RandomBatch<EvalN>(dataset, rng);
-        Tensor<EvalN, Features>   X_eval;
+        Tensor<EvalN, Features> X_eval;
         Tensor<EvalN, NumClasses> Y_eval;
         for (size_t b = 0; b < EvalN; ++b) {
             const auto label = static_cast<size_t>(eval(b, 0));
-            for (size_t p = 0; p < Features;   ++p) X_eval(b, p) = eval(b, p + 1) / norm;
+            for (size_t p = 0; p < Features; ++p) X_eval(b, p) = eval(b, p + 1) / norm;
             for (size_t c = 0; c < NumClasses; ++c) Y_eval(b, c) = (c == label) ? 1.f : 0.f;
         }
-        const auto  A    = net.template BatchedForwardAll<EvalN>(X_eval);
-        const auto& pred = A.template get<4>();
+        const auto A = net.template BatchedForwardAll<EvalN>(X_eval);
+        const auto &pred = A.template get<4>();
         return BatchAccuracy(pred, Y_eval);
     };
 
     for (int epoch = 0; epoch < epochs; ++epoch) {
         const float acc_before = sample_acc(train_data);
-        const float avg_loss   = RunEpoch<CEL, Batch>(net, train_data, rng, lr, prep);
-        const float acc_after  = sample_acc(train_data);
+        const float avg_loss = RunEpoch<CEL, Batch>(net, train_data, rng, lr, prep);
+        const float acc_after = sample_acc(train_data);
         std::cout << "  after epoch " << std::setw(2) << epoch
-                  << "  CEL=" << std::fixed << std::setprecision(4) << avg_loss
-                  << "  train: " << std::setprecision(1) << acc_before << "% -> " << acc_after << "%\n";
+                << "  CEL=" << std::fixed << std::setprecision(4) << avg_loss
+                << "  train: " << std::setprecision(1) << acc_before << "% -> " << acc_after << "%\n";
     }
 
     // test accuracy via BatchAccuracy (ReduceSum<1>(pred ⊙ Y) vs ReduceMax<1>(pred))
     auto raw = RandomBatch<TestBatch>(test_data, rng);
-    Tensor<TestBatch, Features>   X_test;
+    Tensor<TestBatch, Features> X_test;
     Tensor<TestBatch, NumClasses> Y_test;
     for (size_t b = 0; b < TestBatch; ++b) {
         const auto label = static_cast<size_t>(raw(b, 0));
-        for (size_t p = 0; p < Features;   ++p) X_test(b, p) = raw(b, p + 1) / norm;
+        for (size_t p = 0; p < Features; ++p) X_test(b, p) = raw(b, p + 1) / norm;
         for (size_t c = 0; c < NumClasses; ++c) Y_test(b, c) = (c == label) ? 1.f : 0.f;
     }
-    const auto  A_test     = net.template BatchedForwardAll<TestBatch>(X_test);
-    const auto& pred_batch = A_test.template get<4>();
+    const auto A_test = net.template BatchedForwardAll<TestBatch>(X_test);
+    const auto &pred_batch = A_test.template get<4>();
     std::cout << "\n  test accuracy (" << TestBatch << " held-out): "
-              << std::fixed << std::setprecision(1) << BatchAccuracy(pred_batch, Y_test) << "%\n";
+            << std::fixed << std::setprecision(1) << BatchAccuracy(pred_batch, Y_test) << "%\n";
 }
 
 int main() {
@@ -376,8 +465,13 @@ int main() {
     runRankNineAutoencoder();
     runAttentionAutoencoder();
     // ── MNIST-family: all 785-col CSVs, col 0 = label, cols 1-784 = pixels 0-255 ──────────────
-    RunCSVClassifier<60000, 10000, 785, 10>("MNIST",         "mnist_train.csv",         "mnist_test.csv",         0.0001f);
-    RunCSVClassifier<60000, 10000, 785, 10>("Fashion-MNIST", "fashion_mnist_train.csv", "fashion_mnist_test.csv", 0.0001f);
+
+
+    RunCSVClassifier<60000, 10000, 785, 10>("MNIST", "mnist_train.csv", "mnist_test.csv", 0.0001f);
+    RunCSVClassifier<60000, 10000, 785, 10>("Fashion-MNIST", "fashion_mnist_train.csv", "fashion_mnist_test.csv",
+                                            0.0001f);
+    runMNISTAttention();
+
     // RunCSVClassifier<60000,  10000,  785, 10>("KMNIST",        "kmnist_train.csv",        "kmnist_test.csv",        0.0001f); // Kuzushiji (Japanese cursive), ~93%
     // RunCSVClassifier<27455,   7172,  785, 24>("Sign MNIST",    "sign_mnist_train.csv",    "sign_mnist_test.csv",    0.0001f); // ASL A-Z (no J/Z), ~90%
     // RunCSVClassifier<112800, 18800,  785, 47>("EMNIST",        "emnist_train.csv",        "emnist_test.csv",        0.0001f); // letters+digits, 47 classes, ~85%

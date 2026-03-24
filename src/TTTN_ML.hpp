@@ -10,6 +10,7 @@ namespace TTTN {
     // CROSS ENTROPY LOSS
     template<size_t N>
     float CrossEntropyLoss(const Tensor<N> &output, const Tensor<N> &target) {
+        // collapse via sum of all elementwise pairs, where pairs are target[i] and log(output[i])
         return -Contract(
             target, output.map([](const float p) { return std::log(std::max(p, EPS)); })
         );
@@ -22,7 +23,9 @@ namespace TTTN {
         static std::mt19937 rng{std::random_device{}()};
         const float limit = std::sqrt(6.f / static_cast<float>(fan_in + fan_out));
         std::uniform_real_distribution<float> dist{-limit, limit};
-        W.apply([&](float &x) { x = dist(rng); });
+        W.apply([&](float &x) {
+            x = dist(rng);
+        });
     }
 
     // SOFTMAX
@@ -31,10 +34,14 @@ namespace TTTN {
     //   2. reduce=sum, apply=e/s        → normalize
     template<size_t Axis, size_t... Dims>
     Tensor<Dims...> Softmax(const Tensor<Dims...> &x) {
+        // reduce via/to max
+        // broadcast back with e^(v - max)
         const auto exps = ReduceBroadcast<Axis>(x,
                                                 -std::numeric_limits<float>::infinity(),
-                                                [](float a, float b) { return std::max(a, b); },
-                                                [](float a, float m) { return std::exp(a - m); });
+                                                [](const float a, const float b) { return std::max(a, b); },
+                                                [](const float a, const float m) { return std::exp(a - m); });
+        // reduce via/to sum
+        // broadcast scaling by sum
         return ReduceBroadcast<Axis>(exps,
                                      0.f,
                                      std::plus<float>{},
@@ -44,8 +51,7 @@ namespace TTTN {
     // VJP of softmax: δx_i = a_i * (δy_i − dot(δy, a))  per pool along Axis.
     template<size_t Axis, size_t... Dims>
     Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a) {
-        return a * BroadcastApply<Axis>(grad, ReduceSum<Axis>(a * grad),
-                                        [](float g, float d) { return g - d; });
+        return a * BroadcastApply<Axis>(grad, ReduceSum<Axis>(a * grad), std::minus<float>{});
     }
 
     // activation function — element-wise only.
@@ -54,8 +60,8 @@ namespace TTTN {
     Tensor<N> Activate(const Tensor<N> &z, const ActivationFunction act) {
         switch (act) {
             case ActivationFunction::ReLU: return z.map([](float x) { return x > 0.f ? x : 0.f; });
-            case ActivationFunction::Sigmoid: return z.map([](float x) { return 1.f / (1.f + std::exp(-x)); });
-            case ActivationFunction::Tanh: return z.map([](float x) { return std::tanh(x); });
+            case ActivationFunction::Sigmoid: return z.map([](const float x) { return 1.f / (1.f + std::exp(-x)); });
+            case ActivationFunction::Tanh: return z.map([](const float x) { return std::tanh(x); });
             case ActivationFunction::Linear:
             default: return z;
         }
@@ -66,11 +72,11 @@ namespace TTTN {
     Tensor<N> ActivatePrime(const Tensor<N> &grad, const Tensor<N> &a, const ActivationFunction act) {
         switch (act) {
             case ActivationFunction::ReLU:
-                return grad.zip(a, [](float g, float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
+                return grad.zip(a, [](const float g, const float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
             case ActivationFunction::Sigmoid:
-                return grad.zip(a, [](float g, float ai) { return g * ai * (1.f - ai); });
+                return grad.zip(a, [](const float g, const float ai) { return g * ai * (1.f - ai); });
             case ActivationFunction::Tanh:
-                return grad.zip(a, [](float g, float ai) { return g * (1.f - ai * ai); });
+                return grad.zip(a, [](const float g, const float ai) { return g * (1.f - ai * ai); });
             case ActivationFunction::Linear:
             default: return grad;
         }
@@ -81,8 +87,8 @@ namespace TTTN {
     Tensor<Batch, N> BatchedActivate(const Tensor<Batch, N> &Z, const ActivationFunction act) {
         switch (act) {
             case ActivationFunction::ReLU: return Z.map([](float x) { return x > 0.f ? x : 0.f; });
-            case ActivationFunction::Sigmoid: return Z.map([](float x) { return 1.f / (1.f + std::exp(-x)); });
-            case ActivationFunction::Tanh: return Z.map([](float x) { return std::tanh(x); });
+            case ActivationFunction::Sigmoid: return Z.map([](const float x) { return 1.f / (1.f + std::exp(-x)); });
+            case ActivationFunction::Tanh: return Z.map([](const float x) { return std::tanh(x); });
             case ActivationFunction::Linear:
             default: return Z;
         }
@@ -94,11 +100,11 @@ namespace TTTN {
                                           const ActivationFunction act) {
         switch (act) {
             case ActivationFunction::ReLU:
-                return grad.zip(a, [](float g, float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
+                return grad.zip(a, [](const float g, const float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
             case ActivationFunction::Sigmoid:
-                return grad.zip(a, [](float g, float ai) { return g * ai * (1.f - ai); });
+                return grad.zip(a, [](const float g, const float ai) { return g * ai * (1.f - ai); });
             case ActivationFunction::Tanh:
-                return grad.zip(a, [](float g, float ai) { return g * (1.f - ai * ai); });
+                return grad.zip(a, [](const float g, const float ai) { return g * (1.f - ai * ai); });
             case ActivationFunction::Linear:
             default: return grad;
         }
@@ -126,7 +132,9 @@ namespace TTTN {
         using OutputTensor = Tensor<Dims...>;
         static constexpr size_t ParamCount = 0;
 
-        OutputTensor Forward(const InputTensor &x) const { return Softmax<Axis>(x); }
+        OutputTensor Forward(const InputTensor &x) const {
+            return Softmax<Axis>(x);
+        }
 
         static void ZeroGrad() {
         }
@@ -187,14 +195,19 @@ namespace TTTN {
     struct MSE {
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
-            const auto diff = pred.zip(target, [](float p, float t) { return p - t; });
-            return Contract(diff, diff) / static_cast<float>(Tensor<Dims...>::Size);
+            static constexpr float Inv = 1.f / Tensor<Dims...>::Size;
+            //
+            return Collapse(pred, target,
+                            0.0f,
+                            [](float p, float t) { float d = p - t; return d * d; },
+                            std::plus<float>{}
+                   ) * Inv;
         }
 
         template<size_t... Dims>
         static Tensor<Dims...> Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             constexpr float inv = 2.f / static_cast<float>(Tensor<Dims...>::Size);
-            return pred.zip(target, [](float p, float t) { return inv * (p - t); });
+            return pred.zip(target, [](const float p, const float t) { return inv * (p - t); });
         }
     };
 
@@ -226,7 +239,10 @@ namespace TTTN {
     struct CEL {
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
-            return -Contract(target, pred.map([](float p) { return std::log(std::max(p, EPS)); }));
+            return Collapse(target, pred.map([](float p) { return std::log(std::max(p, EPS)); }),
+                            0.0f,
+                            [](float t, float log_p) { return t * log_p; },
+                            std::plus<float>{}) * -1.f;
         }
 
         template<size_t... Dims>

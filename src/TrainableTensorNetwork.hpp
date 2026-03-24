@@ -387,10 +387,12 @@ namespace TTTN {
     }
 
 
-    // typename (not Block) because Input is not a Block
-    template<typename In, Block... Blocks>
+    // NetworkBuilder: typename... (not Block...) so ComposeBlocks can appear in the list.
+    // FlattenRecipes expands any ComposeBlocks before BuildChain sees the recipes.
+    template<typename In, typename... Recipes>
     struct NetworkBuilder {
-        using BlockTuple = typename BuildChain<In, Blocks...>::type;
+        using FlatRecipes = typename FlattenRecipes<Recipes...>::type;
+        using BlockTuple  = typename ApplyBuildChain<In, FlatRecipes>::type;
 
         template<typename Tuple>
         struct Apply;

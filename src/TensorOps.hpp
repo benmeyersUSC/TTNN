@@ -8,12 +8,13 @@
 
 namespace TTTN {
     template<typename F>
-    concept FloatUnaryOp  = std::regular_invocable<F, float> &&
-                            std::same_as<std::invoke_result_t<F, float>, float>;
+    concept FloatUnaryOp = std::regular_invocable<F, float> &&
+                           std::same_as<std::invoke_result_t<F, float>, float>;
 
     template<typename F>
     concept FloatBinaryOp = std::regular_invocable<F, float, float> &&
                             std::same_as<std::invoke_result_t<F, float, float>, float>;
+
 
     // @doc: template<std::invocable<size_t> F> void ParForEach(size_t n, F f)
     /** Helper to parallel-execute `std::for_each` on a `std::views::iota(size_t{0}, n)`, calling `f` (something `std::invocable` on `size_t`) on each index */
@@ -22,104 +23,6 @@ namespace TTTN {
         auto range = std::views::iota(size_t{0}, n);
         std::for_each(std::execution::par_unseq, range.begin(), range.end(), f);
     }
-
-    // @doc: struct TensorConcat<typename T1, typename T2>
-    /**
-     * Templated utility struct for concatenating the dimensions of two `Tensor` objects
-     *   - Templated for two types, `<typename T1, typename T2>`
-     *   - Specialized for two `Tensor`s, `<size_t... Ds1, size_t... Ds2>` and pattern-matched to `<Tensor<Ds1...>, Tensor<Ds2...>>`, creating `type = Tensor<Ds1..., Ds2...>`
-     */
-    template<typename T1, typename T2>
-    struct TensorConcat;
-
-    template<size_t... Ds1, size_t... Ds2>
-    struct TensorConcat<Tensor<Ds1...>, Tensor<Ds2...> > {
-        using type = Tensor<Ds1..., Ds2...>;
-    };
-
-
-    // @doc: struct ArrayToTensor<typename KeptIdxs, typename Iota>
-    /**
-     * Unpack `KeptDimsHolder::value` into new `Tensor` type defined by those kept dimensions
-     * Beautiful syntax: `type = Tensor<arr[Iota]...>`, where `arr = KeptDimsHolder::value` and `Iota...` represents the `[0, arr.size())` indices
-     */
-    template<typename KeptIdxs, typename Iota>
-    struct ArrayToTensor;
-
-    template<typename KeptIdxs, size_t... Iota>
-    struct ArrayToTensor<KeptIdxs, std::index_sequence<Iota...> > {
-        static constexpr auto arr = KeptIdxs::value;
-        using type = Tensor<arr[Iota]...>;
-    };
-
-
-    // @doc: struct KeptDimsHolder<size_t Skip, size_t... Dims>
-    /**
-     * Given a pack `Dims...` and an axis to `Skip`, produce `Tensor<remaining dims...>`
-     * `static constexpr value` holds the new array of `sizeof...(Dims) - 1` dimensions
-     */
-    template<size_t Skip, size_t... Dims>
-    struct KeptDimsHolder {
-        static constexpr auto value = [] {
-            constexpr std::array<size_t, sizeof...(Dims)> all = {Dims...};
-            std::array<size_t, sizeof...(Dims) - 1> result{};
-            size_t out = 0;
-            for (size_t i = 0; i < sizeof...(Dims); ++i) {
-                if (i != Skip) {
-                    result[out++] = all[i];
-                }
-            }
-            return result;
-        }();
-    };
-
-
-    // @doc: struct RemoveAxis<size_t Skip, size_t... Dims>
-    /**
-     * Compact operator to make new `Tensor` type by removing `Skip` dimension from given `Tensor`
-     * `type = ArrayToTensor<KeptDimsHolder<Skip, Dims...>, std::make_index_sequence<sizeof...(Dims) - 1>`
-     */
-    template<size_t Skip, size_t... Dims>
-    struct RemoveAxis {
-        using type = ArrayToTensor<
-            // kept indices (actual values)
-            KeptDimsHolder<Skip, Dims...>,
-            // iota of the above to pattern-match and grab them into new Tensor type!
-            std::make_index_sequence<sizeof...(Dims) - 1>
-        >::type;
-    };
-
-
-    // @doc: struct InsertAxisHolder<size_t Axis, size_t N, size_t... Dims>
-    /**
-     * Dual of `KeptDimsHolder`: inserts `N` at position `Axis` into `Dims...`
-     * `static constexpr value` holds the new array of `sizeof...(Dims) + 1` dimensions
-     */
-    template<size_t Axis, size_t N, size_t... Dims>
-    struct InsertAxisHolder {
-        static constexpr auto value = [] {
-            constexpr std::array<size_t, sizeof...(Dims)> all = {Dims...};
-            std::array<size_t, sizeof...(Dims) + 1> result{};
-            for (size_t i = 0; i < Axis; ++i)        result[i]     = all[i];
-            result[Axis] = N;
-            for (size_t i = Axis; i < sizeof...(Dims); ++i) result[i + 1] = all[i];
-            return result;
-        }();
-    };
-
-    // @doc: struct InsertAxis<size_t Axis, size_t N, size_t... Dims>
-    /**
-     * Dual of `RemoveAxis`: inserts dimension `N` at position `Axis` into `Dims...`
-     * `type = ArrayToTensor<InsertAxisHolder<Axis, N, Dims...>, std::make_index_sequence<sizeof...(Dims) + 1>>`
-     */
-    template<size_t Axis, size_t N, size_t... Dims>
-    struct InsertAxis {
-        using type = ArrayToTensor<
-            InsertAxisHolder<Axis, N, Dims...>,
-            std::make_index_sequence<sizeof...(Dims) + 1>
-        >::type;
-    };
-
 
     // @doc: template<size_t... Dims> Tensor<Dims...> operator+(const Tensor<Dims...>& a, const Tensor<Dims...>& b)
     /** Element-wise add, uses parallel functional `zip` */
@@ -170,25 +73,6 @@ namespace TTTN {
     }
 
 
-    // @doc: struct PermutedTensorType<typename T, size_t... Perm>
-    /**
-     * Type for a permuted `Tensor`
-     * Arbitrary reorganization of a `Tensor`'s `Shape`
-     *   - Templated to `<typename T, size_t... Perm>`
-     *   - Specialized by `<size_t... Dims, size_t... Perm>` and matched to `<Tensor<Dims...>, Perm...>`
-     *   - Unpack and reassign `Shape`'s indices according to `Perm`: `Tensor<Tensor<Dims...>::Shape[Perm]...>`
-     * Example: `PermutedTensorType<Tensor<4, 5, 3>, 2, 0, 1>::type = Tensor<3, 4, 5>`
-     */
-    template<typename T, size_t... Perm>
-    struct PermutedTensorType;
-
-    template<size_t... Dims, size_t... Perm>
-    struct PermutedTensorType<Tensor<Dims...>, Perm...> {
-        static_assert(sizeof...(Dims) == sizeof...(Perm), "Permutation specification must be same size as Tensor dims");
-        static constexpr std::array<size_t, sizeof...(Dims)> shape = {Dims...};
-        using type = Tensor<shape[Perm]...>;
-    };
-
     // @doc: template<size_t... Perm, size_t... Dims> auto Permute(const Tensor<Dims...>& src)
     /**
      * Parallelized arbitrary permutation of `Tensor`'s indices
@@ -213,137 +97,77 @@ namespace TTTN {
         using Source = Tensor<Dims...>;
         using Result = PermutedTensorType<Source, Perm...>::type;
         static constexpr size_t Rank = sizeof...(Dims);
-        // [multi-index] . [strides] = flat index
-        // perm_arr[d], for some dimension index d, is its new position
-        // if og dimensions are <3, 4, 5> and we Permute<1, 2, 0>, then:
-        //      d = 0: Dims[0] = 3, perm_arr[0] = 1...result will be <_, 3, _>
-        //      d = 1: Dims[1] = 4, perm_arr[1] = 2...result will be <_, 3, 4>
-        //      d = 2: Dims[2] = 5, perm_arr[2] = 0...result will be <5, 3, 4>
-        // the d-th dimension in src is the perm_arr[d]-th dimension in dst
         static constexpr std::array<size_t, Rank> perm_arr = {Perm...};
 
-
-        // continuing example src = Tensor<3, 4, 5>, Rank = 3, Size = 60
-        // src_strides = [20, 5, 1]...Tensor[2][3][3] = 20*2 + 5*3 + 3 = 58 = 2nd to last item!
-        // for Permute<1, 2, 0>, dst_strides = [12, 4, 1]
         Result dst;
         ParForEach(Result::Size, [&](size_t i) {
-            // decompose into dst multi-index
             auto dst_idx = Result::FlatToMulti(i);
-            // say i = 33
-            // temp = 33
-            //      dst_index = [33 / 12 = 2, _, _]
-            //      temp = 33 % 12 = 9
-            // temp = 9
-            //      dst_index = [2, 9 / 4 = 2, _]
-            //      temp = 9 % 4 = 1
-            // temp = 1
-            //      dst_index = [2, 2, 1 / 1 = 1]
-            //      temp = 1 % 1 = 0
-
-            // for i = 33
-            // dst_index = [2, 2, 1]
-            // verify that: dst_index . dst_strides = 33
-            // [2, 2, 1] . [12, 4, 1] = 2*12 + 2*4 + 1 = 24 + 8 + 1 = 33
-
-
-            // map dst multi-index to src flat index
-            // invert the permutation: dst_idx[d] belongs at position perm_arr[d] in src space
             auto src_multi = [&]<size_t... Is>(std::index_sequence<Is...>) {
                 std::array<size_t, Rank> m{};
                 ((m[perm_arr[Is]] = dst_idx[Is]), ...);
                 return m;
             }(std::make_index_sequence<Rank>{});
-            size_t src_index = Source::MultiToFlat(src_multi);
-            // i = 33 continued...
-
-            // src_index = 0
-            //      src_index = 0 + dst_idx[0] * src_strides[perm_arr[d]]
-            //                = 2 * src_strides[1]
-            //                = 2 * 5
-            // src_index = 10
-            //      src_index = 10 + 2 * src_strides[2]
-            //                = 10 + 2 * 1
-            //                = 10 + 2
-            // src_index = 12
-            //      src_index = 12 + 1 * src_strides[0]
-            //                = 12 + 1 * 20
-            // src_index = 32
-            //
-            // what is the src multi-index for src.flat(32)?
-            // [_, _, _] . [20, 5, 1] = _*20 + _*5 + _*1 = 32
-            // [1, _, _] . [20, 5, 1] = 1*20 + _*5 + _*1 = 32
-            //                        = _*5 + _*1 = 12
-            // [1, 2, _] . [20, 5, 1] = 1*20 + 2*5 + _*1 = 32
-            //                        = _*1 = 2
-            // [1, 2, 2] . [20, 5, 1] = 1*20 + 2*5 + 2*1 = 32
-            // src-idx for i = 33 is [1, 2, 2]
-            //
-            // recall that we permuted <1, 2, 0>
-            // we know that for i = 33, dst_index is [2, 2, 1], which must be [src-idx[1], src-idx[2], src-idx[0]]...
-            // [src-idx[1], src-idx[2], src-idx[0]] = [2, 2, 1]
-
-
-            dst.flat(i) = src.flat(src_index);
+            dst.flat(i) = src.flat(Source::MultiToFlat(src_multi));
         });
         return dst;
     }
 
 
-    // @doc: struct SliceDimsHolder<size_t Start, size_t Len, size_t... Dims>
+    // =========================================================================
+    // Contraction
+    // =========================================================================
+    //
+    // Contraction = Reduce ∘ zipWith(Map) ∘ Align
+    //
+    //   ContractionKernel  — unified compile-time index tables + compute
+    //   InnerContract<N>   — N-inner-axis contraction, custom Map and Reduce
+    //   ΣΠ<N> / SigmaPi<N> — InnerContract specialized to multiply + sum
+    //   Contract<A,B>      — grand generalized: arbitrary axes, permute → InnerContract
+    //   Collapse           — full-rank same-shape → scalar, custom Map and Reduce
+    //
+    // =========================================================================
+
+
+    // @doc: template<size_t N, typename TA, typename TB> struct ContractionKernel
     /**
-     * Helper struct to hold `std::array<size_t, Len> value` representing contiguous dimensions `[Start, Start+Len)` of a `Tensor<Dims...>`
-     * Will not compile if `Start + Len > Rank`
-     */
-    template<size_t Start, size_t Len, size_t... Dims>
-    struct SliceDimsHolder {
-        static constexpr auto value = [] {
-            constexpr std::array<size_t, sizeof...(Dims)> all = {Dims...};
-            std::array<size_t, Len> result{};
-            for (size_t i = 0; i < Len; ++i) {
-                result[i] = all[Start + i];
-            }
-            return result;
-        }();
-    };
-
-    // @doc: struct TensorSlice<size_t Start, size_t Len, size_t... Dims>
-    /** Using `ArrayToTensor` and `SliceDimsHolder`, create new `Tensor` object out of a set of dimensions, `[Start, Start+Len)`, from original `Tensor<Dims...>` */
-    template<size_t Start, size_t Len, size_t... Dims>
-    struct TensorSlice {
-        using type = ArrayToTensor<
-            SliceDimsHolder<Start, Len, Dims...>,
-            std::make_index_sequence<Len>
-        >::type;
-    };
-
-
-    template<size_t N, typename TA, typename TB>
-    struct SigmaPiKernel;
-
-    // @doc: template<size_t N, typename TA, typename TB> struct SigmaPiKernel
-    /**
-     * Struct templated on `<size_t N, size_t... ADims, size_t... BDims>`, matched to `<N, Tensor<ADims...>, Tensor<BDims...>>`
+     * Unified compile-time index kernel. Specialized for `<N, Tensor<ADims...>, Tensor<BDims...>>`.
      * Compile-time `static constexpr`:
-     *   - `RankA = sizeof...(ADims)`
-     *   - `RankB = sizeof...(BDims)`
-     *   - Asserts that `N <= RankA && N <= RankB`
-     *   - Asserts that last `N` dimensions of `ADims...` are each equal in size to the first `N` dimensions of `BDims...`
-     *   - Free dimensions of `A` and `B`
-     *   - `A_Free = TensorSlice<0, RankA - N, ADims...>::type`
-     *   - `B_Free = TensorSlice<N, RankB - N, BDims...>::type`
-     *   - Types for contracted and resulting `Tensor`s
-     *   - `Contracted = TensorSlice<RankA - N, N, ADims...>::type`
+     *   - `RankA`, `RankB` — ranks of `A` and `B`
+     *   - Asserts `N <= RankA && N <= RankB` and last `N` dims of `A` match first `N` dims of `B`
+     *   - `A_Free = TensorSlice<0, RankA-N, ADims...>::type`
+     *   - `B_Free = TensorSlice<N, RankB-N, BDims...>::type`
+     *   - `Contracted = TensorSlice<RankA-N, N, ADims...>::type`
      *   - `ResultType = TensorConcat<A_Free, B_Free>::type`
-     *   - Index tables
-     *   - `struct { std::array<size_t, Contracted::Size> a, b; } offsets;`
-     *   - Precomputes flat-index contribution of every contracted position for A and B
-     *   - `struct { std::array<size_t, ResultType::Size> a, b; } bases;`
-     *   - Precomputes free-dimension base offset in A and B for every output index
-     *   - **These pay real dividends for [TrainableTensorNetwork](./src/TrainableTensorNetwork.hpp) training schedules. Any weight `Tensor`'s `Dot`s, `Matmul`s, and `Outer`s (*in forward and backward passes*) are saved structs, and the runtime computations are parallelized and vectorized, following known, saved paths**
+     *   - `struct { std::array<size_t, Contracted::Size> a, b; } offsets` — flat-index offset into `A` and `B` for every contracted position; precomputed once per `(N, ADims, BDims)` and shared across all `(Map, Reduce)` variants
+     *   - `b_free_size`, `contracted_size` — compile-time constants used by `InnerContract` to compute per-output base offsets as `O(1)` arithmetic (`base_a = (o / b_free_size) * contracted_size`, `base_b = o % b_free_size`) rather than a precomputed table — the compiler strength-reduces these to multiply-shift at `-O2`
+     * **These pay real dividends for [TrainableTensorNetwork](./src/TrainableTensorNetwork.hpp) training schedules. Any weight `Tensor`'s `Dot`s, `Matmul`s, and `Outer`s (*in forward and backward passes*) are saved structs, and the runtime computations are parallelized and vectorized, following known, saved paths**
      */
+    // @doc: struct ContractionKernel<size_t N, typename TA, typename TB>
+    /**
+     * Unified contraction kernel: compile-time index tables parameterized purely on tensor shapes
+     *
+     * `Contraction = Reduce ∘ zipWith(Map) ∘ Align`
+     *
+     * Aligns the last `N` axes of `TA` with the first `N` axes of `TB`.
+     * Index tables are independent of `Map` and `Reduce` — one kernel instance serves every
+     * operation variant for a given pair of shapes.
+     * `InnerContract` reads these tables and supplies the operation types.
+     *
+     * Precomputes two compile-time tables:
+     *   - `offsets.{a,b}` — flat-index contribution of each contracted position for A and B
+     *   - `bases.{a,b}`   — free-dimension base offset in A and B for each output index
+     *
+     * `bases` is computed without intermediate multi-index arrays (running-remainder style)
+     * to stay within the compiler's constexpr evaluation step budget for large tensors.
+     *
+     * These tables pay real dividends for training schedules: all forward and backward
+     * contractions follow known, precomputed paths — fully parallelizable and vectorizable.
+     */
+    template<size_t N, typename TA, typename TB>
+    struct ContractionKernel;
+
     template<size_t N, size_t... ADims, size_t... BDims>
-    struct SigmaPiKernel<N, Tensor<ADims...>, Tensor<BDims...> > {
+    struct ContractionKernel<N, Tensor<ADims...>, Tensor<BDims...>> {
         static constexpr size_t RankA = sizeof...(ADims);
         static constexpr size_t RankB = sizeof...(BDims);
         static_assert(N <= RankA && N <= RankB);
@@ -355,9 +179,9 @@ namespace TTTN {
             return true;
         }(), "last N dims of A must match first N dims of B");
 
-        using A_Free = TensorSlice<0, RankA - N, ADims...>::type;
-        using B_Free = TensorSlice<N, RankB - N, BDims...>::type;
-        using Contracted = TensorSlice<RankA - N, N, ADims...>::type;
+        using A_Free     = TensorSlice<0,        RankA - N, ADims...>::type;
+        using B_Free     = TensorSlice<N,        RankB - N, BDims...>::type;
+        using Contracted = TensorSlice<RankA - N, N,        ADims...>::type;
         using ResultType = TensorConcat<A_Free, B_Free>::type;
 
         static constexpr size_t a_free_rank = A_Free::Rank;
@@ -367,9 +191,7 @@ namespace TTTN {
         static constexpr auto offsets = [] {
             constexpr auto sa = ComputeStrides<ADims...>::value;
             constexpr auto sb = ComputeStrides<BDims...>::value;
-            struct {
-                std::array<size_t, Contracted::Size> a{}, b{};
-            } t;
+            struct { std::array<size_t, Contracted::Size> a{}, b{}; } t;
             for (size_t c = 0; c < Contracted::Size; ++c) {
                 const auto cm = Contracted::FlatToMulti(c);
                 size_t ao = 0, bo = 0;
@@ -384,55 +206,78 @@ namespace TTTN {
         }();
 
         // output-index → base flat offsets in A and B from free dims
-        static constexpr auto bases = [] {
-            constexpr auto sa = ComputeStrides<ADims...>::value;
-            constexpr auto sb = ComputeStrides<BDims...>::value;
-            struct {
-                std::array<size_t, ResultType::Size> a{}, b{};
-            } t;
-            for (size_t o = 0; o < ResultType::Size; ++o) {
-                const auto om = ResultType::FlatToMulti(o);
-                size_t ab = 0, bb = 0;
-                for (size_t i = 0; i < A_Free::Rank; ++i) ab += om[i] * sa[i];
-                for (size_t i = 0; i < B_Free::Rank; ++i) bb += om[A_Free::Rank + i] * sb[N + i];
-                t.a[o] = ab;
-                t.b[o] = bb;
-            }
-            return t;
-        }();
-
-        static ResultType compute(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
-            ResultType result;
-            ParForEach(ResultType::Size, [&](size_t o) {
-                result.flat(o) = std::transform_reduce(
-                    std::execution::unseq,
-                    offsets.a.begin(), offsets.a.end(),
-                    offsets.b.begin(),
-                    0.0f,
-                    std::plus<>{},
-                    [&](size_t oa, size_t ob) {
-                        return A.flat(bases.a[o] + oa) * B.flat(bases.b[o] + ob);
-                    });
-            });
-            return result;
-        }
+        //
+        // ResultType = TensorConcat<A_Free, B_Free>, so output index o factors cleanly:
+        //   base_a(o) = (o / B_Free::Size) * Contracted::Size
+        //   base_b(o) = o % B_Free::Size
+        //
+        // These are O(1) to compute at runtime, so no precomputed table is needed.
+        // InnerContract computes them inline per output element.
+        static constexpr size_t b_free_size    = B_Free::Size;
+        static constexpr size_t contracted_size = Contracted::Size;
     };
+
+
+    // @doc: template<size_t N, ..., FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)
+    /**
+     * N-inner-axis contraction with custom `Map` and `Reduce`
+     * Aligns the last `N` axes of `A` with the first `N` axes of `B`
+     * Reads precomputed `offsets` from `ContractionKernel`; base offsets computed inline as O(1) arithmetic
+     * `result.flat(o) = Reduce_c map(A[A_Free(o), c], B[c, B_Free(o)])`, for `o ∈ [0, ResultType::Size)`
+     */
+    // @doc: template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)
+    /**
+     * N-inner-axis contraction with custom `Map` and `Reduce`
+     * Aligns the last `N` axes of `A` with the first `N` axes of `B`
+     * Reads precomputed index tables from `ContractionKernel` — the kernel is instantiated
+     * once per (N, shape-of-A, shape-of-B) and shared across all (Map, Reduce) variants
+     * All named contractions (`ΣΠ`, `Dot`, `Matmul`, `Outer`, `Einsum`) route through here
+     * `ΣΠ<N>(A, B)` == `InnerContract<N>(A, B, 0.f, multiply, plus)`
+     */
+    template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce>
+    auto InnerContract(const Tensor<ADims...> &A,
+                       const Tensor<BDims...> &B,
+                       float init,
+                       Map map,
+                       Reduce reduce) {
+        using K = ContractionKernel<N, Tensor<ADims...>, Tensor<BDims...>>;
+        using ResultType = typename K::ResultType;
+        ResultType result;
+        ParForEach(ResultType::Size, [&](size_t o) {
+            const size_t base_a = (o / K::b_free_size) * K::contracted_size;
+            const size_t base_b =  o % K::b_free_size;
+            result.flat(o) = std::transform_reduce(
+                std::execution::unseq,
+                K::offsets.a.begin(), K::offsets.a.end(),
+                K::offsets.b.begin(),
+                init,
+                reduce,
+                [&](size_t oa, size_t ob) {
+                    return map(A.flat(base_a + oa), B.flat(base_b + ob));
+                });
+        });
+        return result;
+    }
+
 
     // @doc: template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...>& A, const Tensor<BDims...>& B)
     /**
-     * Wrapper function around `SigmaPiKernel::Compute`
-     * returns `SigmaPiKernel<N, Tensor<ADims...>, Tensor<BDims...> >::compute(A, B)`
+     * `InnerContract<N>` specialized to `map = multiply`, `reduce = plus` — the classical sum-of-products
+     * `result.flat(o) = Σ_c A[A_Free(o), c] * B[c, B_Free(o)]`
+     * `SigmaPi<N>(A, B)` is an ASCII alias for `ΣΠ<N>(A, B)`
      */
     template<size_t N, size_t... ADims, size_t... BDims>
     auto ΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
-        return SigmaPiKernel<N, Tensor<ADims...>, Tensor<BDims...> >::compute(A, B);
+        return InnerContract<N>(
+            A, B,
+            0.0f,
+            [](const float a, const float b) { return a * b; },
+            std::plus<>{}
+        );
     }
 
     // @doc: template<size_t N, size_t... ADims, size_t... BDims> auto SigmaPi(const Tensor<ADims...>& A, const Tensor<BDims...>& B)
-    /**
-     * English wrapper around greek-aliased function
-     * returns `ΣΠ<N>(A, B)`
-     */
+    /** ASCII alias for `ΣΠ<N>(A, B)` */
     template<size_t N, size_t... ADims, size_t... BDims>
     auto SigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
         return ΣΠ<N>(A, B);
@@ -487,8 +332,8 @@ namespace TTTN {
 
     // @doc: template<size_t I, size_t J, size_t... ADims, size_t... BDims> auto Einsum(const Tensor<ADims...>& A, const Tensor<BDims...>& B)
     /**
-     * `ΣΠ`-contracts over single selected indices, `I` and `J`, from `Tensor<ADims...>` and `Tensor<BDims...>`, respectively
-     * Calls `ΣΠ<1>` on `PermuteFromHolder<MoveToLastPerm<I, sizeof...(ADims)>...>` and `PermuteFromHolder<MoveToFirstPerm<J, sizeof...(BDims)>...>`
+     * `ΣΠ`-contracts over single selected indices `I` and `J` from `A` and `B`, respectively
+     * Permutes `A` to move axis `I` last, `B` to move axis `J` first, then calls `ΣΠ<1>`
      */
     template<size_t I, size_t J, size_t... ADims, size_t... BDims>
     auto Einsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
@@ -504,38 +349,25 @@ namespace TTTN {
     }
 
 
-    // @doc: template<size_t N> auto Dot(const Tensor<N>& a, const Tensor<N>& b)
     // @doc: template<size_t N> auto Dot(const Tensor<N>& A, const Tensor<N>& B)
-    /** `ΣΠ`-contracts over `1` (the only) inner dimension of two `Tensor<N>`s, `A` and `B`, returning a `Tensor<>` with `Rank = 0` */
+    /** `ΣΠ<1>` on two `Tensor<N>`s — returns `Tensor<>` (rank-0 scalar) */
     template<size_t N>
     auto Dot(const Tensor<N> &A, const Tensor<N> &B) {
         return ΣΠ<1>(A, B);
     }
 
     // @doc: template<size_t M, size_t K, size_t N> auto Matmul(const Tensor<M,K>& A, const Tensor<K,N>& B)
-    /** `ΣΠ`-contracts over `1` inner dimension of two `Tensor<_,K>`s, `A` and `A`, returning a `Tensor<M,N>` with `Rank = 2` */
+    /** `ΣΠ<1>` on rank-2 tensors — returns `Tensor<M,N>` */
     template<size_t M, size_t K, size_t N>
     auto Matmul(const Tensor<M, K> &A, const Tensor<K, N> &B) {
         return ΣΠ<1>(A, B);
     }
 
-    // @doc: template<size_t... ADims, size_t... BDims> auto Outer(const Tensor<ADims...>& a, const Tensor<BDims...>& b)
     // @doc: template<size_t... ADims, size_t... BDims> auto Outer(const Tensor<ADims...>& A, const Tensor<BDims...>& B)
-    /** `ΣΠ`-contracts over `0` inner dimension of `Tensor<ADims...> A` and `Tensor<BDims...> B`, returning a `Tensor<ADims..., BDims...>` with `Rank = sizeof...(ADims) + sizeof...(BDims)` */
+    /** `ΣΠ<0>`: contract nothing — returns `Tensor<ADims..., BDims...>` */
     template<size_t... ADims, size_t... BDims>
     auto Outer(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
         return ΣΠ<0>(A, B);
-    }
-
-    // @doc: template<size_t... Dims> auto Contract(const Tensor<Dims...> &A, const Tensor<Dims...> &B)
-    /**
-     * `ΣΠ`-contracts *every* dimension of the congruent `A` and `B` `Tensor<Dims...>`s
-     * `(⊕ ∘ ⊙)(A, B)` -- Hadamard product (⊙) of `A` and `B`, then flat accumulation (⊕) over the result
-     * Returns `Tensor<>` (scalar)
-     */
-    template<size_t... Dims>
-    float Contract(const Tensor<Dims...> &A, const Tensor<Dims...> &B) {
-        return ΣΠ<sizeof...(Dims)>(A, B).flat(0);
     }
 
 
@@ -549,8 +381,6 @@ namespace TTTN {
     template<size_t... Dims>
     auto Transpose(const Tensor<Dims...> &t) {
         auto f = []<size_t... I>(const Tensor<I...> &s, std::index_sequence<I...>) {
-            // so if Dims are <3, 5, 4> (sizeof = 3) we will have:
-            //      Permute<(3-1) - 0 = 2, 2 - 1 = 1, 0>
             return Permute<(sizeof...(Dims) - 1 - I)...>(s);
         };
         return f(t, std::make_index_sequence<sizeof...(Dims)>{});
@@ -569,7 +399,7 @@ namespace TTTN {
     struct ReduceKernel {
         using Source = Tensor<Dims...>;
         using Result = typename RemoveAxis<Axis, Dims...>::type;
-        static constexpr size_t axis_dim = SizeTemplateGet<Axis, Dims...>::value;
+        static constexpr size_t axis_dim    = SizeTemplateGet<Axis, Dims...>::value;
         static constexpr size_t axis_stride = Source::Strides[Axis];
 
         static constexpr auto bases = [] {
@@ -585,14 +415,6 @@ namespace TTTN {
             return t;
         }();
 
-        // project(i): flat index in Result for source flat index i.
-        // Strips the reduced axis's contribution and re-indexes into Result's stride space.
-        //   after  = i % axis_stride              (axes after Axis, strides unchanged)
-        //   d_axis = (i / axis_stride) % axis_dim (position along the reduced axis, discarded)
-        //   before = i - after - d_axis*axis_stride (axes before Axis, source strides are
-        //                                            multiples of axis_dim*axis_stride,
-        //                                            so dividing by axis_dim gives result stride)
-        //   result = before / axis_dim + after
         static constexpr size_t project(size_t i) {
             const size_t after  = i % axis_stride;
             const size_t d_axis = (i / axis_stride) % axis_dim;
@@ -601,7 +423,7 @@ namespace TTTN {
         }
     };
 
-    // @doc: template<size_t Axis, typename ReduceFn, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...>& src, float init, ReduceFn rfn)
+    // @doc: template<size_t Axis, FloatBinaryOp ReduceFn, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...>& src, float init, ReduceFn rfn)
     /**
      * Generalized axis reduction: collapses `Axis` by folding elements with `rfn(acc, val)` starting from `init`
      * `ReduceSum`  == `ReduceApply<Axis>(src, 0.f,  std::plus<float>{})`
@@ -612,12 +434,6 @@ namespace TTTN {
         using K = ReduceKernel<Axis, Dims...>;
         auto k_range = std::views::iota(size_t{0}, K::axis_dim);
         typename K::Result dst;
-    // @doc: template<size_t Axis, FloatBinaryOp ReduceFn, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...>& src, float init, ReduceFn rfn)
-    /**
-     * Generalized axis reduction: collapses `Axis` by folding elements with `rfn(acc, val)` starting from `init`
-     * `ReduceSum`  == `ReduceApply<Axis>(src, 0.f,  std::plus<float>{})`
-     * `ReduceMax`  == `ReduceApply<Axis>(src, -inf, [](float a, float b){ return std::max(a,b); })`
-     */
         ParForEach(K::Result::Size, [&](size_t out_i) {
             dst.flat(out_i) = std::transform_reduce(
                 std::execution::unseq,
@@ -647,7 +463,7 @@ namespace TTTN {
     template<size_t Axis, size_t N, size_t... Dims>
     typename InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...> &src) {
         using Full = typename InsertAxis<Axis, N, Dims...>::type;
-        return [&]<size_t... FullDims>(std::type_identity<Tensor<FullDims...>>) {
+        return [&]<size_t... FullDims>(std::type_identity<Tensor<FullDims...> >) {
             using K = ReduceKernel<Axis, FullDims...>;
             Tensor<FullDims...> result;
             ParForEach(Full::Size, [&](size_t i) {
@@ -657,12 +473,6 @@ namespace TTTN {
         }(std::type_identity<Full>{});
     }
 
-    // @doc: template<size_t Axis, typename F, size_t... Dims> Tensor<Dims...> BroadcastApply(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b, F f)
-    /**
-     * Apply binary `f(a_elem, b_elem) -> float` element-wise between `A` and `b` broadcast along `Axis`
-     * `BroadcastApply<Axis>(A, b, f)` — for each element `i` of `A`, computes `f(A[i], b[project(i)])` where `project` strips the `Axis` contribution
-     * Generalizes `BroadcastAdd`: `BroadcastAdd(A, b)` == `BroadcastApply(A, b, std::plus<>{})`
-     */
     // @doc: template<size_t Axis, FloatBinaryOp F, size_t... Dims> Tensor<Dims...> BroadcastApply(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b, F f)
     /**
      * Apply binary `f(a_elem, b_elem) -> float` element-wise between `A` and `b` broadcast along `Axis`
@@ -679,11 +489,13 @@ namespace TTTN {
         return result;
     }
 
-    // @doc: template<size_t Axis, typename ReduceFn, typename ApplyFn, size_t... Dims> Tensor<Dims...> ReduceBroadcast(const Tensor<Dims...>& src, float init, ReduceFn rfn, ApplyFn afn)
-    /**
-     * Compose `ReduceApply` + `BroadcastApply` in one call: reduce along `Axis` with `rfn`, then broadcast the result back with `afn`
-     * `ReduceBroadcast<Axis>(src, init, rfn, afn)` == `BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn)`
-     */
+    // @doc: template<size_t Axis, size_t... Dims> Tensor<Dims...> BroadcastAdd(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b)
+    /** Add a reduced tensor to all `Axis` slices of `A` — convenience wrapper over `BroadcastApply<Axis>(A, b, std::plus<float>{})` */
+    template<size_t Axis, size_t... Dims>
+    Tensor<Dims...> BroadcastAdd(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
+        return BroadcastApply<Axis>(A, b, std::plus<float>{});
+    }
+
     // @doc: template<size_t Axis, FloatBinaryOp ReduceFn, FloatBinaryOp ApplyFn, size_t... Dims> Tensor<Dims...> ReduceBroadcast(const Tensor<Dims...>& src, float init, ReduceFn rfn, ApplyFn afn)
     /**
      * Compose `ReduceApply` + `BroadcastApply` in one call: reduce along `Axis` with `rfn`, then broadcast the result back with `afn`
@@ -693,13 +505,6 @@ namespace TTTN {
     template<size_t Axis, FloatBinaryOp ReduceFn, FloatBinaryOp ApplyFn, size_t... Dims>
     Tensor<Dims...> ReduceBroadcast(const Tensor<Dims...> &src, float init, ReduceFn rfn, ApplyFn afn) {
         return BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn);
-    }
-
-    // @doc: template<size_t Axis, size_t... Dims> Tensor<Dims...> BroadcastAdd(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b)
-    /** Add a reduced tensor to all `Axis` slices of `A` — convenience wrapper over `BroadcastApply<Axis>(A, b, std::plus<float>{})` */
-    template<size_t Axis, size_t... Dims>
-    Tensor<Dims...> BroadcastAdd(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
-        return BroadcastApply<Axis>(A, b, std::plus<float>{});
     }
 
     // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceMean(const Tensor<Dims...>& src)
@@ -718,7 +523,7 @@ namespace TTTN {
     template<size_t Axis, size_t... Dims>
     typename RemoveAxis<Axis, Dims...>::type ReduceMax(const Tensor<Dims...> &src) {
         return ReduceApply<Axis>(src, -std::numeric_limits<float>::infinity(),
-            [](float a, float b) { return std::max(a, b); });
+                                 [](float a, float b) { return std::max(a, b); });
     }
 
     // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...>& src, size_t idx)
@@ -729,16 +534,11 @@ namespace TTTN {
     template<size_t Axis, size_t... Dims>
     typename RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...> &src, size_t idx) {
         using Source = Tensor<Dims...>;
-        // we're decrementing rank
         using Result = typename RemoveAxis<Axis, Dims...>::type;
 
         Result dst;
-        // for each value we're returning
         for (size_t i = 0; i < Result::Size; ++i) {
-            // where are we going in result in terms of dims?
             auto dst_multi = Result::FlatToMulti(i);
-
-            // rebuild source multi-index by inserting idx at Axis
             std::array<size_t, Source::Rank> src_multi{};
             size_t dst_d = 0;
             for (size_t d = 0; d < Source::Rank; ++d) {
@@ -749,13 +549,12 @@ namespace TTTN {
         return dst;
     }
 
-    // @doc: template<size_t Axis, typename F, size_t... Dims> void TensorIndexApply(Tensor<Dims...>& dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type& src, F f)
     // @doc: template<size_t Axis, FloatBinaryOp F, size_t... Dims> void TensorIndexApply(Tensor<Dims...>& dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type& src, F f)
     /** Apply binary `f(existing, incoming) -> float` to each element of the `idx`-th slice of `dst` along `Axis` using the corresponding element of `src` */
     template<size_t Axis, FloatBinaryOp F, size_t... Dims>
     void TensorIndexApply(Tensor<Dims...> &dst, size_t idx,
                           const typename RemoveAxis<Axis, Dims...>::type &src, F f) {
-        using Dest = Tensor<Dims...>;
+        using Dest  = Tensor<Dims...>;
         using Slice = typename RemoveAxis<Axis, Dims...>::type;
         for (size_t i = 0; i < Slice::Size; ++i) {
             auto src_multi = Slice::FlatToMulti(i);
@@ -769,4 +568,137 @@ namespace TTTN {
     }
 
 
-};
+    // =========================================================================
+    // Generalized Contract and Collapse
+    // =========================================================================
+
+
+    // @doc: struct MoveAxesToEnd<size_t Rank, size_t... Axes>
+    /** Compile-time permutation that moves the listed `Axes` to the end, free axes first in original order */
+    template<size_t Rank, size_t... Axes>
+    struct MoveAxesToEnd {
+        static constexpr auto value = [] {
+            std::array<size_t, Rank> p{};
+            bool is_contract[Rank] = {false};
+            ((is_contract[Axes] = true), ...);
+            size_t out = 0;
+            for (size_t i = 0; i < Rank; ++i)
+                if (!is_contract[i])
+                    p[out++] = i;
+            ((p[out++] = Axes), ...);
+            return p;
+        }();
+    };
+
+    // @doc: struct MoveAxesToFront<size_t Rank, size_t... Axes>
+    /** Compile-time permutation that moves the listed `Axes` to the front, free axes last in original order */
+    template<size_t Rank, size_t... Axes>
+    struct MoveAxesToFront {
+        static constexpr auto value = [] {
+            std::array<size_t, Rank> p{};
+            bool is_contract[Rank] = {false};
+            ((is_contract[Axes] = true), ...);
+            size_t out = 0;
+            for (size_t i = 0; i < Rank; ++i)
+                if (is_contract[i])
+                    p[out++] = i;
+            for (size_t i = 0; i < Rank; ++i)
+                if (!is_contract[i])
+                    p[out++] = i;
+            return p;
+        }();
+    };
+
+    // @doc: template<std::size_t N> struct AxisList
+    /**
+     * Compile-time list of `N` axis indices, passed as a non-type template parameter to `Contract`
+     * Usage: `Contract<AxisList<2>{{1, 3}}, AxisList<2>{{0, 2}}>(A, B, init, map, reduce)`
+     */
+    template<std::size_t N>
+    struct AxisList {
+        std::size_t data[N]{};
+
+        consteval explicit AxisList(const std::size_t (&input)[N]) {
+            for (std::size_t i = 0; i < N; ++i) data[i] = input[i];
+        }
+    };
+
+    template<size_t... Dims, const auto &PermArray, std::size_t... Is>
+    auto ApplyPerm(const Tensor<Dims...> &tensor, std::index_sequence<Is...>) {
+        return Permute<PermArray[Is]...>(tensor);
+    }
+
+
+    // @doc: template<size_t... Dims> auto Contract(const Tensor<Dims...> &A, const Tensor<Dims...> &B)
+    /**
+     * `ΣΠ`-contracts *every* dimension of the congruent `A` and `B` `Tensor<Dims...>`s
+     * `(⊕ ∘ ⊙)(A, B)` -- Hadamard product (⊙) of `A` and `B`, then flat accumulation (⊕) over the result
+     * Returns `Tensor<>` (scalar)
+     */
+    // @doc: template<AxisList AAxes, AxisList BAxes, ..., FloatBinaryOp Map, FloatBinaryOp Reduce> auto Contract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)
+    /**
+     * Grand-generalized contraction over arbitrary axis sets
+     * Permutes `A` and `B` to align the selected axes, then delegates to `InnerContract<N>`
+     */
+    // @doc: template<AxisList AAxes, AxisList BAxes, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto Contract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)
+    /**
+     * Grand generalized contraction over arbitrary named axes with custom `Map` and `Reduce`
+     * `Contraction = Reduce ∘ zipWith(Map) ∘ Align`
+     *
+     * `AAxes` and `BAxes` name the axes to contract — they are permuted into inner position,
+     * then `InnerContract<N>` is called with the given `Map` and `Reduce`
+     *
+     * Specializations:
+     *   - `ΣΠ<N>(A, B)` == `Contract<last-N-of-A, first-N-of-B>(A, B, 0, mul, plus)`
+     *   - `Collapse(A, B, init, m, r)` == `Contract<all, all>(A, B, init, m, r)` for same-shape A, B
+     */
+    template<AxisList AAxes, AxisList BAxes,
+             size_t... ADims, size_t... BDims,
+             FloatBinaryOp Map, FloatBinaryOp Reduce>
+    auto Contract(const Tensor<ADims...> &A,
+                  const Tensor<BDims...> &B,
+                  float init,
+                  Map map,
+                  Reduce reduce) {
+        static_assert(sizeof(AAxes.data) == sizeof(BAxes.data),
+                      "Contract: axis counts for A and B must match");
+        constexpr size_t N    = sizeof(AAxes.data) / sizeof(size_t);
+        constexpr size_t ARank = sizeof...(ADims);
+        constexpr size_t BRank = sizeof...(BDims);
+
+        using PermA = decltype([]<size_t... Is>(std::index_sequence<Is...>) {
+            return MoveAxesToEnd<ARank, AAxes.data[Is]...>{};
+        }(std::make_index_sequence<N>{}));
+
+        using PermB = decltype([]<size_t... Is>(std::index_sequence<Is...>) {
+            return MoveAxesToFront<BRank, BAxes.data[Is]...>{};
+        }(std::make_index_sequence<N>{}));
+
+        auto permutedA = ApplyPerm<PermA::value>(A, std::make_index_sequence<ARank>{});
+        auto permutedB = ApplyPerm<PermB::value>(B, std::make_index_sequence<BRank>{});
+
+        return InnerContract<N>(permutedA, permutedB, init, map, reduce);
+    }
+
+
+    // @doc: template<size_t... Dims, FloatBinaryOp M, FloatBinaryOp R> float Collapse(const Tensor<Dims...>& A, const Tensor<Dims...>& B, float init, M m, R r)
+    /**
+     * Full-rank same-shape scalar reduction: `Reduce_i map(A[i], B[i])`
+     * Implemented as a direct `std::transform_reduce` over flat data — no index tables needed
+     * `Collapse(A, B, 0, mul, plus)` == Frobenius inner product; `Collapse(A, B, 0, abs_diff, plus)` == L1 distance
+     */
+    template<size_t... Dims, FloatBinaryOp M, FloatBinaryOp R>
+    float Collapse(const Tensor<Dims...> &A,
+                   const Tensor<Dims...> &B,
+                   float init,
+                   M m,
+                   R r) {
+        return std::transform_reduce(
+            std::execution::unseq,
+            A.data(), A.data() + Tensor<Dims...>::Size,
+            B.data(),
+            init, r, m
+        );
+    }
+
+}
