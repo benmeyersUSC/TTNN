@@ -10,6 +10,32 @@ Used in my [AlphaToe](https://github.com/benmeyersUSC/AlphaToe) library.
 
 ---
 
+## Motivations
+
+-
+-
+-
+
+---
+
+## Use Cases
+
+-
+-
+-
+
+---
+
+## Future Directions
+
+- **SDL Visualization Plugin** — render
+  `Tensor`s and networks below rank 4; watch weight matrices, attention patterns, and activation volumes live during training
+- **Interpretability APIs
+  ** — comparison frameworks for two same-topology networks (weight similarity, head alignment, per-layer Frobenius cosine similarity across checkpoints or runs)
+- **GPU Utilization** — replace parallel CPU dispatch with CUDA/Metal kernels for real throughput on large networks
+
+---
+
 ## Table of Contents
 
 1. [Tensor.hpp -- The Foundational Object](#tensorhpp--the-foundational-object)
@@ -141,6 +167,9 @@ The primary data structure. `Dims...` encodes the full shape at compile time, in
 
 - **[`float flat(size_t idx) const`](src/Tensor.hpp)**
     - Returns `const float&` reference to item at `idx` in underlying array
+
+- **[`operator float() const`](src/Tensor.hpp)**
+    - Implicit scalar conversion — only valid for `Tensor<>` (rank-0, `Rank == 0`). Allows `Contract(A, B)` results to be used directly as `float` without calling `.flat(0)`.
 
 **Functional transforms:**
 
@@ -287,6 +316,9 @@ Generalized tensor algebra: contractions, permutations, reductions, slicing, and
 
 - **[`template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)**
     - Hadamard (element-wise) product, uses parallel functional `zip`
+
+- **[`template<size_t... Dims> Tensor<Dims...> operator/(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)**
+    - Element-wise) division, uses parallel functional `zip`
 
 ---
 
@@ -656,13 +688,13 @@ Activation functions, their derivatives, loss functions, and the `SoftmaxBlock` 
   -
 
 - **[`template<size_t N> Tensor<N> ActivatePrime(const Tensor<N>& grad, const Tensor<N>& a, ActivationFunction act)`](src/TTTN_ML.hpp)**
-    -
+  -
 
 - **[`template<size_t Batch, size_t N> Tensor<Batch, N> BatchedActivate(const Tensor<Batch, N>& Z, ActivationFunction act)`](src/TTTN_ML.hpp)**
-    -
+  -
 
 - **[`template<size_t Batch, size_t N> Tensor<Batch, N> BatchedActivatePrime(const Tensor<Batch, N>& grad, const Tensor<Batch, N>& a, ActivationFunction act)`](src/TTTN_ML.hpp)**
-    -
+  -
 
 ---
 
@@ -672,7 +704,7 @@ Activation functions, their derivatives, loss functions, and the `SoftmaxBlock` 
   -
 
 - **[`template<size_t Axis, size_t... Dims> Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...>& grad, const Tensor<Dims...>& a)`](src/TTTN_ML.hpp)**
-    -
+  -
 
 ---
 
@@ -688,13 +720,13 @@ A shape-preserving, parameter-free block that applies axis-generalized softmax. 
   -
 
 - **[`InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/TTTN_ML.hpp)**
-    -
+  -
 
 - **[`template<size_t Batch> Tensor<Batch, Dims...> BatchedForward(const Tensor<Batch, Dims...>& X) const`](src/TTTN_ML.hpp)**
-    -
+  -
 
 - **[`template<size_t Batch> Tensor<Batch, Dims...> BatchedBackward(const Tensor<Batch, Dims...>& delta_A, const Tensor<Batch, Dims...>& a, const Tensor<Batch, Dims...>& a_prev)`](src/TTTN_ML.hpp)**
-    -
+  -
 
 - **[`void Update(float, float, float, float, float, float)`](src/TTTN_ML.hpp)** *(no-op)*
   -
@@ -722,23 +754,31 @@ A shape-preserving, parameter-free block that applies axis-generalized softmax. 
 #### `struct MSE`
 
 - **[`template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
-    -
+  -
 - **[`template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
-    -
+  -
 
 #### `struct BinaryCEL`
 
 - **[`template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
-    -
+  -
 - **[`template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
-    -
+  -
 
 #### `struct CEL`
 
 - **[`template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
-    -
+  -
 - **[`template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)**
-    -
+  -
+
+#### `BatchAccuracy`
+
+- **[`template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N>& pred, const Tensor<Batch, N>& labels)`](src/TTTN_ML.hpp)**
+    - Returns the percentage of correctly classified samples in a batch. `labels` must be one-hot. Correct iff
+      `argmax(pred[b]) == argmax(labels[b])`, computed via
+      `ReduceSum<1>(pred ⊙ labels)` (probability assigned to the true class) vs
+      `ReduceMax<1>(pred)` (highest predicted probability) — no explicit argmax loop required.
 
 ---
 
@@ -751,10 +791,10 @@ Implements the general multidimensional dense layer (`DenseMDBlock`) and its rec
 ### Multi-Dimensional Activation Helpers
 
 - **[`template<size_t... Dims> Tensor<Dims...> ActivateMD(const Tensor<Dims...>& z, ActivationFunction act)`](src/Dense.hpp)**
-    -
+  -
 
 - **[`template<size_t... Dims> Tensor<Dims...> ActivatePrimeMD(const Tensor<Dims...>& grad, const Tensor<Dims...>& a, ActivationFunction act)`](src/Dense.hpp)**
-    -
+  -
 
 - **[`struct WTBlockSwapPerm<size_t N_out, size_t N_in>`](src/Dense.hpp)**
   -
@@ -775,13 +815,13 @@ The concrete fully-connected block. `W = Tensor<OutDims..., InDims...>`, `b = Te
   -
 
 - **[`InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Dense.hpp)**
-    -
+  -
 
 - **[`template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp)**
-    -
+  -
 
 - **[`template<size_t Batch> Tensor<Batch, InDims...> BatchedBackward(const Tensor<Batch, OutDims...>& delta_A, const Tensor<Batch, OutDims...>& a, const Tensor<Batch, InDims...>& a_prev)`](src/Dense.hpp)**
-    -
+  -
 
 - **[`void Update(float adamBeta1, float adamBeta2, float lr, float mCorr, float vCorr, float eps)`](src/Dense.hpp)**
   -
@@ -825,13 +865,13 @@ Implements scaled dot-product multi-head self-attention over sequences of arbitr
   -
 
 - **[`InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Attention.hpp)**
-    -
+  -
 
 - **[`template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(const Tensor<Batch, SeqLen, EmbDims...>& X)`](src/Attention.hpp)**
-    -
+  -
 
 - **[`template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(const Tensor<Batch, SeqLen, EmbDims...>& delta_A, const Tensor<Batch, SeqLen, EmbDims...>& a, const Tensor<Batch, SeqLen, EmbDims...>& a_prev)`](src/Attention.hpp)**
-    -
+  -
 
 - **[`void Update(float adamBeta1, float adamBeta2, float lr, float mCorr, float vCorr, float eps)`](src/Attention.hpp)
   **
@@ -855,7 +895,7 @@ Implements scaled dot-product multi-head self-attention over sequences of arbitr
 ### `struct MHAttention<size_t Heads, size_t... EmbDims>` *(Block recipe)*
 
 - **[`template<typename InputT> using Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`](src/Attention.hpp)**
-    -
+  -
 
 ---
 
@@ -961,7 +1001,7 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
   -
 
 - **[`template<typename Loss> float Fit(const InputTensor& x, const OutputTensor& target, float lr)`](src/TrainableTensorNetwork.hpp)**
-    -
+  -
 
 **Batched interface:**
 
@@ -974,13 +1014,13 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
 
 
 - **[`template<size_t Batch> void BatchedBackwardAll(const BatchedActivations<Batch>& A, const typename PrependBatch<Batch, OutputTensor>::type& grad)`](src/TrainableTensorNetwork.hpp)**
-    -
+  -
 
 - **[`template<size_t Batch> void BatchTrainStep(const typename PrependBatch<Batch, InputTensor>::type& X, const typename PrependBatch<Batch, OutputTensor>::type& grad, float lr)`](src/TrainableTensorNetwork.hpp)**
-    -
+  -
 
 - **[`template<typename Loss, size_t Batch> float BatchFit(const typename PrependBatch<Batch, InputTensor>::type& X, const typename PrependBatch<Batch, OutputTensor>::type& Y, float lr)`](src/TrainableTensorNetwork.hpp)**
-    -
+  -
 
 **Serialization:**
 
@@ -995,7 +1035,7 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
 ### Free Functions
 
 - **[`template<typename Loss, size_t Batch, ConcreteBlock... Blocks, size_t N, size_t... DataDims, typename PrepFn> float RunEpoch(TrainableTensorNetwork<Blocks...>& net, const Tensor<N, DataDims...>& dataset, std::mt19937& rng, float lr, PrepFn prep)`](src/TrainableTensorNetwork.hpp)**
-    -
+  -
 
 ---
 
@@ -1059,4 +1099,4 @@ Lightweight terminal progress bar. Construct with a total step count and optiona
       `.bin` file if the underlying CSV changes.
 
 - **[`template<size_t Batch, size_t N, size_t... RestDims> Tensor<Batch, RestDims...> RandomBatch(const Tensor<N, RestDims...>& ds, std::mt19937& rng)`](src/DataIO.hpp)**
-    -
+  -

@@ -17,8 +17,6 @@
 #endif
 
 namespace TTTN {
-    // TENSOR DIMENSIONS PRODUCT
-    // templatized dimension list --> product (for Tensor underlying array size)
     // @doc: struct TensorDimsProduct<size_t... Ds>
     /**
      * Template-specialization-based recursion to collapse variadic template `<size_t...Ds>` into single `size_t`, stored statically as `TensorDimsProduct<size_t...Ds>::value`
@@ -27,20 +25,17 @@ namespace TTTN {
     template<size_t... Ds>
     struct TensorDimsProduct;
 
-    // base case
     template<>
     struct TensorDimsProduct<> {
         static constexpr size_t value = 1;
     };
 
-    // recursive case
     template<size_t First, size_t... Rest>
     struct TensorDimsProduct<First, Rest...> {
         static constexpr size_t value = First * TensorDimsProduct<Rest...>::value;
     };
 
 
-    // GET DIMENSION FROM TENSOR DIMENSIONS LIST
     // @doc: struct SizeTemplateGet<size_t N, size_t... Ds>
     /**
      * Template-specialization-based recursion grab `N`-th `size_t` from `<size_t...Ds>`
@@ -50,13 +45,11 @@ namespace TTTN {
     template<size_t N, size_t... Ds>
     struct SizeTemplateGet;
 
-    // base case: first element
     template<size_t First, size_t... Rest>
     struct SizeTemplateGet<0, First, Rest...> {
         static constexpr size_t value = First;
     };
 
-    // recursive case
     template<size_t N, size_t First, size_t... Rest>
     struct SizeTemplateGet<N, First, Rest...> {
         // peel off, ditch first, until N = 0
@@ -64,8 +57,6 @@ namespace TTTN {
     };
 
 
-    // STRIDES: for N-Rank indexing in flat vector, we need stride vector
-    // stride[0] = TensorDimsProduct<A, B, ..., N>, stride[-2] = N, stride[-1] = 1
      // @doc: struct ComputeStrides<size_t... Ds>
      /**
       * Template-specialization-based recursion to compute `Tensor::Strides` array
@@ -81,19 +72,16 @@ namespace TTTN {
     template<size_t... Ds>
     struct ComputeStrides;
 
-    // base case: no dim
     template<>
     struct ComputeStrides<> {
         static constexpr std::array<size_t, 0> value = {};
     };
 
-    // base case: one dim
     template<size_t D>
     struct ComputeStrides<D> {
         static constexpr std::array<size_t, 1> value = {1};
     };
 
-    // recursive case: stride[0] is product of remaining dims, then recurse
     template<size_t First, size_t Second, size_t... Rest>
     struct ComputeStrides<First, Second, Rest...> {
         static constexpr auto tail = ComputeStrides<Second, Rest...>::value;
@@ -112,32 +100,18 @@ namespace TTTN {
         static constexpr auto value = compute();
     };
 
-    //<f=3,s=2,r=>
-    //  <2,>--tail: [1]
-    //      <>--tail: []
-    //      N = 1; result = [1] (from product base case)
-    //      value = [1]
-    //  N = 2; result = [2,1]
-    //  value = [2,1]
-
-
-    // TENSOR
     template<size_t... Dims>
     class Tensor {
     public:
-        // rank = number of dimensions
         // @doc: static constexpr size_t Rank
         /** Number of dimensions */
         static constexpr size_t Rank = sizeof...(Dims);
-        // size = total number of values (size of array)
         // @doc: static constexpr size_t Size
         /** Product of all dimensions = total distinct values in `Tensor` */
         static constexpr size_t Size = TensorDimsProduct<Dims...>::value;
-        // shape = array of dims
         // @doc: static constexpr std::array<size_t, Rank> Shape
         /** `<size_t... Dims>` captured into an array */
         static constexpr std::array<size_t, Rank> Shape = {Dims...};
-        // strides = used for seamless indexing
         // @doc: static constexpr std::array<size_t, Rank> Strides
         /**
          * Uses `ComputeStrides` to create array
@@ -198,9 +172,6 @@ namespace TTTN {
             }
         }
 
-        // Rule of Five ─────────────────────────────────────────────────────────
-
-        // Destructor: unique_ptr<float[]> calls delete[] automatically.
         // @doc: ~Tensor() = default
         /**
          * Default destructor
@@ -208,7 +179,6 @@ namespace TTTN {
          */
         ~Tensor() = default;
 
-        // Copy ctor: deep copy — allocate a new buffer and memcpy the data.
         // @doc: Tensor(const Tensor& other)
         /**
          * Deep copy constructor
@@ -218,7 +188,6 @@ namespace TTTN {
             std::memcpy(data_.get(), other.data_.get(), sizeof(float) * Size);
         }
 
-        // Copy assignment: destination already owns a live buffer, just overwrite it.
         // @doc: Tensor& operator=(const Tensor& other)
         /**
          * Deep copy assignment operator
@@ -231,7 +200,6 @@ namespace TTTN {
             return *this;
         }
 
-        // Move ctor / move assignment: unique_ptr transfers ownership for free.
         // @doc: Tensor(Tensor&&) noexcept = default
         /**
          * Default move constructor
@@ -241,27 +209,25 @@ namespace TTTN {
 
         Tensor &operator=(Tensor &&) noexcept = default;
 
-        // ──────────────────────────────────────────────────────────────────────
-
-        // fill with a value
         // @doc: void fill(const float v) const
         /** Fill a `Tensor`'s underlying array with some `float v` */
         void fill(const float v) const { std::fill_n(data_.get(), Size, v); }
 
-        // get underlying array
         // @doc: const float* data() const
         /** Returns `const` pointer to `Tensor`'s underlying array */
         float *data() { return data_.get(); }
         [[nodiscard]] const float *data() const { return data_.get(); }
 
-        // flat indexing
         // @doc: float flat(size_t idx) const
         // @doc: float& flat(size_t idx)
         /** Returns `float&` reference to item at `idx` in underlying array */
         float &flat(size_t idx) { return data_[idx]; }
         [[nodiscard]] float flat(size_t idx) const { return data_[idx]; }
 
-        // map: apply f(float) -> float element-wise, return new tensor
+        // @doc: operator float() const
+        /** Implicit scalar conversion — only valid for `Tensor<>` (rank-0). Allows `ΣΠ` results used as scalars without `.flat(0)`. */
+        operator float() const requires (Rank == 0) { return data_[0]; }
+
         // @doc: template<typename F> Tensor map(F f) const
         /** Use `std::execution::par_unseq` to `std::transform` `Tensor`'s underlying data by `float -> float` map `f`, returning a new `Tensor` */
         template<typename F>
@@ -272,7 +238,6 @@ namespace TTTN {
             return out;
         }
 
-        // zip: apply f(float, float) -> float element-wise with another tensor, return new tensor
         // @doc: template<typename F> Tensor zip(const Tensor& other, F f) const
         /** Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data by `float -> float -> float` map `f`, returning a new `Tensor` */
         template<typename F>
@@ -283,7 +248,6 @@ namespace TTTN {
             return out;
         }
 
-        // apply: mutate each element in-place with f(float&)
         // @doc: template<typename F> void apply(F f)
         /** Use `std::execution::par_unseq` + `std::for_each` to apply `float -> float` map `f` to `Tensor`'s underlying data in-place */
         template<typename F>
@@ -291,7 +255,6 @@ namespace TTTN {
             std::for_each(std::execution::par_unseq, data_.get(), data_.get() + Size, f);
         }
 
-        // zip_apply: mutate each element in-place using corresponding element from other with f(float&, float)
         // @doc: template<typename F> void zip_apply(const Tensor& other, F f)
         /** Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data in-place by `float -> float -> float` map `f` */
         template<typename F>
@@ -330,7 +293,6 @@ namespace TTTN {
         float operator()(Indices... idxs) const ACCESS_IMPL
 #undef ACCESS_IMPL
 
-        // array multi-index overload — runtime values, no compile-time bounds check
         // @doc: float operator()(const std::array<size_t, Rank>& multi) const
         /**
          * Array-based multi-index access, returns copy
@@ -362,9 +324,6 @@ namespace TTTN {
         }
     };
 
-    // IS_TENSOR type trait -> concept
-    // allows us to make sure Block parameters are Tensors
-    // dummy SFINAE backup
     // @doc: struct is_tensor<T>
     /**
      * SFINAE type traits for verifying that a type is a `Tensor`
@@ -375,12 +334,10 @@ namespace TTTN {
     struct is_tensor : std::false_type {
     };
 
-    // substitution success: able to pattern match the T in is_tensor<T> to a Tensor<any dims at all> (ie any Tensor)
     template<size_t... Dims>
     struct is_tensor<Tensor<Dims...> > : std::true_type {
     };
 
-    // concept to wrap it
     // @doc: concept IsTensor<T>
     /** Wrapper `concept` around `is_tensor` type trait, satisfied if `T` is a `Tensor` */
     template<typename T>

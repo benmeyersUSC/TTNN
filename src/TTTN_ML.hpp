@@ -5,212 +5,100 @@
 namespace TTTN {
     static constexpr float EPS = 1e-8f;
 
-    enum class ActivationFunction { Linear, Sigmoid, ReLU, Softmax, Tanh };
+    enum class ActivationFunction { Linear, Sigmoid, ReLU, Tanh };
 
     // CROSS ENTROPY LOSS
     template<size_t N>
-    float CrossEntropyLoss(const Tensor<N> &output, const Tensor<N> &target) {
-        auto indices = std::views::iota(size_t{0}, N);
-
-        return std::accumulate(indices.begin(), indices.end(), 0.0f,
-                               [&target, &output](float current_loss, size_t i) {
-                                   return current_loss - target.flat(i) * std::log(std::max(output.flat(i), EPS));
-                               }
-        );
+    float CrossEntropyLoss(const Tensor<N>& output, const Tensor<N>& target) {
+        return -Contract(target, output.map([](const float p){ return std::log(std::max(p, EPS)); }));
     }
 
     // Xavier init for arbitrary-rank tensors.
     // fan_in / fan_out are the total element counts of the input and output spaces.
     template<size_t... Dims>
-    void XavierInitMD(Tensor<Dims...> &W, size_t fan_in, size_t fan_out) {
+    void XavierInitMD(Tensor<Dims...>& W, size_t fan_in, size_t fan_out) {
         static std::mt19937 rng{std::random_device{}()};
         const float limit = std::sqrt(6.f / static_cast<float>(fan_in + fan_out));
         std::uniform_real_distribution<float> dist{-limit, limit};
-        W.apply([&](float &x) { x = dist(rng); });
+        W.apply([&](float& x) { x = dist(rng); });
     }
 
-    // activation function
+    // SOFTMAX
+    // Normalizes each Axis-slice to sum to 1. Max-subtraction ensures numerical stability.
+    //
+    // ReduceMax<Axis>  → per-pool max,  shape = Dims with Axis removed
+    // BroadcastAdd<Axis>(x, -max) → shift x by per-pool max (stability)
+    // map(exp)         → exponentiate shifted values
+    // ReduceSum<Axis>  → per-pool normalizer, same shape as max
+    // zip(e/s)         → divide each element by its pool's sum
+    template<size_t Axis, size_t... Dims>
+    Tensor<Dims...> Softmax(const Tensor<Dims...>& x) {
+        const auto exps = BroadcastAdd<Axis>(x, ReduceMax<Axis>(x) * -1.f)
+                              .map([](float v){ return std::exp(v); });
+        return exps.zip(BroadcastAdd<Axis>(exps * 0.f, ReduceSum<Axis>(exps)),
+                        [](float e, float s){ return e / s; });
+    }
+
+    template<size_t Axis, size_t... Dims>
+    Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...>& grad, const Tensor<Dims...>& a) {
+        const auto dots = ReduceSum<Axis>(a * grad);
+        return a * (grad - BroadcastAdd<Axis>(grad * 0.f, dots));
+    }
+
+    // activation function — element-wise only.
+    // Softmax is not an element-wise activation; use SoftmaxLayer<Axis> as a standalone block.
     template<size_t N>
-    Tensor<N> Activate(const Tensor<N> &z, const ActivationFunction act) {
+    Tensor<N> Activate(const Tensor<N>& z, const ActivationFunction act) {
         switch (act) {
-            case ActivationFunction::ReLU:
-                return z.map([](const float x) {
-                    return x > 0.f ? x : 0.f;
-                });
-            case ActivationFunction::Sigmoid:
-                return z.map([](const float x) {
-                    return 1.f / (1.f + std::exp(-x));
-                });
-            case ActivationFunction::Tanh: return z.map([](const float x) { return std::tanh(x); });
-            case ActivationFunction::Softmax: {
-                // subtract max for numerical stability
-                float maxV = z.flat(0);
-                for (size_t i = 1; i < N; ++i) {
-                    if (z.flat(i) > maxV) {
-                        maxV = z.flat(i);
-                    }
-                }
-                auto a = z.map([maxV](const float x) { return std::exp(x - maxV); });
-                float sum = 0.f;
-                for (size_t i = 0; i < N; ++i) {
-                    sum += a.flat(i);
-                }
-                a.apply([sum](float &x) { x /= sum; });
-                return a;
-            }
+            case ActivationFunction::ReLU:    return z.map([](float x){ return x > 0.f ? x : 0.f; });
+            case ActivationFunction::Sigmoid: return z.map([](float x){ return 1.f / (1.f + std::exp(-x)); });
+            case ActivationFunction::Tanh:    return z.map([](float x){ return std::tanh(x); });
             case ActivationFunction::Linear:
-            default: return z;
+            default:                          return z;
         }
     }
 
     // given upstream gradient (dL/da) and post-activation a --> dL/dz
     template<size_t N>
-    Tensor<N> ActivatePrime(const Tensor<N> &grad, const Tensor<N> &a, const ActivationFunction act) {
+    Tensor<N> ActivatePrime(const Tensor<N>& grad, const Tensor<N>& a, const ActivationFunction act) {
         switch (act) {
             case ActivationFunction::ReLU:
-                return grad.zip(a, [](const float g, const float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
+                return grad.zip(a, [](float g, float ai){ return g * (ai > 0.f ? 1.f : 0.f); });
             case ActivationFunction::Sigmoid:
-                return grad.zip(a, [](const float g, const float ai) { return g * ai * (1.f - ai); });
+                return grad.zip(a, [](float g, float ai){ return g * ai * (1.f - ai); });
             case ActivationFunction::Tanh:
-                return grad.zip(a, [](const float g, const float ai) { return g * (1.f - ai * ai); });
-            case ActivationFunction::Softmax: {
-                float dot = 0.f;
-                for (size_t i = 0; i < N; ++i) {
-                    dot += a.flat(i) * grad.flat(i);
-                }
-                return a.zip(grad, [dot](const float ai, const float gi) { return ai * (gi - dot); });
-            }
+                return grad.zip(a, [](float g, float ai){ return g * (1.f - ai * ai); });
             case ActivationFunction::Linear:
-            default: return grad;
+            default:                          return grad;
         }
     }
 
-    // BATCHED ACTIVATE
-    // Apply activation per-sample to Tensor<Batch, N>.
-    // For element-wise activations, this degenerates to a flat map/zip over all Batch*N elements.
-    // For Softmax, applies per-row (each row is one sample's pre-activation vector).
+    // BATCHED ACTIVATE — element-wise activations over Tensor<Batch, N>.
     template<size_t Batch, size_t N>
-    Tensor<Batch, N> BatchedActivate(const Tensor<Batch, N> &Z, const ActivationFunction act) {
+    Tensor<Batch, N> BatchedActivate(const Tensor<Batch, N>& Z, const ActivationFunction act) {
         switch (act) {
-            case ActivationFunction::ReLU:
-                return Z.map([](const float x) { return x > 0.f ? x : 0.f; });
-            case ActivationFunction::Sigmoid:
-                return Z.map([](const float x) { return 1.f / (1.f + std::exp(-x)); });
-            case ActivationFunction::Tanh:
-                return Z.map([](const float x) { return std::tanh(x); });
-            case ActivationFunction::Softmax: {
-                Tensor<Batch, N> A;
-                for (size_t b = 0; b < Batch; b++) {
-                    float maxV = Z(b, 0);
-                    for (size_t i = 1; i < N; i++) {
-                        if (Z(b, i) > maxV) maxV = Z(b, i);
-                    }
-                    float sum = 0.f;
-                    for (size_t i = 0; i < N; i++) {
-                        A(b, i) = std::exp(Z(b, i) - maxV);
-                        sum += A(b, i);
-                    }
-                    for (size_t i = 0; i < N; i++) {
-                        A(b, i) /= sum;
-                    }
-                }
-                return A;
-            }
+            case ActivationFunction::ReLU:    return Z.map([](float x){ return x > 0.f ? x : 0.f; });
+            case ActivationFunction::Sigmoid: return Z.map([](float x){ return 1.f / (1.f + std::exp(-x)); });
+            case ActivationFunction::Tanh:    return Z.map([](float x){ return std::tanh(x); });
             case ActivationFunction::Linear:
-            default: return Z;
+            default:                          return Z;
         }
     }
 
-    // BATCHED ACTIVATE PRIME
-    // Peel off activation derivative for Tensor<Batch, N>.
-    // For element-wise activations, flat zip over all Batch*N elements.
-    // For Softmax, per-row Jacobian-vector product.
+    // BATCHED ACTIVATE PRIME — element-wise activation derivatives over Tensor<Batch, N>.
     template<size_t Batch, size_t N>
-    Tensor<Batch, N> BatchedActivatePrime(const Tensor<Batch, N> &grad, const Tensor<Batch, N> &a,
+    Tensor<Batch, N> BatchedActivatePrime(const Tensor<Batch, N>& grad, const Tensor<Batch, N>& a,
                                           const ActivationFunction act) {
         switch (act) {
             case ActivationFunction::ReLU:
-                return grad.zip(a, [](const float g, const float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
+                return grad.zip(a, [](float g, float ai){ return g * (ai > 0.f ? 1.f : 0.f); });
             case ActivationFunction::Sigmoid:
-                return grad.zip(a, [](const float g, const float ai) { return g * ai * (1.f - ai); });
+                return grad.zip(a, [](float g, float ai){ return g * ai * (1.f - ai); });
             case ActivationFunction::Tanh:
-                return grad.zip(a, [](const float g, const float ai) { return g * (1.f - ai * ai); });
-            case ActivationFunction::Softmax: {
-                Tensor<Batch, N> result;
-                for (size_t b = 0; b < Batch; b++) {
-                    float dot = 0.f;
-                    for (size_t i = 0; i < N; i++) {
-                        dot += a(b, i) * grad(b, i);
-                    }
-                    for (size_t i = 0; i < N; i++) {
-                        result(b, i) = a(b, i) * (grad(b, i) - dot);
-                    }
-                }
-                return result;
-            }
+                return grad.zip(a, [](float g, float ai){ return g * (1.f - ai * ai); });
             case ActivationFunction::Linear:
-            default: return grad;
+            default:                          return grad;
         }
-    }
-
-    // SOFTMAX
-    // Normalizes over the Axis dimension: for each (outer, inner) pair the Axis-slice is
-    // exp-normalized to sum to 1.  Max-subtraction ensures numerical stability.
-    //
-    // Flat-index layout:
-    //   axis_dim   = Dims[Axis]
-    //   inner_size = stride[Axis] = product of all dims after Axis
-    //   outer_size = Size / (axis_dim * inner_size)
-    //   element k in pool (outer, inner): outer*(axis_dim*inner_size) + k*inner_size + inner
-    template<size_t Axis, size_t... Dims>
-    Tensor<Dims...> Softmax(const Tensor<Dims...> &x) {
-        using T = Tensor<Dims...>;
-        static constexpr size_t axis_dim = SizeTemplateGet<Axis, Dims...>::value;
-        static constexpr size_t inner_size = ComputeStrides<Dims...>::value[Axis];
-        static constexpr size_t outer_size = T::Size / (axis_dim * inner_size);
-
-        T result;
-        for (size_t outer = 0; outer < outer_size; ++outer) {
-            for (size_t inner = 0; inner < inner_size; ++inner) {
-                const size_t base = outer * (axis_dim * inner_size) + inner;
-                float maxV = x.flat(base);
-                for (size_t k = 1; k < axis_dim; ++k)
-                    maxV = std::max(maxV, x.flat(base + k * inner_size));
-                float sum = 0.f;
-                for (size_t k = 0; k < axis_dim; ++k) {
-                    result.flat(base + k * inner_size) = std::exp(x.flat(base + k * inner_size) - maxV);
-                    sum += result.flat(base + k * inner_size);
-                }
-                for (size_t k = 0; k < axis_dim; ++k)
-                    result.flat(base + k * inner_size) /= sum;
-            }
-        }
-        return result;
-    }
-
-    // SOFTMAX BACKWARD
-    // Vector-Jacobian product of softmax: δx_i = a_i * (δy_i - dot(δy, a))
-    // One dot product per pool, then pointwise scale — O(axis_dim) per pool, no Jacobian matrix.
-    template<size_t Axis, size_t... Dims>
-    Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a) {
-        using T = Tensor<Dims...>;
-        static constexpr size_t axis_dim = SizeTemplateGet<Axis, Dims...>::value;
-        static constexpr size_t inner_size = ComputeStrides<Dims...>::value[Axis];
-        static constexpr size_t outer_size = T::Size / (axis_dim * inner_size);
-
-        T result;
-        for (size_t outer = 0; outer < outer_size; ++outer) {
-            for (size_t inner = 0; inner < inner_size; ++inner) {
-                const size_t base = outer * (axis_dim * inner_size) + inner;
-                float dot = 0.f;
-                for (size_t k = 0; k < axis_dim; ++k)
-                    dot += a.flat(base + k * inner_size) * grad.flat(base + k * inner_size);
-                for (size_t k = 0; k < axis_dim; ++k)
-                    result.flat(base + k * inner_size) =
-                            a.flat(base + k * inner_size) * (grad.flat(base + k * inner_size) - dot);
-            }
-        }
-        return result;
     }
 
     // SOFTMAX BLOCK
@@ -222,6 +110,9 @@ namespace TTTN {
     //
     // InputTensor == OutputTensor == TensorT (shape flows through unchanged).
     // ParamCount == 0; Update/ZeroGrad/Save/Load are all no-ops.
+    //
+    // Batched: prepending a Batch axis shifts the target axis by 1, so
+    // BatchedForward/Backward delegate to Softmax<Axis+1> / SoftmaxPrime<Axis+1>.
     template<size_t Axis, typename TensorT>
     class SoftmaxBlock;
 
@@ -244,34 +135,14 @@ namespace TTTN {
 
         template<size_t Batch>
         Tensor<Batch, Dims...> BatchedForward(const Tensor<Batch, Dims...>& X) const {
-            Tensor<Batch, Dims...> result;
-            for (size_t b = 0; b < Batch; ++b) {
-                InputTensor x_b;
-                for (size_t i = 0; i < InputTensor::Size; ++i)
-                    x_b.flat(i) = X.flat(b * InputTensor::Size + i);
-                const auto out = Forward(x_b);
-                for (size_t i = 0; i < OutputTensor::Size; ++i)
-                    result.flat(b * OutputTensor::Size + i) = out.flat(i);
-            }
-            return result;
+            return Softmax<Axis + 1>(X);
         }
 
         template<size_t Batch>
         Tensor<Batch, Dims...> BatchedBackward(const Tensor<Batch, Dims...>& delta_A,
                                                const Tensor<Batch, Dims...>& a,
                                                const Tensor<Batch, Dims...>& /*a_prev*/) {
-            Tensor<Batch, Dims...> result;
-            for (size_t b = 0; b < Batch; ++b) {
-                OutputTensor dA_b, a_b;
-                for (size_t i = 0; i < OutputTensor::Size; ++i) {
-                    dA_b.flat(i) = delta_A.flat(b * OutputTensor::Size + i);
-                    a_b.flat(i)  = a.flat(b * OutputTensor::Size + i);
-                }
-                const auto upstream = SoftmaxPrime<Axis>(dA_b, a_b);
-                for (size_t i = 0; i < InputTensor::Size; ++i)
-                    result.flat(b * InputTensor::Size + i) = upstream.flat(i);
-            }
-            return result;
+            return SoftmaxPrime<Axis + 1>(delta_A, a);
         }
 
         void Update(float, float, float, float, float, float) {}
@@ -306,17 +177,13 @@ namespace TTTN {
     struct MSE {
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target) {
-            float s = 0.f;
-            for (size_t i = 0; i < Tensor<Dims...>::Size; ++i) {
-                const float d = pred.flat(i) - target.flat(i);
-                s += d * d;
-            }
-            return s / static_cast<float>(Tensor<Dims...>::Size);
+            const auto diff = pred.zip(target, [](float p, float t){ return p - t; });
+            return Contract(diff, diff) / static_cast<float>(Tensor<Dims...>::Size);
         }
         template<size_t... Dims>
         static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target) {
             constexpr float inv = 2.f / static_cast<float>(Tensor<Dims...>::Size);
-            return pred.zip(target, [](float p, float t) { return inv * (p - t); });
+            return pred.zip(target, [](float p, float t){ return inv * (p - t); });
         }
     };
 
@@ -336,7 +203,7 @@ namespace TTTN {
         }
         template<size_t... Dims>
         static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target) {
-            return pred.zip(target, [](float p, float t) {
+            return pred.zip(target, [](float p, float t){
                 return (p - t) / (p * (1.f - p) + EPS);
             });
         }
@@ -347,14 +214,23 @@ namespace TTTN {
     struct CEL {
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target) {
-            float s = 0.f;
-            for (size_t i = 0; i < Tensor<Dims...>::Size; ++i)
-                s -= target.flat(i) * std::log(std::max(pred.flat(i), EPS));
-            return s;
+            return -Contract(target, pred.map([](float p){ return std::log(std::max(p, EPS)); }));
         }
         template<size_t... Dims>
         static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target) {
-            return pred.zip(target, [](float p, float t) { return -t / std::max(p, EPS); });
+            return pred.zip(target, [](float p, float t){ return -t / std::max(p, EPS); });
         }
     };
+
+    // @doc: template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N>& pred, const Tensor<Batch, N>& labels)
+    /** Returns the percentage of correctly classified samples in a batch. `labels` must be one-hot. Correct iff `argmax(pred[b]) == argmax(labels[b])`, computed via `ReduceSum<1>(pred ⊙ labels)` (probability assigned to the true class) vs `ReduceMax<1>(pred)` (highest predicted probability) — no explicit argmax loop required. */
+    template<size_t Batch, size_t N>
+    float BatchAccuracy(const Tensor<Batch, N>& pred, const Tensor<Batch, N>& labels) {
+        const auto p_correct = ReduceSum<1>(pred * labels); // Tensor<Batch>
+        const auto p_max     = ReduceMax<1>(pred);           // Tensor<Batch>
+        int n = 0;
+        for (size_t b = 0; b < Batch; ++b)
+            if (p_max.flat(b) - p_correct.flat(b) < 1e-5f) ++n;
+        return 100.f * n / static_cast<float>(Batch);
+    }
 };
