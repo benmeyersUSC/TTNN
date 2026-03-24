@@ -4,9 +4,6 @@
 #include "TTTN_ML.hpp"
 
 namespace TTTN {
-    static constexpr float ADAM_BETA_1 = 0.9f;
-    static constexpr float ADAM_BETA_2 = 0.999f;
-
     // TRAINABLE TENSOR NETWORK
     // templatized by Block-concept-compliant types
     //      Blocks[0]   = first block  (network InSize  = its InSize)
@@ -20,6 +17,9 @@ namespace TTTN {
         static constexpr size_t NumBlocks = sizeof...(Blocks);
         using BlockTuple = std::tuple<Blocks...>;
 
+        // @doc: using OutputTensor
+        // @doc: using InputTensor
+        /** Tensor type of the first block's input */
         // connectivity check: every Blocks[I]::OutputTensor must equal Blocks[I+1]::InputTensor
         static constexpr bool check_connected() {
             return []<size_t... Is>(std::index_sequence<Is...>) -> bool {
@@ -45,8 +45,8 @@ namespace TTTN {
         // base case: single block --> (InputTensor, OutputTensor)
         template<typename Last>
         struct TensorTupleBuilder<Last> {
-            // @doc: using type
-            /** Result of splicing the block lists of `NetA` and `NetB`; a complete network supporting all single-sample and batched interfaces */
+        // @doc: using type
+        /** Result of splicing the block lists of `NetA` and `NetB`; a complete network supporting all single-sample and batched interfaces */
             using type = std::tuple<typename Last::InputTensor, typename Last::OutputTensor>;
         };
 
@@ -82,9 +82,7 @@ namespace TTTN {
         };
 
         BlockTuple mBlocks;
-        int mT = 0;
-        float mCorr = 1.f;
-        float vCorr = 1.f;
+        AdamState  mAdam_{};
 
     public:
         // tensor types flow directly from the first and last blocks
@@ -94,7 +92,10 @@ namespace TTTN {
         // scalar convenience aliases derived from the tensor types
         static constexpr size_t InSize  = InputTensor::Size;
         static constexpr size_t OutSize = OutputTensor::Size;
-        static constexpr size_t TotalParamCount = (Blocks::ParamCount + ...);
+        // @doc: static constexpr size_t TotalParamCount
+        /** Derived from `TupleParamCount` over each block's `all_params()` — no `ParamCount` member required on blocks */
+        static constexpr size_t TotalParamCount =
+            (TupleParamCount<decltype(std::declval<Blocks&>().all_params())> + ...);
 
         // raw tuple types (internal / advanced use)
         using ActivationsTuple = TensorTupleBuilder<Blocks...>::type;
@@ -131,24 +132,29 @@ namespace TTTN {
             backward_impl<NumBlocks>(A.tuple(), grad);
         }
 
-        // apply Adam to every block's stored gradients
+        // apply Adam to every block's stored gradients via all_params()
+        // @doc: void Update(float lr)
+        /** Calls `mAdam_.step()` then `UpdateAll(block.all_params(), mAdam_, lr)` for every block */
         void Update(float lr) {
+            mAdam_.step();
             [&]<size_t... Is>(std::index_sequence<Is...>) {
-                (std::get<Is>(mBlocks).Update(ADAM_BETA_1, ADAM_BETA_2, lr, mCorr, vCorr, EPS), ...);
+                (UpdateAll(std::get<Is>(mBlocks).all_params(), mAdam_, lr), ...);
             }(std::make_index_sequence<NumBlocks>{});
         }
 
-        // zero all blocks' gradients
+        // zero all blocks' gradients via all_params()
+        // @doc: void ZeroGrad()
+        /** Calls `ZeroAllGrads(block.all_params())` for every block */
         void ZeroGrad() {
             [&]<size_t... Is>(std::index_sequence<Is...>) {
-                (std::get<Is>(mBlocks).ZeroGrad(), ...);
+                (ZeroAllGrads(std::get<Is>(mBlocks).all_params()), ...);
             }(std::make_index_sequence<NumBlocks>{});
         }
 
         // TrainStep: raw gradient version (caller owns gradient computation).
         void TrainStep(const InputTensor& x, const OutputTensor& grad, float lr) {
             const auto A = ForwardAll(x);
-            tick_adam();
+
             ZeroGrad();
             BackwardAll(A, grad);
             Update(lr);
@@ -165,7 +171,7 @@ namespace TTTN {
             const auto& pred = A.template get<NumBlocks>();
             const float loss_val = Loss::Loss(pred, target);
             const auto grad = Loss::Grad(pred, target);
-            tick_adam();
+
             ZeroGrad();
             BackwardAll(A, grad);
             Update(lr);
@@ -206,7 +212,7 @@ namespace TTTN {
         void BatchTrainStep(const typename PrependBatch<Batch, InputTensor>::type& X,
                             const typename PrependBatch<Batch, OutputTensor>::type& grad, float lr) {
             const auto A = BatchedForwardAll<Batch>(X);
-            tick_adam();
+
             ZeroGrad();
             BatchedBackwardAll<Batch>(A, grad);
             Update(lr);
@@ -236,7 +242,7 @@ namespace TTTN {
                 for (size_t i = 0; i < OutputTensor::Size; ++i)
                     grad.flat(b * OutputTensor::Size + i) = g.flat(i) / static_cast<float>(Batch);
             }
-            tick_adam();
+
             ZeroGrad();
             BatchedBackwardAll<Batch>(A, grad);
             Update(lr);
@@ -246,9 +252,8 @@ namespace TTTN {
         void Save(const std::string &path) const {
             std::ofstream f(path, std::ios::binary);
             if (!f) throw std::runtime_error("Cannot write: " + path);
-            // for each block, call Block.Save()
             [&]<size_t... Is>(std::index_sequence<Is...>) {
-                (std::get<Is>(mBlocks).Save(f), ...);
+                (SaveAll(std::get<Is>(mBlocks).all_params(), f), ...);
             }(std::make_index_sequence<NumBlocks>{});
         }
 
@@ -256,18 +261,11 @@ namespace TTTN {
             std::ifstream f(path, std::ios::binary);
             if (!f) throw std::runtime_error("Cannot read: " + path);
             [&]<size_t... Is>(std::index_sequence<Is...>) {
-                (std::get<Is>(mBlocks).Load(f), ...);
+                (LoadAll(std::get<Is>(mBlocks).all_params(), f), ...);
             }(std::make_index_sequence<NumBlocks>{});
         }
 
     private:
-        // increment Adam ticker and update moment corrections
-        void tick_adam() {
-            ++mT;
-            mCorr = 1.f / (1.f - std::pow(ADAM_BETA_1, static_cast<float>(mT)));
-            vCorr = 1.f / (1.f - std::pow(ADAM_BETA_2, static_cast<float>(mT)));
-        }
-
         // internal recursive implementation of forward pass
         // uses Block.Forward to populate ActivationsTuple with activation Tensors
         template<size_t I = 0>

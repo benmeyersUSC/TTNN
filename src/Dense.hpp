@@ -5,40 +5,6 @@
 #include "Params.hpp"
 
 namespace TTTN {
-    // Generalized element-wise activate / activate-prime for any tensor shape.
-    // Softmax is intentionally omitted — it requires a designated reduction axis
-    // and doesn't generalize to arbitrary rank without specifying it explicitly.
-    // Use SoftmaxLayer<Axis> as a standalone block instead.
-    template<size_t... Dims>
-    Tensor<Dims...> ActivateMD(const Tensor<Dims...> &z, ActivationFunction act) {
-        switch (act) {
-            case ActivationFunction::ReLU:
-                return z.map([](float x) { return x > 0.f ? x : 0.f; });
-            case ActivationFunction::Sigmoid:
-                return z.map([](const float x) { return 1.f / (1.f + std::exp(-x)); });
-            case ActivationFunction::Tanh:
-                return z.map([](const float x) { return std::tanh(x); });
-            case ActivationFunction::Linear:
-            default:
-                return z;
-        }
-    }
-
-    template<size_t... Dims>
-    Tensor<Dims...> ActivatePrimeMD(const Tensor<Dims...> &grad, const Tensor<Dims...> &a,
-                                    ActivationFunction act) {
-        switch (act) {
-            case ActivationFunction::ReLU:
-                return grad.zip(a, [](const float g, const float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
-            case ActivationFunction::Sigmoid:
-                return grad.zip(a, [](const float g, const float ai) { return g * ai * (1.f - ai); });
-            case ActivationFunction::Tanh:
-                return grad.zip(a, [](const float g, const float ai) { return g * (1.f - ai * ai); });
-            case ActivationFunction::Linear:
-            default:
-                return grad;
-        }
-    }
 
     // Permutation that block-swaps the two halves of W's axis list:
     //   W   = Tensor<OutDims..., InDims...>   (N_out axes then N_in axes)
@@ -65,24 +31,26 @@ namespace TTTN {
     // b = Tensor<OutDims...>              bias in Out-space
     //
     // Forward:  z = ΣΠ<N_in>(W, x) + b        contracts W's last N_in axes with x (generalised matvec)
-    //           a = Activate(z)
+    //           a = z.map(Act{})
     //
-    // Backward: delta_z  = ActivatePrime(delta_A, a)          peel off activation derivative → dL/dZ
+    // Backward: delta_z  = delta_A ⊙ Act::prime(a)           peel off activation derivative → dL/dZ
     //           dW      += ΣΠ<0>(delta_z, a_prev)             outer product → Tensor<OutDims...,InDims...>
     //           dB      += delta_z
     //           dL/dx    = ΣΠ<N_out>(W_T, delta_z)            generalises W^T · delta_z; W_T = Tensor<InDims...,OutDims...>
     //
     // caller must ZeroGrad() before the first Backward in each training step
 
-    template<typename InT, typename OutT, ActivationFunction Act_ = ActivationFunction::Linear>
+    template<typename InT, typename OutT, ActivationOp Act_ = Linear>
     class DenseMDBlock;
 
-    template<size_t... InDims, size_t... OutDims, ActivationFunction Act_>
+    // @doc: DenseMDBlock()
+    /** Xavier-initializes `W` */
+    template<size_t... InDims, size_t... OutDims, ActivationOp Act_>
     class DenseMDBlock<Tensor<InDims...>, Tensor<OutDims...>, Act_> {
     public:
         using InputTensor = Tensor<InDims...>;
         using OutputTensor = Tensor<OutDims...>;
-        static constexpr ActivationFunction Act = Act_;
+        using Act = Act_;
 
     private:
         static constexpr size_t N_in = sizeof...(InDims);
@@ -92,23 +60,21 @@ namespace TTTN {
         Param<W_Type> W_;
         Param<OutputTensor> b_;
 
-        auto all_params() { return std::tie(W_, b_); }
-        auto all_params() const { return std::tie(W_, b_); }
-
     public:
-        static constexpr size_t ParamCount = TotalParamSize<Param<W_Type>, Param<OutputTensor> >;
+        // @doc: auto all_params()
+        /** Returns `std::tie(W_, b_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this */
+        auto all_params()       { return std::tie(W_, b_); }
+        auto all_params() const { return std::tie(W_, b_); }
 
         DenseMDBlock() { XavierInitMD(W_.value, InputTensor::Size, OutputTensor::Size); }
 
         OutputTensor Forward(const InputTensor &x) const {
-            return ActivateMD(ΣΠ<N_in>(W_.value, x) + b_.value, Act);
+            return MapApply<Act>(ΣΠ<N_in>(W_.value, x) + b_.value);
         }
-
-        void ZeroGrad() { ZeroAllGrads(all_params()); }
 
         InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a,
                              const InputTensor &a_prev) {
-            const auto delta_z = ActivatePrimeMD(delta_A, a, Act);
+            const auto delta_z = delta_A.zip(a, [](float g, float ai){ return g * Act::prime(ai); });
 
             W_.grad += ΣΠ<0>(delta_z, a_prev);
             b_.grad += delta_z;
@@ -123,7 +89,7 @@ namespace TTTN {
         Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...> &X) const {
             const auto W_T = PermuteFromHolder<WTBlockSwapPerm<N_out, N_in> >(
                 W_.value, std::make_index_sequence<N_out + N_in>{});
-            return ActivateMD(BroadcastAdd<0>(ΣΠ<N_in>(X, W_T), b_.value), Act);
+            return MapApply<Act>(BroadcastApply<0, Add>(ΣΠ<N_in>(X, W_T), b_.value));
         }
 
         template<size_t Batch>
@@ -131,23 +97,17 @@ namespace TTTN {
                                                  const Tensor<Batch, OutDims...> &a,
                                                  const Tensor<Batch, InDims...> &a_prev) {
             const float inv_batch = 1.f / static_cast<float>(Batch);
-            const auto delta_z = ActivatePrimeMD(delta_A, a, Act);
+            const auto delta_z = delta_A.zip(a, [](float g, float ai){ return g * Act::prime(ai); });
 
             constexpr size_t BatchOutRank = 1 + N_out;
             const auto delta_z_BL = PermuteFromHolder<MoveToLastPerm<0, BatchOutRank> >(
                 delta_z, std::make_index_sequence<BatchOutRank>{});
             W_.grad += ΣΠ<1>(delta_z_BL, a_prev) * inv_batch;
-            b_.grad += ReduceSum<0>(delta_z) * inv_batch;
+            b_.grad += ReduceApply<0, Add>(delta_z) * inv_batch;
 
             return ΣΠ<N_out>(delta_z, W_.value);
         }
 
-        void Update(float b1, float b2, float lr, float mCorr, float vCorr, float eps = 1e-8f) {
-            UpdateAll(all_params(), b1, b2, lr, mCorr, vCorr, eps);
-        }
-
-        void Save(std::ofstream &f) const { SaveAll(all_params(), f); }
-        void Load(std::ifstream &f) { LoadAll(all_params(), f); }
     };
 
 
@@ -159,15 +119,17 @@ namespace TTTN {
     //       DenseMD<Tensor<5>>,                       // → Tensor<5>
     //       DenseMD<Tensor<2, 3>, ReLU>               // → Tensor<2,3>
     //   >::type net;
-    template<typename OutT, ActivationFunction Act_ = ActivationFunction::Linear>
+    template<typename OutT, ActivationOp Act_ = Linear>
     struct DenseMD {
         using OutputTensor = OutT;
         template<typename InputT>
         using Resolve = DenseMDBlock<InputT, OutT, Act_>;
     };
 
+    // @doc: using Dense = DenseMD<Tensor<N>, Act_>
+    /** `Dense<128, ReLU>`, `Dense<10, Sigmoid>`, `Dense<10>` (defaults to `Linear`) */
     // Dense<N, Act>: rank-1 shorthand for DenseMD<Tensor<N>, Act>
-    template<size_t N, ActivationFunction Act_ = ActivationFunction::Linear>
+    template<size_t N, ActivationOp Act_ = Linear>
     using Dense = DenseMD<Tensor<N>, Act_>;
 
 
@@ -184,7 +146,7 @@ namespace TTTN {
     // W:      Tensor<PartOutDims..., ContractDims...>
     // b:      Tensor<PartOutDims...>
     //
-    // Forward:  Activate(ΣΠ<N_contract>(X, W_T) + broadcast(b), Act)
+    // Forward:  MapApply<Act>(ΣΠ<N_contract>(X, W_T) + broadcast(b))
     //           ΣΠ naturally maps over the leading MapDims — no per-slice loop.
     //
     // Backward: dW = ΣΠ<N_map>(swap(δz), X)       sum outer products over map positions
@@ -274,10 +236,10 @@ namespace TTTN {
 
 
     template<typename InT, typename PartOutT, size_t N_map,
-        ActivationFunction Act_ = ActivationFunction::Linear>
+        ActivationOp Act_ = Linear>
     class MapDenseMDBlock;
 
-    template<size_t... InDims, size_t... PartOutDims, size_t N_map, ActivationFunction Act_>
+    template<size_t... InDims, size_t... PartOutDims, size_t N_map, ActivationOp Act_>
     class MapDenseMDBlock<Tensor<InDims...>, Tensor<PartOutDims...>, N_map, Act_> {
         static_assert(N_map < sizeof...(InDims),
                       "N_map must be less than input rank (need at least one contract dim)");
@@ -297,7 +259,7 @@ namespace TTTN {
         using W_Type = typename detail::SeqToTensor<W_DimSeq_>::type;
         using BiasType = Tensor<PartOutDims...>;
 
-        static constexpr ActivationFunction Act = Act_;
+        using Act = Act_;
         static constexpr size_t N_contract = sizeof...(InDims) - N_map;
         static constexpr size_t N_out_part = sizeof...(PartOutDims);
         static constexpr size_t MapVolume = detail::SeqProduct<MapSeq_>::value;
@@ -308,11 +270,9 @@ namespace TTTN {
         Param<W_Type> W_;
         Param<BiasType> b_;
 
-        auto all_params() { return std::tie(W_, b_); }
-        auto all_params() const { return std::tie(W_, b_); }
-
     public:
-        static constexpr size_t ParamCount = TotalParamSize<Param<W_Type>, Param<BiasType> >;
+        auto all_params()       { return std::tie(W_, b_); }
+        auto all_params() const { return std::tie(W_, b_); }
 
         MapDenseMDBlock() { XavierInitMD(W_.value, ContractSize, PartOutSize); }
 
@@ -323,14 +283,12 @@ namespace TTTN {
             for (size_t m = 0; m < MapVolume; ++m)
                 for (size_t i = 0; i < PartOutSize; ++i)
                     z.flat(m * PartOutSize + i) += b_.value.flat(i);
-            return ActivateMD(z, Act);
+            return MapApply<Act>(z);
         }
-
-        void ZeroGrad() { ZeroAllGrads(all_params()); }
 
         InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a,
                              const InputTensor &a_prev) {
-            const auto delta_z = ActivatePrimeMD(delta_A, a, Act);
+            const auto delta_z = delta_A.zip(a, [](float g, float ai){ return g * Act::prime(ai); });
 
             const auto dz_swap = PermuteFromHolder<WTBlockSwapPerm<N_map, N_out_part> >(
                 delta_z, std::make_index_sequence<N_map + N_out_part>{});
@@ -354,7 +312,7 @@ namespace TTTN {
                 for (size_t m = 0; m < MapVolume; ++m)
                     for (size_t i = 0; i < PartOutSize; ++i)
                         z.flat(bi * slice + m * PartOutSize + i) += b_.value.flat(i);
-            return ActivateMD(z, Act);
+            return MapApply<Act>(z);
         }
 
         template<size_t Batch>
@@ -364,7 +322,7 @@ namespace TTTN {
             const typename PrependBatch<Batch, InputTensor>::type &a_prev)
             -> typename PrependBatch<Batch, InputTensor>::type {
             const float inv_batch = 1.f / static_cast<float>(Batch);
-            const auto delta_z = ActivatePrimeMD(delta_A, a, Act);
+            const auto delta_z = delta_A.zip(a, [](float g, float ai){ return g * Act::prime(ai); });
 
             constexpr size_t BmRank = 1 + N_map + N_out_part;
             const auto dz_swap = PermuteFromHolder<WTBlockSwapPerm<1 + N_map, N_out_part> >(
@@ -382,12 +340,6 @@ namespace TTTN {
             return ΣΠ<N_out_part>(delta_z, W_.value);
         }
 
-        void Update(float b1, float b2, float lr, float mCorr, float vCorr, float eps = 1e-8f) {
-            UpdateAll(all_params(), b1, b2, lr, mCorr, vCorr, eps);
-        }
-
-        void Save(std::ofstream &f) const { SaveAll(all_params(), f); }
-        void Load(std::ifstream &f) { LoadAll(all_params(), f); }
     };
 
 
@@ -401,7 +353,7 @@ namespace TTTN {
     //       MapDense<1, Tensor<EmbDim>>,           // per-token: SeqLen preserved, FFN_Dim → EmbDim
     //   >::type transformer;
     template<size_t N_map, typename PartOutT,
-        ActivationFunction Act_ = ActivationFunction::Linear>
+        ActivationOp Act_ = Linear>
     struct MapDense {
         using OutputTensor = typename detail::PrependOnes<N_map, PartOutT>::type;
 

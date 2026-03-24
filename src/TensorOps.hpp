@@ -16,12 +16,64 @@ namespace TTTN {
                             std::same_as<std::invoke_result_t<F, float, float>, float>;
 
 
+    // =========================================================================
+    // Operation Tags
+    // Default-constructible callable structs satisfying FloatBinaryOp.
+    // Pass as type template params: ReduceApply<Axis, Add>(src)
+    // Those with `identity` support the no-init overloads of Reduce/ReduceBroadcast.
+    // =========================================================================
+
+    // Binary tags — satisfy FloatBinaryOp; monoid tags (identity member) support no-init overloads
+    struct Add     { constexpr float operator()(float a, float b) const { return a + b; }
+                     static constexpr float identity = 0.f; };
+    struct Mul     { constexpr float operator()(float a, float b) const { return a * b; }
+                     static constexpr float identity = 1.f; };
+    struct Max     { constexpr float operator()(float a, float b) const { return std::max(a, b); }
+                     static constexpr float identity = -std::numeric_limits<float>::infinity(); };
+    struct Sub     { constexpr float operator()(float a, float b) const { return a - b; } };
+    struct Div     { constexpr float operator()(float a, float b) const { return a / b; } };
+    struct AbsDiff { constexpr float operator()(float a, float b) const { return std::abs(a - b); } };
+
+    // Unary tags — satisfy FloatUnaryOp; used with MapApply<Op> and Tensor::map()
+    struct Log { constexpr float operator()(float x) const { return std::log(x); } };
+    struct Exp { constexpr float operator()(float x) const { return std::exp(x); } };
+    struct Neg { constexpr float operator()(float x) const { return -x; } };
+    struct Sq  { constexpr float operator()(float x) const { return x * x; } };
+    struct Abs { constexpr float operator()(float x) const { return std::abs(x); } };
+
+    // Compose<F, G>: apply G first, then F.
+    //   Unary ∘ Unary  → Unary:  Compose<Log, Abs>{}(x)    == log(|x|)
+    //   Unary ∘ Binary → Binary: Compose<Exp, Sub>{}(a, b) == exp(a - b)
+    // Chains arbitrarily: Compose<Neg, Compose<Exp, Sub>> == -(exp(a-b))
+    template<typename F, typename G>
+    struct Compose {
+        constexpr float operator()(float x) const
+            requires FloatUnaryOp<F> && FloatUnaryOp<G>
+        { return F{}(G{}(x)); }
+
+        constexpr float operator()(float a, float b) const
+            requires FloatUnaryOp<F> && FloatBinaryOp<G>
+        { return F{}(G{}(a, b)); }
+    };
+
+
     // @doc: template<std::invocable<size_t> F> void ParForEach(size_t n, F f)
     /** Helper to parallel-execute `std::for_each` on a `std::views::iota(size_t{0}, n)`, calling `f` (something `std::invocable` on `size_t`) on each index */
     template<std::invocable<size_t> F>
     void ParForEach(size_t n, F f) {
         auto range = std::views::iota(size_t{0}, n);
         std::for_each(std::execution::par_unseq, range.begin(), range.end(), f);
+    }
+
+    // @doc: template<typename Op, size_t... Dims> Tensor<Dims...> MapApply(const Tensor<Dims...>& src)
+    /**
+     * Apply unary tag `Op` element-wise. Equivalent to `src.map(Op{})` but named and passable as a type.
+     * `MapApply<Log>(t)`, `MapApply<Exp>(t)`, `MapApply<Neg>(t)`, `MapApply<Sq>(t)`, `MapApply<Abs>(t)`
+     */
+    template<typename Op, size_t... Dims>
+        requires FloatUnaryOp<Op> && std::default_initializable<Op>
+    Tensor<Dims...> MapApply(const Tensor<Dims...> &src) {
+        return src.map(Op{});
     }
 
     // @doc: template<size_t... Dims> Tensor<Dims...> operator+(const Tensor<Dims...>& a, const Tensor<Dims...>& b)
@@ -142,27 +194,6 @@ namespace TTTN {
      *   - `b_free_size`, `contracted_size` — compile-time constants used by `InnerContract` to compute per-output base offsets as `O(1)` arithmetic (`base_a = (o / b_free_size) * contracted_size`, `base_b = o % b_free_size`) rather than a precomputed table — the compiler strength-reduces these to multiply-shift at `-O2`
      * **These pay real dividends for [TrainableTensorNetwork](./src/TrainableTensorNetwork.hpp) training schedules. Any weight `Tensor`'s `Dot`s, `Matmul`s, and `Outer`s (*in forward and backward passes*) are saved structs, and the runtime computations are parallelized and vectorized, following known, saved paths**
      */
-    // @doc: struct ContractionKernel<size_t N, typename TA, typename TB>
-    /**
-     * Unified contraction kernel: compile-time index tables parameterized purely on tensor shapes
-     *
-     * `Contraction = Reduce ∘ zipWith(Map) ∘ Align`
-     *
-     * Aligns the last `N` axes of `TA` with the first `N` axes of `TB`.
-     * Index tables are independent of `Map` and `Reduce` — one kernel instance serves every
-     * operation variant for a given pair of shapes.
-     * `InnerContract` reads these tables and supplies the operation types.
-     *
-     * Precomputes two compile-time tables:
-     *   - `offsets.{a,b}` — flat-index contribution of each contracted position for A and B
-     *   - `bases.{a,b}`   — free-dimension base offset in A and B for each output index
-     *
-     * `bases` is computed without intermediate multi-index arrays (running-remainder style)
-     * to stay within the compiler's constexpr evaluation step budget for large tensors.
-     *
-     * These tables pay real dividends for training schedules: all forward and backward
-     * contractions follow known, precomputed paths — fully parallelizable and vectorizable.
-     */
     template<size_t N, typename TA, typename TB>
     struct ContractionKernel;
 
@@ -218,21 +249,13 @@ namespace TTTN {
     };
 
 
-    // @doc: template<size_t N, ..., FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)
-    /**
-     * N-inner-axis contraction with custom `Map` and `Reduce`
-     * Aligns the last `N` axes of `A` with the first `N` axes of `B`
-     * Reads precomputed `offsets` from `ContractionKernel`; base offsets computed inline as O(1) arithmetic
-     * `result.flat(o) = Reduce_c map(A[A_Free(o), c], B[c, B_Free(o)])`, for `o ∈ [0, ResultType::Size)`
-     */
+
     // @doc: template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)
     /**
-     * N-inner-axis contraction with custom `Map` and `Reduce`
+     * N-inner-axis contraction with custom `Map` and `Reduce` (lambda form)
      * Aligns the last `N` axes of `A` with the first `N` axes of `B`
-     * Reads precomputed index tables from `ContractionKernel` — the kernel is instantiated
-     * once per (N, shape-of-A, shape-of-B) and shared across all (Map, Reduce) variants
-     * All named contractions (`ΣΠ`, `Dot`, `Matmul`, `Outer`, `Einsum`) route through here
-     * `ΣΠ<N>(A, B)` == `InnerContract<N>(A, B, 0.f, multiply, plus)`
+     * `result.flat(o) = Reduce_c map(A[A_Free(o), c], B[c, B_Free(o)])`, for `o ∈ [0, ResultType::Size)`
+     * **Tag-param overload**: `InnerContract<N, Map, Reduce>(A, B)` — `Reduce::identity` used as init; requires monoid `Reduce`
      */
     template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce>
     auto InnerContract(const Tensor<ADims...> &A,
@@ -260,20 +283,25 @@ namespace TTTN {
     }
 
 
+    // Tag-param overload: InnerContract<N, Map, Reduce>(A, B) — uses Reduce::identity as init
+    template<size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims>
+        requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> &&
+                 std::default_initializable<Map> && std::default_initializable<Reduce> &&
+                 requires { { Reduce::identity } -> std::convertible_to<float>; }
+    auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
+        return InnerContract<N>(A, B, Reduce::identity, Map{}, Reduce{});
+    }
+
+
     // @doc: template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...>& A, const Tensor<BDims...>& B)
     /**
-     * `InnerContract<N>` specialized to `map = multiply`, `reduce = plus` — the classical sum-of-products
+     * `InnerContract<N, Mul, Add>` — classical sum-of-products
      * `result.flat(o) = Σ_c A[A_Free(o), c] * B[c, B_Free(o)]`
      * `SigmaPi<N>(A, B)` is an ASCII alias for `ΣΠ<N>(A, B)`
      */
     template<size_t N, size_t... ADims, size_t... BDims>
     auto ΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
-        return InnerContract<N>(
-            A, B,
-            0.0f,
-            [](const float a, const float b) { return a * b; },
-            std::plus<>{}
-        );
+        return InnerContract<N, Mul, Add>(A, B);
     }
 
     // @doc: template<size_t N, size_t... ADims, size_t... BDims> auto SigmaPi(const Tensor<ADims...>& A, const Tensor<BDims...>& B)
@@ -426,8 +454,8 @@ namespace TTTN {
     // @doc: template<size_t Axis, FloatBinaryOp ReduceFn, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...>& src, float init, ReduceFn rfn)
     /**
      * Generalized axis reduction: collapses `Axis` by folding elements with `rfn(acc, val)` starting from `init`
-     * `ReduceSum`  == `ReduceApply<Axis>(src, 0.f,  std::plus<float>{})`
-     * `ReduceMax`  == `ReduceApply<Axis>(src, -inf, [](float a, float b){ return std::max(a,b); })`
+     * **Tag-param overload**: `ReduceApply<Axis, Op>(src)` — `Op::identity` used as init; requires monoid `Op`
+     * `ReduceApply<Axis, Add>(src)` == sum; `ReduceApply<Axis, Max>(src)` == max
      */
     template<size_t Axis, FloatBinaryOp ReduceFn, size_t... Dims>
     typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...> &src, float init, ReduceFn rfn) {
@@ -444,21 +472,17 @@ namespace TTTN {
         return dst;
     }
 
-    // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceSum(const Tensor<Dims...>& src)
-    /**
-     * Reduce an axis with `Tensor` addition — `ReduceSum<P>(Tensor<P,Q>) -> Tensor<Q>`
-     * Routes through `ReduceApply<Axis>(src, 0.f, std::plus<float>{})`
-     */
-    template<size_t Axis, size_t... Dims>
-    typename RemoveAxis<Axis, Dims...>::type ReduceSum(const Tensor<Dims...> &src) {
-        return ReduceApply<Axis>(src, 0.f, std::plus<float>{});
+    // Tag overload: ReduceApply<Axis, Op>(src) — Op::identity used as init
+    template<size_t Axis, typename Op, size_t... Dims>
+        requires FloatBinaryOp<Op> && requires { { Op::identity } -> std::convertible_to<float>; }
+    typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...> &src) {
+        return ReduceApply<Axis>(src, Op::identity, Op{});
     }
 
     // @doc: template<size_t Axis, size_t N, size_t... Dims> InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...>& src)
     /**
-     * Dual of `ReduceSum`/`ReduceMax`: broadcasts a reduced tensor back up by repeating it `N` times along `Axis`
+     * Broadcasts a reduced tensor back up by repeating it `N` times along `Axis`
      * `Expand<0, 5>(Tensor<3>)` → `Tensor<5, 3>` — 5 copies stacked along axis 0
-     * Uses `ReduceKernel::project` to map each output element to its source element
      */
     template<size_t Axis, size_t N, size_t... Dims>
     typename InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...> &src) {
@@ -475,9 +499,9 @@ namespace TTTN {
 
     // @doc: template<size_t Axis, FloatBinaryOp F, size_t... Dims> Tensor<Dims...> BroadcastApply(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b, F f)
     /**
-     * Apply binary `f(a_elem, b_elem) -> float` element-wise between `A` and `b` broadcast along `Axis`
-     * For each element `i` of `A`: `result[i] = f(A[i], b[project(i)])`
-     * `BroadcastAdd(A, b)` == `BroadcastApply<Axis>(A, b, std::plus<float>{})`
+     * Apply binary `f(a_elem, b_elem)` element-wise between `A` and `b` broadcast along `Axis`
+     * **Tag-param overload**: `BroadcastApply<Axis, F>(A, b)` — default-constructs `F`
+     * `BroadcastApply<0, Add>(Z, bias)` adds bias to every row
      */
     template<size_t Axis, FloatBinaryOp F, size_t... Dims>
     Tensor<Dims...> BroadcastApply(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b, F f) {
@@ -489,41 +513,31 @@ namespace TTTN {
         return result;
     }
 
-    // @doc: template<size_t Axis, size_t... Dims> Tensor<Dims...> BroadcastAdd(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b)
-    /** Add a reduced tensor to all `Axis` slices of `A` — convenience wrapper over `BroadcastApply<Axis>(A, b, std::plus<float>{})` */
-    template<size_t Axis, size_t... Dims>
-    Tensor<Dims...> BroadcastAdd(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
-        return BroadcastApply<Axis>(A, b, std::plus<float>{});
+    // Tag overload: BroadcastApply<Axis, F>(A, b) — no op arg required
+    template<size_t Axis, typename F, size_t... Dims>
+        requires FloatBinaryOp<F> && std::default_initializable<F>
+    Tensor<Dims...> BroadcastApply(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
+        return BroadcastApply<Axis>(A, b, F{});
     }
 
     // @doc: template<size_t Axis, FloatBinaryOp ReduceFn, FloatBinaryOp ApplyFn, size_t... Dims> Tensor<Dims...> ReduceBroadcast(const Tensor<Dims...>& src, float init, ReduceFn rfn, ApplyFn afn)
     /**
-     * Compose `ReduceApply` + `BroadcastApply` in one call: reduce along `Axis` with `rfn`, then broadcast the result back with `afn`
-     * `ReduceBroadcast<Axis>(src, init, rfn, afn)` == `BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn)`
-     * Powers `Softmax`: two calls — `(max, exp(a-m))` then `(sum, e/s)`
+     * Reduce along `Axis` then broadcast the result back with a second op — `BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn)`
+     * **Tag-param overload**: `ReduceBroadcast<Axis, ReduceOp, ApplyOp>(src)` — `ReduceOp::identity` as init; requires monoid `ReduceOp`
+     * Powers `Softmax`: `ReduceBroadcast<Axis, Max, Compose<Exp,Sub>>(x)` then `ReduceBroadcast<Axis, Add, Div>(exps)`
      */
     template<size_t Axis, FloatBinaryOp ReduceFn, FloatBinaryOp ApplyFn, size_t... Dims>
     Tensor<Dims...> ReduceBroadcast(const Tensor<Dims...> &src, float init, ReduceFn rfn, ApplyFn afn) {
         return BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn);
     }
 
-    // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceMean(const Tensor<Dims...>& src)
-    /** Reduce an axis with `Tensor` averaging — `ReduceMean<P>(Tensor<P,Q>) -> Tensor<Q>` */
-    template<size_t Axis, size_t... Dims>
-    typename RemoveAxis<Axis, Dims...>::type ReduceMean(const Tensor<Dims...> &src) {
-        constexpr float inv = 1.f / static_cast<float>(SizeTemplateGet<Axis, Dims...>::value);
-        return ReduceSum<Axis>(src) * inv;
-    }
-
-    // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceMax(const Tensor<Dims...>& src)
-    /**
-     * Reduce an axis with `Tensor` maxing — `ReduceMax<P>(Tensor<P,Q>) -> Tensor<Q>`
-     * Routes through `ReduceApply<Axis>(src, -inf, std::max)`
-     */
-    template<size_t Axis, size_t... Dims>
-    typename RemoveAxis<Axis, Dims...>::type ReduceMax(const Tensor<Dims...> &src) {
-        return ReduceApply<Axis>(src, -std::numeric_limits<float>::infinity(),
-                                 [](float a, float b) { return std::max(a, b); });
+    // Tag overload: ReduceBroadcast<Axis, ReduceOp, ApplyOp>(src) — no init/op args required
+    template<size_t Axis, typename ReduceOp, typename ApplyOp, size_t... Dims>
+        requires FloatBinaryOp<ReduceOp> && FloatBinaryOp<ApplyOp> &&
+                 std::default_initializable<ReduceOp> && std::default_initializable<ApplyOp> &&
+                 requires { { ReduceOp::identity } -> std::convertible_to<float>; }
+    Tensor<Dims...> ReduceBroadcast(const Tensor<Dims...> &src) {
+        return BroadcastApply<Axis>(src, ReduceApply<Axis>(src, ReduceOp::identity, ReduceOp{}), ApplyOp{});
     }
 
     // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...>& src, size_t idx)
@@ -629,30 +643,15 @@ namespace TTTN {
     }
 
 
-    // @doc: template<size_t... Dims> auto Contract(const Tensor<Dims...> &A, const Tensor<Dims...> &B)
-    /**
-     * `ΣΠ`-contracts *every* dimension of the congruent `A` and `B` `Tensor<Dims...>`s
-     * `(⊕ ∘ ⊙)(A, B)` -- Hadamard product (⊙) of `A` and `B`, then flat accumulation (⊕) over the result
-     * Returns `Tensor<>` (scalar)
-     */
+
+   
     // @doc: template<AxisList AAxes, AxisList BAxes, ..., FloatBinaryOp Map, FloatBinaryOp Reduce> auto Contract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)
     /**
-     * Grand-generalized contraction over arbitrary axis sets
+     * Grand-generalized contraction over arbitrary axis sets (lambda form)
      * Permutes `A` and `B` to align the selected axes, then delegates to `InnerContract<N>`
+     * **Tag-param overload**: `Contract<AAxes, BAxes, Map, Reduce>(A, B)` — `Reduce::identity` used as init
      */
-    // @doc: template<AxisList AAxes, AxisList BAxes, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto Contract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)
-    /**
-     * Grand generalized contraction over arbitrary named axes with custom `Map` and `Reduce`
-     * `Contraction = Reduce ∘ zipWith(Map) ∘ Align`
-     *
-     * `AAxes` and `BAxes` name the axes to contract — they are permuted into inner position,
-     * then `InnerContract<N>` is called with the given `Map` and `Reduce`
-     *
-     * Specializations:
-     *   - `ΣΠ<N>(A, B)` == `Contract<last-N-of-A, first-N-of-B>(A, B, 0, mul, plus)`
-     *   - `Collapse(A, B, init, m, r)` == `Contract<all, all>(A, B, init, m, r)` for same-shape A, B
-     */
-    template<AxisList AAxes, AxisList BAxes,
+     template<AxisList AAxes, AxisList BAxes,
              size_t... ADims, size_t... BDims,
              FloatBinaryOp Map, FloatBinaryOp Reduce>
     auto Contract(const Tensor<ADims...> &A,
@@ -680,12 +679,23 @@ namespace TTTN {
         return InnerContract<N>(permutedA, permutedB, init, map, reduce);
     }
 
+    // Tag-param overload: Contract<AAxes, BAxes, Map, Reduce>(A, B) — uses Reduce::identity as init
+    template<AxisList AAxes, AxisList BAxes, typename Map, typename Reduce,
+             size_t... ADims, size_t... BDims>
+        requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> &&
+                 std::default_initializable<Map> && std::default_initializable<Reduce> &&
+                 requires { { Reduce::identity } -> std::convertible_to<float>; }
+    auto Contract(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
+        return Contract<AAxes, BAxes>(A, B, Reduce::identity, Map{}, Reduce{});
+    }
+
 
     // @doc: template<size_t... Dims, FloatBinaryOp M, FloatBinaryOp R> float Collapse(const Tensor<Dims...>& A, const Tensor<Dims...>& B, float init, M m, R r)
     /**
      * Full-rank same-shape scalar reduction: `Reduce_i map(A[i], B[i])`
-     * Implemented as a direct `std::transform_reduce` over flat data — no index tables needed
-     * `Collapse(A, B, 0, mul, plus)` == Frobenius inner product; `Collapse(A, B, 0, abs_diff, plus)` == L1 distance
+     * Direct `std::transform_reduce` over flat data — no index tables needed
+     * **Tag-param overload**: `Collapse<M, R>(A, B)` — `R::identity` used as init
+     * `Collapse<Mul, Add>(A, B)` == Frobenius inner product; `Collapse<AbsDiff, Add>(A, B)` == L1 distance
      */
     template<size_t... Dims, FloatBinaryOp M, FloatBinaryOp R>
     float Collapse(const Tensor<Dims...> &A,
@@ -699,6 +709,15 @@ namespace TTTN {
             B.data(),
             init, r, m
         );
+    }
+
+    // Tag-param overload: Collapse<M, R>(A, B) — uses R::identity as init
+    template<typename M, typename R, size_t... Dims>
+        requires FloatBinaryOp<M> && FloatBinaryOp<R> &&
+                 std::default_initializable<M> && std::default_initializable<R> &&
+                 requires { { R::identity } -> std::convertible_to<float>; }
+    float Collapse(const Tensor<Dims...> &A, const Tensor<Dims...> &B) {
+        return Collapse(A, B, R::identity, M{}, R{});
     }
 
 }

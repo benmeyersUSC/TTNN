@@ -5,23 +5,25 @@ namespace TTTN {
     // ConcreteBlock (hidden) concept
     // any block in a TTN must define InputTensor and OutputTensor type aliases (must satisfy IsTensor),
     // and implement Forward/Backward/Update/ZeroGrad/Save/Load with matching signatures
+    // @doc: concept ConcreteBlock<T>
+    /**
+     * Requires `InputTensor`, `OutputTensor` (both `IsTensor`), `Forward`, `Backward`, and `all_params()` (const + non-const).
+     * `Update`, `ZeroGrad`, `Save`, `Load` are **not** in the concept — TTN derives them from `all_params()` via the bulk helpers in `Params.hpp`. Blocks only declare what they own.
+     */
     template<typename T>
     concept ConcreteBlock =
         requires { typename T::InputTensor; } &&
         requires { typename T::OutputTensor; } &&
-        IsTensor<typename T::InputTensor> &&      
-        IsTensor<typename T::OutputTensor> &&     
+        IsTensor<typename T::InputTensor> &&
+        IsTensor<typename T::OutputTensor> &&
         requires(T t, const T ct,
                  typename T::InputTensor  in,
-                 typename T::OutputTensor out,
-                 std::ofstream &of, std::ifstream &inf)
+                 typename T::OutputTensor out)
         {
             { ct.Forward(in)           } -> std::same_as<typename T::OutputTensor>;
             { t.Backward(out, out, in) } -> std::same_as<typename T::InputTensor>;
-            { t.Update(0.f, 0.f, 0.f, 0.f, 0.f, 0.f) };
-            { t.ZeroGrad() };
-            { ct.Save(of) };
-            { t.Load(inf) };
+            { t.all_params()  };   // non-const: ZeroGrad + Update
+            { ct.all_params() };   // const: Save
         };
 
     // Block concept: a recipe type that advertises its OutputTensor and can be Resolved

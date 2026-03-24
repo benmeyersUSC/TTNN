@@ -60,9 +60,6 @@ namespace TTTN {
         Param<W_QKV_Type> WQ_, WK_, WV_;
         Param<W_O_Type>   WO_;
 
-        auto all_params()       { return std::tie(WQ_, WK_, WV_, WO_); }
-        auto all_params() const { return std::tie(WQ_, WK_, WV_, WO_); }
-
         // forward-pass cache (needed by Backward) — mutable so Forward can be const
         mutable InputTensor  X_cache_{};
         mutable QKV_Type     Q_{}, K_{}, V_{};
@@ -70,9 +67,13 @@ namespace TTTN {
         mutable QKV_Type     attended_{};
 
     public:
-        static constexpr size_t ParamCount =
-            TotalParamSize<Param<W_QKV_Type>, Param<W_QKV_Type>, Param<W_QKV_Type>, Param<W_O_Type>>;
+        // @doc: auto all_params()
+        /** Returns `std::tie(WQ_, WK_, WV_, WO_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this */
+        auto all_params()       { return std::tie(WQ_, WK_, WV_, WO_); }
+        auto all_params() const { return std::tie(WQ_, WK_, WV_, WO_); }
 
+        // @doc: MultiHeadAttentionBlock()
+        /** Xavier-initializes `WQ`, `WK`, `WV`, `WO` */
         MultiHeadAttentionBlock() {
             XavierInitMD(WQ_.value, EmbSize, HeadDim);
             XavierInitMD(WK_.value, EmbSize, HeadDim);
@@ -125,8 +126,6 @@ namespace TTTN {
         }
 
         // ─── BACKWARD ───────────────────────────────────────────────────────────
-
-        void ZeroGrad() { ZeroAllGrads(all_params()); }
 
         // delta_A: dL/dOutput.  a: output (unused — attention has no simple pointwise activation).
         // a_prev: input X (same as X_cache_, provided for interface compliance).
@@ -248,14 +247,6 @@ namespace TTTN {
 
         // ─── ADAM UPDATE ────────────────────────────────────────────────────────
 
-        void Update(float b1, float b2, float lr, float mCorr, float vCorr, float eps = 1e-8f) {
-            UpdateAll(all_params(), b1, b2, lr, mCorr, vCorr, eps);
-        }
-
-        // ─── SAVE / LOAD ─────────────────────────────────────────────────────────
-
-        void Save(std::ofstream& f) const { SaveAll(all_params(), f); }
-        void Load(std::ifstream& f)       { LoadAll(all_params(), f); }
     };
 
 

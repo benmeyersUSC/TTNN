@@ -1,4 +1,4 @@
-# TTTN -- Trainable Template Tensor Network
+# TTTN : Trainable Template Tensor Network
 
 A header-only C++20 neural network library built around a fully type-safe, arbitrary-rank
 `Tensor` type. Network topology, tensor shapes, and layer connectivity are all encoded at compile time.
@@ -54,41 +54,26 @@ Used in my [AlphaToe](https://github.com/benmeyersUSC/AlphaToe) library.
         - `C[i, j] = Σ_k (A[i, k] * B[k, j])`
 - In [`TTTN`](src/TTTN.hpp), we have:
   ```cpp
-    auto C = InnerContract<1>(                  // Align <1> inner axis
-        A, B,
-        0.0f,
-        [](float a, float b) { return a * b; }, // Map
-        std::plus<>{}                           // Reduce
-    );
+    auto C = InnerContract<N, Mul, Add>(A, B);  // tag form: Map=Mul, Reduce=Add, init=Add::identity
+    // or with explicit init and lambdas:
+    auto C = InnerContract<1>(A, B, 0.f, Mul{}, Add{});
     ```
 
     - Different contractions on the same type:
         - **Dot product / Frobenius inner product**
           ```cpp
-          float sim = Collapse(
-              A, B,
-              0.0f,
-              [](float a, float b) { return a * b; },
-              std::plus<>{}
-          );
-           ```
+          float sim = Collapse<Mul, Add>(A, B);
+          ```
         - **L1 Distance**
           ```cpp
-          float dist = Collapse(
-              A, B,
-              0.0f,
-              [](float a, float b) { return std::abs(a - b); },
-              std::plus<>{}
-          );
-             ```
-        - **Max product**
+          float dist = Collapse<AbsDiff, Add>(A, B);
+          ```
+        - **Max product** (no identity for Max over products — use lambda form)
           ```cpp
-          auto C = InnerContract<1>(
-              A, B,
+          auto C = InnerContract<1>(A, B,
               -std::numeric_limits<float>::infinity(),
-              [](float a, float b) { return a * b; },
-              [](float x, float y) { return std::max(x, y); }
-          );
+              Mul{},
+              Max{});
           ```
 
 ---
@@ -139,18 +124,18 @@ We align the shared axis `K`, then map + reduce:
 
 ## Table of Contents
 
-1. [Tensor.hpp -- The Foundational Object](#tensorhpp--the-foundational-object)
-2. [TensorOps.hpp -- Tensor Operations](#tensoropshpp--tensor-operations)
-3. [TTTN_ML.hpp -- ML Primitives](#tttn_mlhpp--ml-primitives)
-4. [Dense.hpp -- Fully-Connected Layer](#densehpp--fully-connected-layer)
-5. [Attention.hpp -- Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
-6. [NetworkUtil.hpp -- Concepts, Types, and Utilities](#networkutilhpp--concepts-types-and-utilities)
-7. [TrainableTensorNetwork.hpp -- The Network](#trainabletensornetworkhpp--the-network)
-8. [DataIO.hpp -- Data Loading and Batching](#dataiohpp--data-loading-and-batching)
+1. [Tensor.hpp: The Foundational Object](#tensorhpp--the-foundational-object)
+2. [TensorOps.hpp: Tensor Operations](#tensoropshpp--tensor-operations)
+3. [TTTN_ML.hpp: ML Primitives](#tttn_mlhpp--ml-primitives)
+4. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
+5. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
+6. [NetworkUtil.hpp: Concepts, Types, and Utilities](#networkutilhpp--concepts-types-and-utilities)
+7. [TrainableTensorNetwork.hpp: The Network](#trainabletensornetworkhpp--the-network)
+8. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
 
 ---
 
-## [Tensor.hpp](src/Tensor.hpp) -- The Foundational Object
+## [Tensor.hpp](src/Tensor.hpp): The Foundational Object
 
 The impetus and core data structure of the library is the variadic-dimension-templated `Tensor<size_t...Dims>`. In
 `TTTN`, ***shapes*** are ***types*** and ***types*** denote ***shapes***. At compile-time, a
@@ -375,7 +360,7 @@ Shape-only metaprogramming. No data, no runtime — purely compile-time type-lev
 ### Tensor Demonstration
 
 ```cpp
-// shapes are types -- different shapes are different types
+// shapes are types: different shapes are different types
 Tensor<3, 4> mat;                                  // 3x4 matrix
 Tensor<2, 3, 4> cube;                              // rank-3 tensor
 
@@ -405,15 +390,58 @@ vec.apply([](float& x){ x *= -1.0f; });            // in-place
 
 ---
 
-## [TensorOps.hpp](src/TensorOps.hpp) -- Tensor Operations
+## [TensorOps.hpp](src/TensorOps.hpp): Tensor Operations
 
 Generalized tensor algebra: contractions, permutations, reductions, slicing, and broadcast operations. All shapes are derived at compile time.
 
 ### Concepts
 
-- **`FloatUnaryOp`** — `std::regular_invocable<F, float>` with return type `float`. Used by `Tensor::map`.
+- **`FloatUnaryOp`** — `std::regular_invocable<F, float>` with return type `float`. Used by `Tensor::map`, `MapApply`.
 - **`FloatBinaryOp`** — `std::regular_invocable<F, float, float>` with return type `float`. Used by `ReduceApply`,
-  `BroadcastApply`, `ReduceBroadcast`, `TensorIndexApply`.
+  `BroadcastApply`, `ReduceBroadcast`, `InnerContract`, `Contract`, `Collapse`, `TensorIndexApply`.
+
+---
+
+### Operation Tags
+
+Default-constructible callable structs satisfying `FloatBinaryOp` or `FloatUnaryOp`. Pass as type template parameters
+instead of lambdas — one template instantiation per `(Axis, Op, Dims...)`, zero runtime overhead, fully visible to the
+optimizer. Monoid tags (those with `identity`) unlock the no-init overloads of `ReduceApply`, `ReduceBroadcast`, etc.
+
+**Binary tags:**
+
+| Tag | Expression | `identity` |
+|-----|-----------|------------|
+| `Add` | `a + b` | `0.f` |
+| `Mul` | `a * b` | `1.f` |
+| `Max` | `std::max(a, b)` | `-∞` |
+| `Sub` | `a - b` | — |
+| `Div` | `a / b` | — |
+| `AbsDiff` | `std::abs(a - b)` | — |
+
+**Unary tags** — used with `MapApply<Op>` or `tensor.map(Op{})`:
+
+| Tag | Expression |
+|-----|-----------|
+| `Log` | `std::log(x)` |
+| `Exp` | `std::exp(x)` |
+| `Neg` | `-x` |
+| `Sq` | `x * x` |
+| `Abs` | `std::abs(x)` |
+
+**`Compose<F, G>`** — apply `G` first, then `F`. The result satisfies the appropriate concept automatically:
+- `Compose<F, G>` where both are unary → satisfies `FloatUnaryOp`: `Compose<Log, Abs>{}(x)` == `log(|x|)`
+- `Compose<F, G>` where F is unary, G is binary → satisfies `FloatBinaryOp`: `Compose<Exp, Sub>{}(a, b)` == `exp(a-b)`
+- Chains arbitrarily: `Compose<Neg, Compose<Exp, Sub>>{}(a, b)` == `-(exp(a-b))`
+
+---
+
+### MapApply
+
+- ***MapApply*** — [
+  `template<typename Op, size_t... Dims> Tensor<Dims...> MapApply(const Tensor<Dims...>& src)`](src/TensorOps.hpp)
+    - Apply unary tag `Op` element-wise. Equivalent to `src.map(Op{})` but named and passable as a type.
+    - `MapApply<Log>(t)`, `MapApply<Exp>(t)`, `MapApply<Neg>(t)`, `MapApply<Sq>(t)`, `MapApply<Abs>(t)`
 
 ---
 
@@ -549,15 +577,15 @@ Tensor contraction is the unified `Reduce ∘ zipWith(Map) ∘ Align` operation 
       and the runtime computations are parallelized and vectorized, following known, saved paths**
 
 - ***InnerContract*** — [
-  `template<size_t N, ..., FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)`](src/TensorOps.hpp)
-    - N-inner-axis contraction with custom `Map` and `Reduce`
+  `template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)`](src/TensorOps.hpp)
+    - N-inner-axis contraction with custom `Map` and `Reduce` (lambda form)
     - Aligns the last `N` axes of `A` with the first `N` axes of `B`
-    - Reads precomputed `offsets` from `ContractionKernel`; base offsets computed inline as O(1) arithmetic
     - `result.flat(o) = Reduce_c map(A[A_Free(o), c], B[c, B_Free(o)])`, for `o ∈ [0, ResultType::Size)`
+    - **Tag-param overload**: `InnerContract<N, Map, Reduce>(A, B)` — `Reduce::identity` used as init; requires monoid `Reduce`
 
 - ***ΣΠ*** / ***SigmaPi*** — [
   `template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorOps.hpp)
-    - `InnerContract<N>` specialized to `map = multiply`, `reduce = plus` — the classical sum-of-products
+    - `InnerContract<N, Mul, Add>` — classical sum-of-products
     - `result.flat(o) = Σ_c A[A_Free(o), c] * B[c, B_Free(o)]`
     - `SigmaPi<N>(A, B)` is an ASCII alias for `ΣΠ<N>(A, B)`
 
@@ -579,14 +607,16 @@ Tensor contraction is the unified `Reduce ∘ zipWith(Map) ∘ Align` operation 
 
 - ***Contract*** — [
   `template<AxisList AAxes, AxisList BAxes, ..., FloatBinaryOp Map, FloatBinaryOp Reduce> auto Contract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)`](src/TensorOps.hpp)
-    - Grand-generalized contraction over arbitrary axis sets
+    - Grand-generalized contraction over arbitrary axis sets (lambda form)
     - Permutes `A` and `B` to align the selected axes, then delegates to `InnerContract<N>`
+    - **Tag-param overload**: `Contract<AAxes, BAxes, Map, Reduce>(A, B)` — `Reduce::identity` used as init
 
 - ***Collapse*** — [
   `template<size_t... Dims, FloatBinaryOp M, FloatBinaryOp R> float Collapse(const Tensor<Dims...>& A, const Tensor<Dims...>& B, float init, M m, R r)`](src/TensorOps.hpp)
     - Full-rank same-shape scalar reduction: `Reduce_i map(A[i], B[i])`
-    - Implemented as a direct `std::transform_reduce` over flat data — no index tables needed
-    - `Collapse(A, B, 0, mul, plus)` == Frobenius inner product; `Collapse(A, B, 0, abs_diff, plus)` == L1 distance
+    - Direct `std::transform_reduce` over flat data — no index tables needed
+    - **Tag-param overload**: `Collapse<M, R>(A, B)` — `R::identity` used as init
+    - `Collapse<Mul, Add>(A, B)` == Frobenius inner product; `Collapse<AbsDiff, Add>(A, B)` == L1 distance
 
 `InnerContract<N>` is the core primitive. `N` controls how many trailing dims of `A` contract with leading dims of `B`.
 Every named operation is a specialization — and every result shape is resolved at compile time from the input shapes.
@@ -629,9 +659,7 @@ static_assert(std::is_same_v<decltype(out), Tensor<3, 2>>);
 auto outer = Outer(u, v);                           // ΣΠ<0>: contract nothing → Tensor<3,3>
 static_assert(std::is_same_v<decltype(outer), Tensor<3, 3>>);
 
-float frob = Collapse(W, W, 0.f,                    // full contraction → scalar Frobenius inner product
-    [](float a, float b){ return a * b; },
-    std::plus<float>{});
+float frob = Collapse<Mul, Add>(W, W);              // Frobenius inner product — tag form, no lambdas
 
 // ── what the type system rejects ─────────────────────────────────────────────
 // ΣΠ<1>(x, W);                                    // ✗ last dim of Tensor<784> ≠ first dim of Tensor<128,784>
@@ -656,123 +684,68 @@ float frob = Collapse(W, W, 0.f,                    // full contraction → scal
 - ***ReduceApply*** — [
   `template<size_t Axis, FloatBinaryOp ReduceFn, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...>& src, float init, ReduceFn rfn)`](src/TensorOps.hpp)
     - Generalized axis reduction: collapses `Axis` by folding elements with `rfn(acc, val)` starting from `init`
-    - `ReduceSum`  == `ReduceApply<Axis>(src, 0.f,  std::plus<float>{})`
-    - `ReduceMax`  == `ReduceApply<Axis>(src, -inf, [](float a, float b){ return std::max(a,b); })`
-
-- ***ReduceSum*** — [
-  `template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceSum(const Tensor<Dims...>& src)`](src/TensorOps.hpp)
-    - Reduce an axis with `Tensor` addition — `ReduceSum<P>(Tensor<P,Q>) -> Tensor<Q>`
-    - Routes through `ReduceApply<Axis>(src, 0.f, std::plus<float>{})`
-
-- ***ReduceMean*** — [
-  `template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceMean(const Tensor<Dims...>& src)`](src/TensorOps.hpp)
-    - Reduce an axis with `Tensor` averaging — `ReduceMean<P>(Tensor<P,Q>) -> Tensor<Q>`
-
-- ***ReduceMax*** — [
-  `template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceMax(const Tensor<Dims...>& src)`](src/TensorOps.hpp)
-    - Reduce an axis with `Tensor` maxing — `ReduceMax<P>(Tensor<P,Q>) -> Tensor<Q>`
-    - Routes through `ReduceApply<Axis>(src, -inf, std::max)`
+    - **Tag-param overload**: `ReduceApply<Axis, Op>(src)` — `Op::identity` used as init; requires monoid `Op`
+    - `ReduceApply<Axis, Add>(src)` == sum; `ReduceApply<Axis, Max>(src)` == max
 
 - ***Expand*** — [
   `template<size_t Axis, size_t N, size_t... Dims> InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...>& src)`](src/TensorOps.hpp)
-    - Dual of `ReduceSum`/`ReduceMax`: broadcasts a reduced tensor back up by repeating it `N` times along `Axis`
+    - Broadcasts a reduced tensor back up by repeating it `N` times along `Axis`
     - `Expand<0, 5>(Tensor<3>)` → `Tensor<5, 3>` — 5 copies stacked along axis 0
-    - Uses `ReduceKernel::project` to map each output element to its source element
 
 - ***BroadcastApply*** — [
   `template<size_t Axis, FloatBinaryOp F, size_t... Dims> Tensor<Dims...> BroadcastApply(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b, F f)`](src/TensorOps.hpp)
-    - Apply binary `f(a_elem, b_elem) -> float` element-wise between `A` and `b` broadcast along `Axis`
-    - For each element `i` of `A`: `result[i] = f(A[i], b[project(i)])`
-    - `BroadcastAdd(A, b)` == `BroadcastApply<Axis>(A, b, std::plus<float>{})`
+    - Apply binary `f(a_elem, b_elem)` element-wise between `A` and `b` broadcast along `Axis`
+    - **Tag-param overload**: `BroadcastApply<Axis, F>(A, b)` — default-constructs `F`
+    - `BroadcastApply<0, Add>(Z, bias)` adds bias to every row
 
 - ***ReduceBroadcast*** — [
   `template<size_t Axis, FloatBinaryOp ReduceFn, FloatBinaryOp ApplyFn, size_t... Dims> Tensor<Dims...> ReduceBroadcast(const Tensor<Dims...>& src, float init, ReduceFn rfn, ApplyFn afn)`](src/TensorOps.hpp)
-    - Compose `ReduceApply` + `BroadcastApply` in one call: reduce along `Axis` with
-      `rfn`, then broadcast the result back with `afn`
-    - `ReduceBroadcast<Axis>(src, init, rfn, afn)` ==
-      `BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn)`
-    - Powers `Softmax`: two calls — `(max, exp(a-m))` then `(sum, e/s)`
+    - Reduce along `Axis` then broadcast the result back with a second op — `BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn)`
+    - **Tag-param overload**: `ReduceBroadcast<Axis, ReduceOp, ApplyOp>(src)` — `ReduceOp::identity` as init; requires monoid `ReduceOp`
+    - Powers `Softmax`: `ReduceBroadcast<Axis, Max, Compose<Exp,Sub>>(x)` then `ReduceBroadcast<Axis, Add, Div>(exps)`
 
-- ***BroadcastAdd*** — [
-  `template<size_t Axis, size_t... Dims> Tensor<Dims...> BroadcastAdd(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b)`](src/TensorOps.hpp)
-    - Add a reduced tensor to all `Axis` slices of `A` — convenience wrapper over
-      `BroadcastApply<Axis>(A, b, std::plus<float>{})`
-
-Every operation below takes
-`Axis` as a compile-time template argument. The compiler resolves the output shape, the stride arithmetic, and the projection function at compile time — the runtime loop is a flat parallel sweep with zero shape logic.
+Every operation takes `Axis` as a compile-time argument. Output shape, stride arithmetic, and projection are all resolved at compile time — the runtime loop is a flat parallel sweep with zero shape logic.
 
 ```cpp
-Tensor<32, 10> logits;                              // batch of 32, 10 classes
+Tensor<32, 10> logits;
+Tensor<10>     bias;
 
-// ── built-in reductions ──────────────────────────────────────────────────────
-auto col_sum  = ReduceSum<0>(logits);               // sum over batch    → Tensor<10>
-auto row_max  = ReduceMax<1>(logits);               // max per sample    → Tensor<32>
-auto col_mean = ReduceMean<0>(logits);              // mean over batch   → Tensor<10>
-static_assert(std::is_same_v<decltype(col_sum),  Tensor<10>>);
-static_assert(std::is_same_v<decltype(row_max),  Tensor<32>>);
-static_assert(std::is_same_v<decltype(col_mean), Tensor<10>>);
+// ── tag-param reductions — no init arg, no lambda ────────────────────────────
+auto col_sum = ReduceApply<0, Add>(logits);         // sum over batch → Tensor<10>
+auto row_max = ReduceApply<1, Max>(logits);         // max per sample → Tensor<32>
+static_assert(std::is_same_v<decltype(col_sum), Tensor<10>>);
+static_assert(std::is_same_v<decltype(row_max), Tensor<32>>);
 
-// ── ReduceApply: bring your own fold ─────────────────────────────────────────
-// any FloatBinaryOp works — the axis, shape, and stride are all compile-time
+// lambda form still available for ops without identity (e.g. min):
 auto row_min = ReduceApply<1>(logits,
     std::numeric_limits<float>::infinity(),
     [](float a, float b) { return std::min(a, b); });
-static_assert(std::is_same_v<decltype(row_min), Tensor<32>>);   // min per sample
 
-// ── Expand: the dual of reduction ────────────────────────────────────────────
-// insert a new axis and repeat values along it
-Tensor<10> bias;
+// ── Expand: dual of reduction ─────────────────────────────────────────────────
 auto stacked = Expand<0, 32>(bias);                 // Tensor<10> → Tensor<32, 10>
 static_assert(std::is_same_v<decltype(stacked), Tensor<32, 10>>);
 
-// works at any rank
-Tensor<4, 5> slice;
-auto vol = Expand<1, 3>(slice);                     // Tensor<4,5> → Tensor<4,3,5>
-static_assert(std::is_same_v<decltype(vol), Tensor<4, 3, 5>>);
-
-// ── BroadcastApply: element-wise op between full tensor and reduced tensor ───
-auto biased = BroadcastApply<0>(logits, bias,
-    std::plus<float>{});                            // add bias to every row
+// ── tag-param broadcast ───────────────────────────────────────────────────────
+auto biased = BroadcastApply<0, Add>(logits, bias); // add bias to every row
+auto scaled = BroadcastApply<1, Div>(logits, row_max); // divide each row by its max
 static_assert(std::is_same_v<decltype(biased), Tensor<32, 10>>);
 
-// BroadcastAdd is the convenience wrapper:
-auto biased2 = BroadcastAdd<0>(logits, bias);       // same thing
-static_assert(std::is_same_v<decltype(biased2), Tensor<32, 10>>);
+// ── ReduceBroadcast: reduce + broadcast in one call ───────────────────────────
+// tag form — both ops from tags, identity automatic:
+auto normed = ReduceBroadcast<1, Add, Div>(logits); // divide each element by its row sum
 
-// but BroadcastApply takes ANY binary op:
-auto scaled = BroadcastApply<0>(logits, row_max,
-    std::divides<float>{});                         // divide each row by its max
-static_assert(std::is_same_v<decltype(scaled), Tensor<32, 10>>);
-
-// ── ReduceBroadcast: reduce then broadcast in one call ───────────────────────
-// the most powerful primitive — composes ReduceApply + BroadcastApply.
-// two lambdas: one to reduce along the axis, one to apply the result back.
-
-// subtract each row's max from every element (numerically stable pre-softmax):
+// lambda form — for ops that need a custom apply (no identity required on apply side):
 auto centered = ReduceBroadcast<1>(logits,
-    -std::numeric_limits<float>::infinity(),
-    [](float a, float b) { return std::max(a, b); },   // reduce: find max
-    [](float a, float m) { return a - m; });            // apply:  subtract it
+    Max::identity, Max{},
+    Compose<Exp, Sub>{});                           // exp(x - row_max) — numerically stable
 static_assert(std::is_same_v<decltype(centered), Tensor<32, 10>>);
 
-// Softmax itself is just two ReduceBroadcast calls:
-//   1. (max, exp(x - max))   — stable exponentials
-//   2. (sum, e / sum)        — normalize to probabilities
-// both fully parallel, both with compile-time-known shapes and strides.
-
-// ── higher-rank example: 3D tensor ───────────────────────────────────────────
-Tensor<8, 16, 64> activations;                      // batch × seq × embed
-
-auto per_token_norm = ReduceApply<2>(activations,   // reduce embed dim
-    0.f, std::plus<float>{});                       // → Tensor<8, 16>
-static_assert(std::is_same_v<decltype(per_token_norm), Tensor<8, 16>>);
-
-auto per_batch_max = ReduceMax<0>(activations);     // reduce batch dim
-static_assert(std::is_same_v<decltype(per_batch_max), Tensor<16, 64>>);
-
-// Expand it right back:
-auto restored = Expand<0, 8>(per_batch_max);        // → Tensor<8, 16, 64>
-static_assert(std::is_same_v<decltype(restored), Tensor<8, 16, 64>>);
+// ── higher-rank ───────────────────────────────────────────────────────────────
+Tensor<8, 16, 64> activations;
+auto per_token = ReduceApply<2, Add>(activations);  // → Tensor<8, 16>
+auto restored  = Expand<0, 8>(ReduceApply<0, Max>(activations)); // → Tensor<8, 16, 64>
+static_assert(std::is_same_v<decltype(per_token), Tensor<8, 16>>);
+static_assert(std::is_same_v<decltype(restored),  Tensor<8, 16, 64>>);
 ```
 
 ---
@@ -844,12 +817,8 @@ auto a1 = z1.map([](float v) {
 auto z2 = ΣΠ<1>(W2, a1) + b2;                      // Tensor<10,128> × Tensor<128> + Tensor<10> → Tensor<10>
 
 // softmax output (two ReduceBroadcast calls — stable, parallel, one line each):
-auto exps  = ReduceBroadcast<0>(z2,                 // axis 0 is the only axis on Tensor<10>
-    -std::numeric_limits<float>::infinity(),
-    [](float a, float b) { return std::max(a, b); },
-    [](float a, float m) { return std::exp(a - m); });
-auto probs = ReduceBroadcast<0>(exps,
-    0.f, std::plus<float>{}, std::divides<float>{});
+auto exps  = ReduceBroadcast<0>(z2, Max::identity, Max{}, Compose<Exp, Sub>{});
+auto probs = ReduceBroadcast<0, Add, Div>(exps);
 
 static_assert(std::is_same_v<decltype(z1), Tensor<128>>);
 static_assert(std::is_same_v<decltype(probs), Tensor<10>>);
@@ -883,7 +852,7 @@ b1 += dz1 * lr;   b2 += dz2 * lr;
 
 ---
 
-## [TTTN_ML.hpp](src/TTTN_ML.hpp) -- ML Primitives
+## [TTTN_ML.hpp](src/TTTN_ML.hpp): ML Primitives
 
 Activation functions, their derivatives, loss functions, and the `SoftmaxBlock` layer. Depends on `TensorOps.hpp`.
 
@@ -892,11 +861,19 @@ Activation functions, their derivatives, loss functions, and the `SoftmaxBlock` 
 - ***EPS*** — [`static constexpr float EPS`](src/TTTN_ML.hpp)
   -
 
-### Activation Function Enum
+### Activation Op Tags
 
-- ***ActivationFunction*** — [`enum class ActivationFunction`](src/TTTN_ML.hpp) -- `Linear`, `Sigmoid`, `ReLU`,
-  `Softmax`, `Tanh`
-    -
+Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp` and `ActivationOp`. Use directly
+with `MapApply<Act>(z)` for forward and `Act::prime(a)` for the derivative (in terms of post-activation output).
+
+| Tag | Forward `operator()(x)` | `prime(a)` |
+|-----|--------------------------|------------|
+| `Linear` | `x` | `1.f` |
+| `ReLU` | `x > 0 ? x : 0` | `a > 0 ? 1 : 0` |
+| `Sigmoid` | `1 / (1 + exp(-x))` | `a * (1 - a)` |
+| `Tanh` | `std::tanh(x)` | `1 - a*a` |
+
+- **`ActivationOp`** — concept: `FloatUnaryOp<T>` + `T::prime(float) -> float`
 
 ---
 
@@ -908,22 +885,6 @@ Activation functions, their derivatives, loss functions, and the `SoftmaxBlock` 
 
 - ***XavierInitMD*** — [
   `template<size_t... Dims> void XavierInitMD(Tensor<Dims...>& W, const size_t fan_in, const size_t fan_out)`](src/TTTN_ML.hpp)
-    -
-
-- ***Activate*** — [
-  `template<size_t N> Tensor<N> Activate(const Tensor<N>& z, ActivationFunction act)`](src/TTTN_ML.hpp)
-    -
-
-- ***ActivatePrime*** — [
-  `template<size_t N> Tensor<N> ActivatePrime(const Tensor<N>& grad, const Tensor<N>& a, ActivationFunction act)`](src/TTTN_ML.hpp)
-    -
-
-- ***BatchedActivate*** — [
-  `template<size_t Batch, size_t N> Tensor<Batch, N> BatchedActivate(const Tensor<Batch, N>& Z, ActivationFunction act)`](src/TTTN_ML.hpp)
-    -
-
-- ***BatchedActivatePrime*** — [
-  `template<size_t Batch, size_t N> Tensor<Batch, N> BatchedActivatePrime(const Tensor<Batch, N>& grad, const Tensor<Batch, N>& a, ActivationFunction act)`](src/TTTN_ML.hpp)
     -
 
 ---
@@ -942,13 +903,9 @@ Activation functions, their derivatives, loss functions, and the `SoftmaxBlock` 
 
 ### `class SoftmaxBlock<size_t Axis, typename TensorT>`
 
-A shape-preserving, parameter-free block that applies axis-generalized softmax. `ParamCount == 0`; `Update`, `Save`,
-`Load` are all no-ops.
+A shape-preserving, parameter-free block. `all_params()` returns `std::tuple<>{}` — TTN's bulk helpers become no-ops automatically.
 
 - ***Forward*** — [`OutputTensor Forward(const InputTensor& x) const`](src/TTTN_ML.hpp)
-  -
-
-- ***ZeroGrad*** — [`void ZeroGrad()`](src/TTTN_ML.hpp)
   -
 
 - ***Backward*** — [
@@ -963,14 +920,8 @@ A shape-preserving, parameter-free block that applies axis-generalized softmax. 
   `template<size_t Batch> Tensor<Batch, Dims...> BatchedBackward(const Tensor<Batch, Dims...>& delta_A, const Tensor<Batch, Dims...>& a, const Tensor<Batch, Dims...>& a_prev)`](src/TTTN_ML.hpp)
     -
 
-- ***Update*** — [`static void Update(float, float, float, float, float, float)`](src/TTTN_ML.hpp) *(no-op)*
-  -
-
-- ***Save*** — [`static void Save(std::ofstream&) const`](src/TTTN_ML.hpp) *(no-op)*
-  -
-
-- ***Load*** — [`static void Load(std::ifstream&)`](src/TTTN_ML.hpp) *(no-op)*
-  -
+- ***all_params*** — [`auto all_params()`](src/TTTN_ML.hpp)
+    - Returns `std::tuple<>{}` — no parameters; TTN bulk helpers become no-ops automatically
 
 ---
 
@@ -1019,82 +970,55 @@ A shape-preserving, parameter-free block that applies axis-generalized softmax. 
   `template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N>& pred, const Tensor<Batch, N>& labels)`](src/TTTN_ML.hpp)
     - Returns the percentage of correctly classified samples in a batch. `labels` must be one-hot. Correct iff
       `argmax(pred[b]) == argmax(labels[b])`, computed via
-      `ReduceSum<1>(pred ⊙ labels)` (probability assigned to the true class) vs
-      `ReduceMax<1>(pred)` (highest predicted probability) — no explicit argmax loop required.
+      `ReduceApply<1, Add>(pred ⊙ labels)` (probability assigned to the true class) vs
+      `ReduceApply<1, Max>(pred)` (highest predicted probability) — no explicit argmax loop required.
 
 ---
 
-## [Dense.hpp](src/Dense.hpp) -- Fully-Connected Layer
+## [Dense.hpp](src/Dense.hpp): Fully-Connected Layer
 
 Implements the general multidimensional dense layer (`DenseMDBlock`) and its recipe types. Weights have shape
 `Tensor<OutDims..., InDims...>`; forward pass is a generalized matrix-vector product via
 `ΣΠ`. Includes Adam optimizer state.
-
-### Multi-Dimensional Activation Helpers
-
-- ***ActivateMD*** — [
-  `template<size_t... Dims> Tensor<Dims...> ActivateMD(const Tensor<Dims...>& z, ActivationFunction act)`](src/Dense.hpp)
-    -
-
-- ***ActivatePrimeMD*** — [
-  `template<size_t... Dims> Tensor<Dims...> ActivatePrimeMD(const Tensor<Dims...>& grad, const Tensor<Dims...>& a, ActivationFunction act)`](src/Dense.hpp)
-    -
 
 - ***WTBlockSwapPerm*** — [`struct WTBlockSwapPerm<size_t N_out, size_t N_in>`](src/Dense.hpp)
   -
 
 ---
 
-### `class DenseMDBlock<typename InT, typename OutT, ActivationFunction Act_>`
+### `class DenseMDBlock<typename InT, typename OutT, ActivationOp Act_>`
 
 The concrete fully-connected block. `W = Tensor<OutDims..., InDims...>`, `b = Tensor<OutDims...>`.
 
 - ***DenseMDBlock*** — [`DenseMDBlock()`](src/Dense.hpp)
-  -
-
+    - Xavier-initializes `W`
 - ***Forward*** — [`OutputTensor Forward(const InputTensor& x) const`](src/Dense.hpp)
   -
-
-- ***ZeroGrad*** — [`void ZeroGrad()`](src/Dense.hpp)
+- ***Backward*** — [`InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Dense.hpp)
   -
-
-- ***Backward*** — [
-  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Dense.hpp)
-    -
-
-- ***BatchedForward*** — [
-  `template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp)
-    -
-
-- ***BatchedBackward*** — [
-  `template<size_t Batch> Tensor<Batch, InDims...> BatchedBackward(const Tensor<Batch, OutDims...>& delta_A, const Tensor<Batch, OutDims...>& a, const Tensor<Batch, InDims...>& a_prev)`](src/Dense.hpp)
-    -
-
-- ***Update*** — [
-  `void Update(float adamBeta1, float adamBeta2, float lr, float mCorr, float vCorr, float eps)`](src/Dense.hpp)
-    -
-
-- ***Save*** — [`void Save(std::ofstream& f) const`](src/Dense.hpp)
+- ***BatchedForward*** — [`template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp)
   -
-
-- ***Load*** — [`void Load(std::ifstream& f)`](src/Dense.hpp)
+- ***BatchedBackward*** — [`template<size_t Batch> Tensor<Batch, InDims...> BatchedBackward(...)`](src/Dense.hpp)
   -
+- ***all_params*** — [`auto all_params()`](src/Dense.hpp)
+    - Returns `std::tie(W_, b_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this
 
 ---
 
-### `struct DenseMD<typename OutT, ActivationFunction Act_>` *(Block recipe)*
+### `struct DenseMD<typename OutT, ActivationOp Act_>` *(Block recipe)*
 
 - ***Resolve*** — [`template<typename InputT> using Resolve = DenseMDBlock<InputT, OutT, Act_>`](src/Dense.hpp)
   -
 
-### `template<size_t N, ActivationFunction Act_> using Dense`
+### `template<size_t N, ActivationOp Act_> using Dense`
 
 - ***Dense*** — [`using Dense = DenseMD<Tensor<N>, Act_>`](src/Dense.hpp)
-  -
+  - `Dense<128, ReLU>`, `Dense<10, Sigmoid>`, `Dense<10>` (defaults to `Linear`)
+
 
 ---
 
-## [Attention.hpp](src/Attention.hpp) -- Multi-Head Self-Attention
+## [Attention.hpp](src/Attention.hpp): Multi-Head Self-Attention
 
 Implements scaled dot-product multi-head self-attention over sequences of arbitrary-rank token embeddings. Forward-pass cache is stored as
 `mutable` members. All four weight matrices (`W_Q`, `W_K`, `W_V`, `W_O`) are updated with Adam.
@@ -1104,35 +1028,17 @@ Implements scaled dot-product multi-head self-attention over sequences of arbitr
 `InputTensor = OutputTensor = Tensor<SeqLen, EmbDims...>`. Constraint: `EmbSize % Heads == 0`.
 
 - ***MultiHeadAttentionBlock*** — [`MultiHeadAttentionBlock()`](src/Attention.hpp)
-  -
-
+    - Xavier-initializes `WQ`, `WK`, `WV`, `WO`
 - ***Forward*** — [`OutputTensor Forward(const InputTensor& X) const`](src/Attention.hpp)
   -
-
-- ***ZeroGrad*** — [`void ZeroGrad()`](src/Attention.hpp)
+- ***Backward*** — [`InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Attention.hpp)
   -
-
-- ***Backward*** — [
-  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Attention.hpp)
-    -
-
-- ***BatchedForward*** — [
-  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(const Tensor<Batch, SeqLen, EmbDims...>& X)`](src/Attention.hpp)
-    -
-
-- ***BatchedBackward*** — [
-  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(const Tensor<Batch, SeqLen, EmbDims...>& delta_A, const Tensor<Batch, SeqLen, EmbDims...>& a, const Tensor<Batch, SeqLen, EmbDims...>& a_prev)`](src/Attention.hpp)
-    -
-
-- ***Update*** — [
-  `void Update(float adamBeta1, float adamBeta2, float lr, float mCorr, float vCorr, float eps)`](src/Attention.hpp)
-    -
-
-- ***Save*** — [`void Save(std::ofstream& f) const`](src/Attention.hpp)
+- ***BatchedForward*** — [`template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(...)`](src/Attention.hpp)
   -
-
-- ***Load*** — [`void Load(std::ifstream& f)`](src/Attention.hpp)
+- ***BatchedBackward*** — [`template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(...)`](src/Attention.hpp)
   -
+- ***all_params*** — [`auto all_params()`](src/Attention.hpp)
+    - Returns `std::tie(WQ_, WK_, WV_, WO_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this
 
 ---
 
@@ -1151,7 +1057,7 @@ Implements scaled dot-product multi-head self-attention over sequences of arbitr
 
 ---
 
-## [NetworkUtil.hpp](src/NetworkUtil.hpp) -- Concepts, Types, and Utilities
+## [NetworkUtil.hpp](src/NetworkUtil.hpp): Concepts, Types, and Utilities
 
 Defines the two block concepts that gate the type system, the chain-resolution machinery used by
 `NetworkBuilder`, and the `ActivationsWrap` safety wrapper.
@@ -1159,7 +1065,8 @@ Defines the two block concepts that gate the type system, the chain-resolution m
 ### Concepts
 
 - ***ConcreteBlock*** — [`concept ConcreteBlock<T>`](src/NetworkUtil.hpp)
-  -
+    - Requires `InputTensor`, `OutputTensor` (both `IsTensor`), `Forward`, `Backward`, and `all_params()` (const + non-const).
+    - `Update`, `ZeroGrad`, `Save`, `Load` are **not** in the concept — TTN derives them from `all_params()` via the bulk helpers in `Params.hpp`. Blocks only declare what they own.
 
 - ***Block*** — [`concept Block<B>`](src/NetworkUtil.hpp)
   -
@@ -1201,32 +1108,84 @@ Thin owning wrapper around an activations tuple. Deletes the rvalue
 
 ---
 
-## [TrainableTensorNetwork.hpp](src/TrainableTensorNetwork.hpp) -- The Network
+## [Params.hpp](src/Params.hpp): Parameter Storage and Optimizer
+
+Defines the `Param<T>` template, the `AdamState` struct, and bulk helpers. No block ever writes an optimizer loop — everything routes through here.
+
+### `struct AdamState`
+
+All Adam hyperparameters and per-network bias-correction state in one place. TTN owns one instance (`mAdam_`) and passes it by const-ref to `UpdateAll` each step.
+
+| Member | Default | Meaning |
+|--------|---------|---------|
+| `beta1` | `0.9` | first-moment decay |
+| `beta2` | `0.999` | second-moment decay |
+| `eps` | `1e-8` | denominator stabilizer |
+| `mCorr` | `1` | `1 / (1 - β1^t)`, updated by `step()` |
+| `vCorr` | `1` | `1 / (1 - β2^t)`, updated by `step()` |
+| `t` | `0` | timestep counter |
+
+- ***step*** — [`void step()`](src/Params.hpp)
+    - Increments `t`, recomputes `mCorr = 1/(1-β1^t)` and `vCorr = 1/(1-β2^t)`. Call once per `Update()`.
+
+### `template<typename TensorT> struct Param`
+
+Single trainable tensor bundled with gradient and Adam moments (`value`, `grad`, `m`, `v`).
+
+- ***update*** — [`void update(const AdamState& adam, float lr)`](src/Params.hpp)
+    - One Adam step: updates `m`, `v`, then applies bias-corrected weight update to `value`
+
+- ***zero_grad*** — [`void zero_grad()`](src/Params.hpp)
+    - Zeroes `grad` — called by `ZeroAllGrads` at the start of each training step
+
+- ***save*** — [`void save(std::ofstream& f) const`](src/Params.hpp)
+    - Serializes `value` to binary file
+
+- ***load*** — [`void load(std::ifstream& f)`](src/Params.hpp)
+    - Deserializes `value` from binary file
+
+### Bulk Helpers
+
+Operate over the `std::tuple<Param<T>&...>` returned by `all_params()`.
+
+- ***ZeroAllGrads*** — [`template<typename Tuple> void ZeroAllGrads(Tuple&& params)`](src/Params.hpp)
+    - Calls `zero_grad()` on every `Param` in the tuple
+
+- ***UpdateAll*** — [`template<typename Tuple> void UpdateAll(Tuple&& params, const AdamState& adam, float lr)`](src/Params.hpp)
+    - Calls `update(adam, lr)` on every `Param` in the tuple
+
+- ***SaveAll*** — [`template<typename Tuple> void SaveAll(Tuple&& params, std::ofstream& f)`](src/Params.hpp)
+    - Calls `save(f)` on every `Param` in the tuple
+
+- ***LoadAll*** — [`template<typename Tuple> void LoadAll(Tuple&& params, std::ifstream& f)`](src/Params.hpp)
+    - Calls `load(f)` on every `Param` in the tuple
+
+### Compile-time Helpers
+
+- ***TupleParamCount*** — [`template<typename Tuple> constexpr size_t TupleParamCount`](src/Params.hpp)
+    - Sums `::Size` across every `Param` in an `all_params()` tuple; returns `0` for `std::tuple<>` (parameter-free blocks)
+
+---
+
+## [TrainableTensorNetwork.hpp](src/TrainableTensorNetwork.hpp): The Network
 
 The top-level network class and the `NetworkBuilder` factory. Owns all blocks in a
-`std::tuple`, orchestrates forward and backward passes, and manages Adam optimizer state (bias-correction counters).
+`std::tuple` and one `AdamState` instance. Orchestrates forward/backward passes; drives `ZeroGrad`, `Update`, `Save`, `Load` on every block via `all_params()` — no block implements these directly.
 
 ### `class TrainableTensorNetwork<ConcreteBlock... Blocks>`
 
-**Constants:**
-
-- ***ADAM_BETA_1*** — [`static constexpr float ADAM_BETA_1`](src/TrainableTensorNetwork.hpp)
-  -
-- ***ADAM_BETA_2*** — [`static constexpr float ADAM_BETA_2`](src/TrainableTensorNetwork.hpp)
-  -
-
 **Type aliases and constants:**
 
-- ***InputTensor*** — [`using InputTensor`](src/TrainableTensorNetwork.hpp) -- tensor type of the first block's input
-  -
-- ***OutputTensor*** — [`using OutputTensor`](src/TrainableTensorNetwork.hpp) -- tensor type of the last block's output
-  -
+- ***InputTensor*** — [`using InputTensor`](src/TrainableTensorNetwork.hpp)
+    - Tensor type of the first block's input
+- ***OutputTensor*** — [`using OutputTensor`](src/TrainableTensorNetwork.hpp)
+    - Tensor type of the last block's output
 - ***InSize*** — [`static constexpr size_t InSize`](src/TrainableTensorNetwork.hpp)
   -
 - ***OutSize*** — [`static constexpr size_t OutSize`](src/TrainableTensorNetwork.hpp)
   -
 - ***TotalParamCount*** — [`static constexpr size_t TotalParamCount`](src/TrainableTensorNetwork.hpp)
-  -
+    - Derived from `TupleParamCount` over each block's `all_params()` — no `ParamCount` member required on blocks
 - ***Activations*** — [`using Activations`](src/TrainableTensorNetwork.hpp)
   -
 - ***BatchedActivations*** — [`template<size_t Batch> using BatchedActivations`](src/TrainableTensorNetwork.hpp)
@@ -1245,10 +1204,10 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
     -
 
 - ***Update*** — [`void Update(float lr)`](src/TrainableTensorNetwork.hpp)
-  -
+    - Calls `mAdam_.step()` then `UpdateAll(block.all_params(), mAdam_, lr)` for every block
 
 - ***ZeroGrad*** — [`void ZeroGrad()`](src/TrainableTensorNetwork.hpp)
-  -
+    - Calls `ZeroAllGrads(block.all_params())` for every block
 
 - ***TrainStep*** — [
   `void TrainStep(const InputTensor& x, const OutputTensor& grad, float lr)`](src/TrainableTensorNetwork.hpp)
@@ -1334,7 +1293,7 @@ Autoencoder ae;    // train end-to-end -- all blocks update together
 
 ## [DataIO.hpp](src/DataIO.hpp) -- Data Loading and Batching
 
-Utilities for loading datasets from disk, drawing random mini-batches, and displaying terminal progress bars. Shapes are compile-time parameters -- the type
+Utilities for loading datasets from disk, drawing random mini-batches, and displaying terminal progress bars. Shapes are compile-time parameters: the type
 *is* the schema.
 
 ### `class ProgressBar`

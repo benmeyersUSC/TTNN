@@ -5,7 +5,32 @@
 namespace TTTN {
     static constexpr float EPS = 1e-8f;
 
-    enum class ActivationFunction { Linear, Sigmoid, ReLU, Tanh };
+    // ── Activation op tags ───────────────────────────────────────────────────────
+    // Each tag satisfies FloatUnaryOp: use with z.map(Act{}), MapApply<Act>(z), or
+    // Tensor::zip for the prime. prime(a) is the derivative wrt the post-activation value.
+
+    struct ReLU {
+        constexpr float operator()(float x)  const { return x > 0.f ? x : 0.f; }
+        static constexpr float prime(float a)       { return a > 0.f ? 1.f : 0.f; }
+    };
+    struct Sigmoid {
+        constexpr float operator()(float x)  const { return 1.f / (1.f + std::exp(-x)); }
+        static constexpr float prime(float a)       { return a * (1.f - a); }
+    };
+    struct Tanh {
+        constexpr float operator()(float x)  const { return std::tanh(x); }
+        static constexpr float prime(float a)       { return 1.f - a * a; }
+    };
+    struct Linear {
+        constexpr float operator()(float x)  const { return x; }
+        static constexpr float prime(float)         { return 1.f; }
+    };
+
+    // Concept: FloatUnaryOp + has prime(float) -> float
+    template<typename T>
+    concept ActivationOp = FloatUnaryOp<T> && requires(float a) {
+        { T::prime(a) } -> std::convertible_to<float>;
+    };
 
     // CROSS ENTROPY LOSS
     template<size_t N>
@@ -36,79 +61,18 @@ namespace TTTN {
     Tensor<Dims...> Softmax(const Tensor<Dims...> &x) {
         // reduce via/to max
         // broadcast back with e^(v - max)
-        const auto exps = ReduceBroadcast<Axis>(x,
-                                                -std::numeric_limits<float>::infinity(),
-                                                [](const float a, const float b) { return std::max(a, b); },
-                                                [](const float a, const float m) { return std::exp(a - m); });
+        const auto exps = ReduceBroadcast<Axis>(x, Max::identity, Max{}, Compose<Exp, Sub>{});
         // reduce via/to sum
         // broadcast scaling by sum
-        return ReduceBroadcast<Axis>(exps,
-                                     0.f,
-                                     std::plus<float>{},
-                                     std::divides<float>{});
+        return ReduceBroadcast<Axis, Add, Div>(exps);
     }
 
     // VJP of softmax: δx_i = a_i * (δy_i − dot(δy, a))  per pool along Axis.
     template<size_t Axis, size_t... Dims>
     Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a) {
-        return a * BroadcastApply<Axis>(grad, ReduceSum<Axis>(a * grad), std::minus<float>{});
+        return a * BroadcastApply<Axis, Sub>(grad, ReduceApply<Axis, Add>(a * grad));
     }
 
-    // activation function — element-wise only.
-    // Softmax is not an element-wise activation; use SoftmaxLayer<Axis> as a standalone block.
-    template<size_t N>
-    Tensor<N> Activate(const Tensor<N> &z, const ActivationFunction act) {
-        switch (act) {
-            case ActivationFunction::ReLU: return z.map([](float x) { return x > 0.f ? x : 0.f; });
-            case ActivationFunction::Sigmoid: return z.map([](const float x) { return 1.f / (1.f + std::exp(-x)); });
-            case ActivationFunction::Tanh: return z.map([](const float x) { return std::tanh(x); });
-            case ActivationFunction::Linear:
-            default: return z;
-        }
-    }
-
-    // given upstream gradient (dL/da) and post-activation a --> dL/dz
-    template<size_t N>
-    Tensor<N> ActivatePrime(const Tensor<N> &grad, const Tensor<N> &a, const ActivationFunction act) {
-        switch (act) {
-            case ActivationFunction::ReLU:
-                return grad.zip(a, [](const float g, const float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
-            case ActivationFunction::Sigmoid:
-                return grad.zip(a, [](const float g, const float ai) { return g * ai * (1.f - ai); });
-            case ActivationFunction::Tanh:
-                return grad.zip(a, [](const float g, const float ai) { return g * (1.f - ai * ai); });
-            case ActivationFunction::Linear:
-            default: return grad;
-        }
-    }
-
-    // BATCHED ACTIVATE — element-wise activations over Tensor<Batch, N>.
-    template<size_t Batch, size_t N>
-    Tensor<Batch, N> BatchedActivate(const Tensor<Batch, N> &Z, const ActivationFunction act) {
-        switch (act) {
-            case ActivationFunction::ReLU: return Z.map([](float x) { return x > 0.f ? x : 0.f; });
-            case ActivationFunction::Sigmoid: return Z.map([](const float x) { return 1.f / (1.f + std::exp(-x)); });
-            case ActivationFunction::Tanh: return Z.map([](const float x) { return std::tanh(x); });
-            case ActivationFunction::Linear:
-            default: return Z;
-        }
-    }
-
-    // BATCHED ACTIVATE PRIME — element-wise activation derivatives over Tensor<Batch, N>.
-    template<size_t Batch, size_t N>
-    Tensor<Batch, N> BatchedActivatePrime(const Tensor<Batch, N> &grad, const Tensor<Batch, N> &a,
-                                          const ActivationFunction act) {
-        switch (act) {
-            case ActivationFunction::ReLU:
-                return grad.zip(a, [](const float g, const float ai) { return g * (ai > 0.f ? 1.f : 0.f); });
-            case ActivationFunction::Sigmoid:
-                return grad.zip(a, [](const float g, const float ai) { return g * ai * (1.f - ai); });
-            case ActivationFunction::Tanh:
-                return grad.zip(a, [](const float g, const float ai) { return g * (1.f - ai * ai); });
-            case ActivationFunction::Linear:
-            default: return grad;
-        }
-    }
 
     // SOFTMAX BLOCK
     // Shape-preserving, parameter-free block: applies Softmax<Axis> forward and
@@ -118,7 +82,7 @@ namespace TTTN {
     // Backward: δx_i = a_i * (δy_i - dot(δy, a))   per pool along Axis
     //
     // InputTensor == OutputTensor == TensorT (shape flows through unchanged).
-    // ParamCount == 0; Update/ZeroGrad/Save/Load are all no-ops.
+    // all_params() returns std::tuple<>{} — no parameters, TTN handles the rest.
     //
     // Batched: prepending a Batch axis shifts the target axis by 1, so
     // BatchedForward/Backward delegate to Softmax<Axis+1> / SoftmaxPrime<Axis+1>.
@@ -130,13 +94,13 @@ namespace TTTN {
     public:
         using InputTensor = Tensor<Dims...>;
         using OutputTensor = Tensor<Dims...>;
-        static constexpr size_t ParamCount = 0;
+        // @doc: auto all_params()
+        /** Returns `std::tuple<>{}` — no parameters; TTN bulk helpers become no-ops automatically */
+        auto all_params()       { return std::tuple<>{}; }
+        auto all_params() const { return std::tuple<>{}; }
 
         OutputTensor Forward(const InputTensor &x) const {
             return Softmax<Axis>(x);
-        }
-
-        static void ZeroGrad() {
         }
 
         // delta_A: dL/dA, a: post-softmax activation, a_prev: pre-block input (unused)
@@ -157,14 +121,6 @@ namespace TTTN {
             return SoftmaxPrime<Axis + 1>(delta_A, a);
         }
 
-        static void Update(float, float, float, float, float, float) {
-        }
-
-        static void Save(std::ofstream &) {
-        }
-
-        static void Load(std::ifstream &) {
-        }
     };
 
     // SoftmaxLayer<Axis>: recipe for SoftmaxBlock.
@@ -252,11 +208,11 @@ namespace TTTN {
     };
 
     // @doc: template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N>& pred, const Tensor<Batch, N>& labels)
-    /** Returns the percentage of correctly classified samples in a batch. `labels` must be one-hot. Correct iff `argmax(pred[b]) == argmax(labels[b])`, computed via `ReduceSum<1>(pred ⊙ labels)` (probability assigned to the true class) vs `ReduceMax<1>(pred)` (highest predicted probability) — no explicit argmax loop required. */
+    /** Returns the percentage of correctly classified samples in a batch. `labels` must be one-hot. Correct iff `argmax(pred[b]) == argmax(labels[b])`, computed via `ReduceApply<1, Add>(pred ⊙ labels)` (probability assigned to the true class) vs `ReduceApply<1, Max>(pred)` (highest predicted probability) — no explicit argmax loop required. */
     template<size_t Batch, size_t N>
     float BatchAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels) {
-        const auto p_correct = ReduceSum<1>(pred * labels); // Tensor<Batch>
-        const auto p_max = ReduceMax<1>(pred); // Tensor<Batch>
+        const auto p_correct = ReduceApply<1, Add>(pred * labels); // Tensor<Batch>
+        const auto p_max     = ReduceApply<1, Max>(pred);          // Tensor<Batch>
         int n = 0;
         for (size_t b = 0; b < Batch; ++b)
             if (p_max.flat(b) - p_correct.flat(b) < 1e-5f) ++n;

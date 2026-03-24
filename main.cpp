@@ -12,8 +12,8 @@ void runXOR() {
 
     NetworkBuilder<
         Input<2>,
-        Dense<4, ActivationFunction::ReLU>,
-        Dense<1, ActivationFunction::Sigmoid>
+        Dense<4, ReLU>,
+        Dense<1, Sigmoid>
     >::type net;
     std::cout << "    params: " << net.TotalParamCount << "\n\n";
 
@@ -55,9 +55,9 @@ void runParity() {
 
     NetworkBuilder<
         Input<3>,
-        Dense<8, ActivationFunction::ReLU>,
-        Dense<4, ActivationFunction::ReLU>,
-        Dense<1, ActivationFunction::Sigmoid>
+        Dense<8, ReLU>,
+        Dense<4, ReLU>,
+        Dense<1, Sigmoid>
     >::type net;
     std::cout << "    params: " << net.TotalParamCount << "\n\n";
 
@@ -107,8 +107,8 @@ void runXORFullBatch() {
 
     NetworkBuilder<
         Input<2>,
-        Dense<4, ActivationFunction::ReLU>,
-        Dense<1, ActivationFunction::Sigmoid>
+        Dense<4, ReLU>,
+        Dense<1, Sigmoid>
     >::type net;
     std::cout << "    params: " << net.TotalParamCount << "\n\n";
 
@@ -144,13 +144,13 @@ void runCombineNetworks() {
     // --- declare sub-network types independently ---
     using Encoder = NetworkBuilder<
         Input<16>,
-        Dense<8, ActivationFunction::ReLU>,
+        Dense<8, ReLU>,
         Dense<4> // linear bottleneck
     >::type;
 
     using Decoder = NetworkBuilder<
         Input<4>,
-        Dense<8, ActivationFunction::ReLU>,
+        Dense<8, ReLU>,
         Dense<16> // linear reconstruction
     >::type;
 
@@ -223,11 +223,11 @@ void runRankNineAutoencoder() {
 
     NetworkBuilder<
         Input<2, 2, 2, 2, 2, 2, 2, 2, 2>,
-        DenseMD<Tensor<4, 4, 2>, ActivationFunction::ReLU>, // 512 -> 32, rank-3
-        DenseMD<Tensor<4, 2>, ActivationFunction::ReLU>, // 32  ->  8, rank-2 bottleneck
-        DenseMD<Tensor<1, 2, 2, 1>, ActivationFunction::ReLU>,
-        DenseMD<Tensor<4, 2>, ActivationFunction::ReLU>,
-        DenseMD<Tensor<4, 4, 2>, ActivationFunction::ReLU>, // 8   -> 32, rank-3
+        DenseMD<Tensor<4, 4, 2>, ReLU>, // 512 -> 32, rank-3
+        DenseMD<Tensor<4, 2>, ReLU>, // 32  ->  8, rank-2 bottleneck
+        DenseMD<Tensor<1, 2, 2, 1>, ReLU>,
+        DenseMD<Tensor<4, 2>, ReLU>,
+        DenseMD<Tensor<4, 4, 2>, ReLU>, // 8   -> 32, rank-3
         DenseMD<Tensor<2, 2, 2, 2, 2, 2, 2, 2, 2> > // 32  -> 512, back to rank-9
     >::type net;
     std::cout << "    params: " << net.TotalParamCount << "\n";
@@ -266,7 +266,7 @@ void runAttentionAutoencoder() {
     // Define a transformer block: attention + expand/project FFN
     using TBlock = ComposeBlocks<
         MHAttention<4, 6, 6>,
-        MapDense<1, Tensor<72>, ActivationFunction::ReLU>, // per-token FFN: 36 → 72
+        MapDense<1, Tensor<72>, ReLU>, // per-token FFN: 36 → 72
         MapDense<1, Tensor<6, 6> > // per-token FFN: 72 → 36
     >;
 
@@ -309,7 +309,7 @@ void runMNISTAttention() {
 
     using TBlock = ComposeBlocks<
         MHAttention<4, 28>,
-        MapDense<1, Tensor<56>, ActivationFunction::ReLU>, // per-row FFN: 28 → 56
+        MapDense<1, Tensor<56>, ReLU>, // per-row FFN: 28 → 56
         MapDense<1, Tensor<28> > // per-row FFN: 56 → 28
     >;
 
@@ -402,8 +402,8 @@ void RunCSVClassifier(const std::string &name,
 
     typename NetworkBuilder<
         Input<Features>,
-        Dense<128, ActivationFunction::ReLU>,
-        Dense<64, ActivationFunction::ReLU>,
+        Dense<128, ReLU>,
+        Dense<64, ReLU>,
         Dense<NumClasses>,
         SoftmaxLayer<0>
     >::type net;
@@ -467,10 +467,10 @@ int main() {
     // ── MNIST-family: all 785-col CSVs, col 0 = label, cols 1-784 = pixels 0-255 ──────────────
 
 
-    RunCSVClassifier<60000, 10000, 785, 10>("MNIST", "mnist_train.csv", "mnist_test.csv", 0.0001f);
-    RunCSVClassifier<60000, 10000, 785, 10>("Fashion-MNIST", "fashion_mnist_train.csv", "fashion_mnist_test.csv",
-                                            0.0001f);
-    runMNISTAttention();
+    // RunCSVClassifier<60000, 10000, 785, 10>("MNIST", "mnist_train.csv", "mnist_test.csv", 0.0001f);
+    // RunCSVClassifier<60000, 10000, 785, 10>("Fashion-MNIST", "fashion_mnist_train.csv", "fashion_mnist_test.csv",
+    //                                         0.0001f);
+    // runMNISTAttention();
 
     // RunCSVClassifier<60000,  10000,  785, 10>("KMNIST",        "kmnist_train.csv",        "kmnist_test.csv",        0.0001f); // Kuzushiji (Japanese cursive), ~93%
     // RunCSVClassifier<27455,   7172,  785, 24>("Sign MNIST",    "sign_mnist_train.csv",    "sign_mnist_test.csv",    0.0001f); // ASL A-Z (no J/Z), ~90%

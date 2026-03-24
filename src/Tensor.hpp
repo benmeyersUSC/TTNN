@@ -1,9 +1,11 @@
 #pragma once
 #include <array>
 #include <cassert>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <new>
 #include <numeric>
 #include <type_traits>
 
@@ -100,14 +102,67 @@ namespace TTTN {
         static constexpr auto value = compute();
     };
 
+    // =========================================================================
+    // TensorStorage: aligned allocation + small-tensor inline storage
+    // =========================================================================
+
+    // @doc: struct TensorStorage<size_t S, bool Small>
+    /**
+     * Storage policy for `Tensor`, selected at compile time on `Size`:
+     *   - `Small = true`  (Size <= 16): data stored inline, `alignas(64)` — zero heap allocation
+     *   - `Small = false` (Size >  16): 64-byte aligned heap allocation via `aligned_alloc`;
+     *     freed with `std::free` via a custom deleter on `unique_ptr`
+     * Both specializations expose `float* ptr()` / `const float* ptr() const`.
+     */
+    template<size_t S, bool Small = (S <= 16)>
+    struct TensorStorage;
+
+    template<size_t S>
+    struct TensorStorage<S, true> {
+        alignas(64) float data[S]{};
+
+        float*       ptr()       { return data; }
+        const float* ptr() const { return data; }
+
+        TensorStorage() = default;
+        TensorStorage(const TensorStorage& o) noexcept            { std::memcpy(data, o.data, S * sizeof(float)); }
+        TensorStorage& operator=(const TensorStorage& o) noexcept { std::memcpy(data, o.data, S * sizeof(float)); return *this; }
+        TensorStorage(TensorStorage&&) noexcept = default;
+        TensorStorage& operator=(TensorStorage&&) noexcept = default;
+    };
+
+    template<size_t S>
+    struct TensorStorage<S, false> {
+        struct AlignedDeleter { void operator()(float* p) const noexcept { std::free(p); } };
+        std::unique_ptr<float[], AlignedDeleter> heap_;
+
+        float*       ptr()       { return heap_.get(); }
+        const float* ptr() const { return heap_.get(); }
+
+        static float* alloc() {
+            constexpr size_t bytes = (S * sizeof(float) + 63) & ~size_t(63);
+            void* p = std::aligned_alloc(64, bytes);
+            if (!p) throw std::bad_alloc{};
+            std::memset(p, 0, bytes);
+            return static_cast<float*>(p);
+        }
+
+        TensorStorage() : heap_(alloc()) {}
+        TensorStorage(const TensorStorage& o) : heap_(alloc())    { std::memcpy(heap_.get(), o.heap_.get(), S * sizeof(float)); }
+        TensorStorage& operator=(const TensorStorage& o)          { if (this != &o) std::memcpy(heap_.get(), o.heap_.get(), S * sizeof(float)); return *this; }
+        TensorStorage(TensorStorage&&) noexcept = default;
+        TensorStorage& operator=(TensorStorage&&) noexcept = default;
+    };
+
+
     template<size_t... Dims>
     class Tensor {
     public:
         // @doc: static constexpr size_t Rank
         /** Number of dimensions */
         static constexpr size_t Rank = sizeof...(Dims);
-        // @doc: static constexpr size_t Size
-        /** Product of all dimensions = total distinct values in `Tensor` */
+     // @doc: static constexpr size_t Size
+     /** Product of all dimensions = total distinct values in `Tensor` */
         static constexpr size_t Size = TensorDimsProduct<Dims...>::value;
         // @doc: static constexpr std::array<size_t, Rank> Shape
         /** `<size_t... Dims>` captured into an array */
@@ -145,31 +200,25 @@ namespace TTTN {
         }
 
     private:
-        std::unique_ptr<float[]> data_;
+        TensorStorage<Size> storage_;
 
     public:
-        // Default: heap-allocate and zero-initialize.
         // @doc: Tensor()
         /**
          * Default constructor
          * Initialize `float[Size]` on the heap
          */
-        Tensor() : data_(std::make_unique<float[]>(Size)) {
-        }
+        Tensor() = default;
 
-        // Initializer list: heap-allocate, fill from list (remaining elements stay zero).
         // @doc: Tensor(std::initializer_list<float> init)
         /**
          * Initializer list constructor
          * Fill the first `Size` elements of `std::initializer_list<float> init` to flat indices of backing array
          */
-        Tensor(std::initializer_list<float> init) : data_(std::make_unique<float[]>(Size)) {
+        Tensor(std::initializer_list<float> init) {
             size_t i = 0;
-            for (const auto v: init) {
-                if (i < Size) {
-                    data_[i++] = v;
-                }
-            }
+            for (const auto v : init)
+                if (i < Size) storage_.ptr()[i++] = v;
         }
 
         // @doc: ~Tensor() = default
@@ -184,19 +233,15 @@ namespace TTTN {
          * Deep copy constructor
          * Allocate new `float[Size]` on heap and `std::memcpy` from `other.data()`
          */
-        Tensor(const Tensor &other) : data_(std::make_unique<float[]>(Size)) {
-            std::memcpy(data_.get(), other.data_.get(), sizeof(float) * Size);
-        }
+        Tensor(const Tensor& other) : storage_(other.storage_) {}
 
         // @doc: Tensor& operator=(const Tensor& other)
         /**
          * Deep copy assignment operator
          * `std::memcpy` from `other.data()`
          */
-        Tensor &operator=(const Tensor &other) {
-            if (this != &other) {
-                std::memcpy(data_.get(), other.data_.get(), sizeof(float) * Size);
-            }
+        Tensor& operator=(const Tensor& other) {
+            if (this != &other) storage_ = other.storage_;
             return *this;
         }
 
@@ -205,33 +250,36 @@ namespace TTTN {
          * Default move constructor
          * `std::unique_ptr` to data handles this already
          */
-        Tensor(Tensor &&) noexcept = default;
+        Tensor(Tensor&&) noexcept = default;
 
         // @doc: Tensor &operator=(Tensor&&) noexcept = default
         /**
          * Default move assigment operator
          * `std::unique_ptr` to data handles this already
          */
-        Tensor &operator=(Tensor &&) noexcept = default;
+        // @doc: Tensor& operator=(Tensor&&) noexcept = default
+        /** Move assignment — see move constructor */
+        Tensor& operator=(Tensor&&) noexcept = default;
 
         // @doc: void fill(const float v) const
         /** Fill a `Tensor`'s underlying array with some `float v` */
-        void fill(const float v) const { std::fill_n(data_.get(), Size, v); }
+        void fill(const float v) { std::fill_n(storage_.ptr(), Size, v); }
 
-        // @doc: const float* data() const
-        /** Returns `const` pointer to `Tensor`'s underlying array */
-        float *data() { return data_.get(); }
-        [[nodiscard]] const float *data() const { return data_.get(); }
+         // @doc: float* data()
+         // @doc: const float* data() const
+         /** Returns `const` pointer to `Tensor`'s underlying array */
+        float*       data()       { return storage_.ptr(); }
+        [[nodiscard]] const float* data() const { return storage_.ptr(); }
 
         // @doc: float flat(size_t idx) const
         // @doc: float& flat(size_t idx)
         /** Returns `float&` reference to item at `idx` in underlying array */
-        float &flat(size_t idx) { return data_[idx]; }
-        [[nodiscard]] float flat(size_t idx) const { return data_[idx]; }
+        float &flat(size_t idx) { return storage_.ptr()[idx]; }
+        [[nodiscard]] float flat(size_t idx) const { return storage_.ptr()[idx]; }
 
         // @doc: operator float() const
         /** Implicit scalar conversion — only valid for `Tensor<>` (rank-0, `Rank == 0`). Allows `ΣΠ<N>(A, B)` and `InnerContract<N>(...)` results to be used directly as `float` without calling `.flat(0)`. */
-        operator float() const requires (Rank == 0) { return data_[0]; }
+        operator float() const requires (Rank == 0) { return storage_.ptr()[0]; }
 
         // @doc: template<typename F> Tensor map(F f) const
         /** Use `std::execution::par_unseq` to `std::transform` `Tensor`'s underlying data by `float -> float` map `f`, returning a new `Tensor` */
@@ -239,7 +287,7 @@ namespace TTTN {
         Tensor map(F f) const {
             Tensor out;
             std::transform(std::execution::par_unseq,
-                           data_.get(), data_.get() + Size, out.data_.get(), f);
+                           storage_.ptr(), storage_.ptr() + Size, out.storage_.ptr(), f);
             return out;
         }
 
@@ -249,7 +297,7 @@ namespace TTTN {
         Tensor zip(const Tensor &other, F f) const {
             Tensor out;
             std::transform(std::execution::par_unseq,
-                           data_.get(), data_.get() + Size, other.data_.get(), out.data_.get(), f);
+                           storage_.ptr(), storage_.ptr() + Size, other.storage_.ptr(), out.storage_.ptr(), f);
             return out;
         }
 
@@ -257,7 +305,7 @@ namespace TTTN {
         /** Use `std::execution::par_unseq` + `std::for_each` to apply `float -> float` map `f` to `Tensor`'s underlying data in-place */
         template<typename F>
         void apply(F f) {
-            std::for_each(std::execution::par_unseq, data_.get(), data_.get() + Size, f);
+            std::for_each(std::execution::par_unseq, storage_.ptr(), storage_.ptr() + Size, f);
         }
 
         // @doc: template<typename F> void zip_apply(const Tensor& other, F f)
@@ -265,7 +313,7 @@ namespace TTTN {
         template<typename F>
         void zip_apply(const Tensor &other, F f) {
             std::transform(std::execution::par_unseq,
-                           data_.get(), data_.get() + Size, other.data_.get(), data_.get(),
+                           storage_.ptr(), storage_.ptr() + Size, other.storage_.ptr(), storage_.ptr(),
                            [&f](float a, float b) -> float {
                                f(a, b);
                                return a;
@@ -278,7 +326,7 @@ namespace TTTN {
                 size_t flat_index = 0;                                                              \
                 for (size_t i = 0; i < Rank; i++)                                                   \
                     flat_index += idx_arr[i] * Strides[i];                                          \
-                return data_[flat_index];                                                           \
+                return storage_.ptr()[flat_index];                                                  \
             }
 
         // @doc: float& operator()(Indices... idxs)
@@ -309,23 +357,23 @@ namespace TTTN {
          * Uses compile-time-templated `MultiToFlat` for efficient access
          */
         float &operator()(const std::array<size_t, Rank> &multi) {
-            return data_[MultiToFlat(multi)];
+            return storage_.ptr()[MultiToFlat(multi)];
         }
 
         float operator()(const std::array<size_t, Rank> &multi) const {
-            return data_[MultiToFlat(multi)];
+            return storage_.ptr()[MultiToFlat(multi)];
         }
 
         // @doc: void Save(std::ofstream& f) const
         /** Writes entirety of flat backing array (`float[Size]`) to binary file */
         void Save(std::ofstream &f) const {
-            f.write(reinterpret_cast<const char *>(data_.get()), Size * sizeof(float));
+            f.write(reinterpret_cast<const char *>(storage_.ptr()), Size * sizeof(float));
         }
 
         // @doc: void Load(std::ifstream& f)
         /** Reads binary file into flat backing array (`float[Size]`) */
         void Load(std::ifstream &f) {
-            f.read(reinterpret_cast<char *>(data_.get()), Size * sizeof(float));
+            f.read(reinterpret_cast<char *>(storage_.ptr()), Size * sizeof(float));
         }
     };
 
