@@ -542,7 +542,7 @@ namespace TTTN {
     // @doc: template<size_t... Dims> auto Contract(const Tensor<Dims...> &A, const Tensor<Dims...> &B)
     /**
      * `ΣΠ`-contracts *every* dimension of the congruent `A` and `B` `Tensor<Dims...>`s
-     * `(⊕ ∘ ⊙)(A, B)` — Hadamard product (⊙) of `A` and `B`, then flat accumulation (⊕) over the result
+     * `(⊕ ∘ ⊙)(A, B)` -- Hadamard product (⊙) of `A` and `B`, then flat accumulation (⊕) over the result
      * Returns `Tensor<>` (scalar)
      */
     template<size_t... Dims>
