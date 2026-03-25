@@ -61,8 +61,7 @@ namespace TTTN {
     //   2. reduce=sum, apply=e/s        → normalize
     template<size_t Axis, size_t... Dims>
     Tensor<Dims...> Softmax(const Tensor<Dims...> &x) {
-        const auto exps = BroadcastReduce<Axis, Compose<Exp,Sub>, Max>(x);
-        return BroadcastReduce<Axis, Div, Add>(exps);
+        return BroadcastReduce<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp,Sub>, Max>(x));
     }
 
     // VJP of softmax: δx_i = a_i * (δy_i − dot(δy, a))  per pool along Axis.

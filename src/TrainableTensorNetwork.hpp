@@ -25,7 +25,7 @@ namespace TTTN {
             return []<size_t... Is>(std::index_sequence<Is...>) -> bool {
                 return (
                     std::is_same_v<
-                        typename std::tuple_element_t<Is,     BlockTuple>::OutputTensor,
+                        typename std::tuple_element_t<Is, BlockTuple>::OutputTensor,
                         typename std::tuple_element_t<Is + 1, BlockTuple>::InputTensor> &&
                     ...);
             }(std::make_index_sequence<NumBlocks - 1>{});
@@ -54,7 +54,7 @@ namespace TTTN {
         template<typename First, typename... Rest>
         struct TensorTupleBuilder<First, Rest...> {
             using type = decltype(std::tuple_cat(
-                std::declval<std::tuple<typename First::InputTensor>>(),
+                std::declval<std::tuple<typename First::InputTensor> >(),
                 std::declval<typename TensorTupleBuilder<Rest...>::type>()
             ));
         };
@@ -76,26 +76,30 @@ namespace TTTN {
         template<size_t Batch, typename First, typename... Rest>
         struct BatchedTensorTupleBuilder<Batch, First, Rest...> {
             using type = decltype(std::tuple_cat(
-                std::declval<std::tuple<typename PrependBatch<Batch, typename First::InputTensor>::type>>(),
+                std::declval<std::tuple<typename PrependBatch<Batch, typename First::InputTensor>::type> >(),
                 std::declval<typename BatchedTensorTupleBuilder<Batch, Rest...>::type>()
             ));
         };
 
         BlockTuple mBlocks;
-        AdamState  mAdam_{};
+        AdamState mAdam_{};
 
     public:
         // tensor types flow directly from the first and last blocks
-        using InputTensor  = typename std::tuple_element_t<0,             BlockTuple>::InputTensor;
+        using InputTensor = typename std::tuple_element_t<0, BlockTuple>::InputTensor;
         using OutputTensor = typename std::tuple_element_t<NumBlocks - 1, BlockTuple>::OutputTensor;
 
         // scalar convenience aliases derived from the tensor types
-        static constexpr size_t InSize  = InputTensor::Size;
+        static constexpr size_t InSize = InputTensor::Size;
         static constexpr size_t OutSize = OutputTensor::Size;
         // @doc: static constexpr size_t TotalParamCount
         /** Derived from `TupleParamCount` over each block's `all_params()` — no `ParamCount` member required on blocks */
         static constexpr size_t TotalParamCount =
             (TupleParamCount<decltype(std::declval<Blocks&>().all_params())> + ...);
+
+        /** Direct access to the I-th block (0-indexed). Useful for reading cached state (e.g. attention weights) after a forward pass. */
+        template<size_t I>
+        const auto& block() const { return std::get<I>(mBlocks); }
 
         // raw tuple types (internal / advanced use)
         using ActivationsTuple = TensorTupleBuilder<Blocks...>::type;
@@ -105,7 +109,7 @@ namespace TTTN {
         // safe owning wrappers returned by ForwardAll / BatchedForwardAll
         using Activations = ActivationsWrap<ActivationsTuple>;
         template<size_t Batch>
-        using BatchedActivations = ActivationsWrap<BatchedActivationsTuple<Batch>>;
+        using BatchedActivations = ActivationsWrap<BatchedActivationsTuple<Batch> >;
 
         TrainableTensorNetwork() = default;
 
@@ -113,7 +117,7 @@ namespace TTTN {
         // Bind to a named variable — calling .get<N>() on a temporary is a compile error.
         // @doc: Activations ForwardAll(const InputTensor& x) const
         /** Run forward pass through entire network, returning `Activations` tuple of `Tensor`s from each layer */
-        [[nodiscard]] Activations ForwardAll(const InputTensor& x) const {
+        [[nodiscard]] Activations ForwardAll(const InputTensor &x) const {
             ActivationsTuple A;
             std::get<0>(A) = x;
             forward_impl(A);
@@ -122,13 +126,13 @@ namespace TTTN {
 
         // @doc: OutputTensor Forward(const InputTensor& x) const
         /** Run forward pass through entire network, returning a `Tensor` of type: `OutputTensor`, the final activation */
-        [[nodiscard]] OutputTensor Forward(const InputTensor& x) const {
+        [[nodiscard]] OutputTensor Forward(const InputTensor &x) const {
             auto A = ForwardAll(x);
             return A.template get<NumBlocks>();
         }
 
         // BackwardAll: takes the wrapper produced by ForwardAll.
-        void BackwardAll(const Activations& A, const OutputTensor& grad) {
+        void BackwardAll(const Activations &A, const OutputTensor &grad) {
             backward_impl<NumBlocks>(A.tuple(), grad);
         }
 
@@ -152,7 +156,7 @@ namespace TTTN {
         }
 
         // TrainStep: raw gradient version (caller owns gradient computation).
-        void TrainStep(const InputTensor& x, const OutputTensor& grad, float lr) {
+        void TrainStep(const InputTensor &x, const OutputTensor &grad, float lr) {
             const auto A = ForwardAll(x);
 
             ZeroGrad();
@@ -164,11 +168,11 @@ namespace TTTN {
         // Returns the loss value at the start of the step (before the weight update).
         // Usage: float loss = net.Fit<MSE>(x, target, lr);
         template<typename Loss>
-        float Fit(const InputTensor& x, const OutputTensor& target, float lr) {
+        float Fit(const InputTensor &x, const OutputTensor &target, float lr) {
             static_assert(LossFunction<Loss, OutputTensor>,
-                "Loss must expose static Loss(pred,target)->float and Grad(pred,target)->OutputTensor");
+                          "Loss must expose static Loss(pred,target)->float and Grad(pred,target)->OutputTensor");
             const auto A = ForwardAll(x);
-            const auto& pred = A.template get<NumBlocks>();
+            const auto &pred = A.template get<NumBlocks>();
             const float loss_val = Loss::Loss(pred, target);
             const auto grad = Loss::Grad(pred, target);
 
@@ -183,7 +187,7 @@ namespace TTTN {
         /** Inference a batch and get a `Tensor` of type: `BatchedActivations<Batch>` */
         template<size_t Batch>
         [[nodiscard]] BatchedActivations<Batch> BatchedForwardAll(
-                const typename PrependBatch<Batch, InputTensor>::type& X) const {
+            const typename PrependBatch<Batch, InputTensor>::type &X) const {
             BatchedActivationsTuple<Batch> A;
             std::get<0>(A) = X;
             batched_forward_impl<Batch>(A);
@@ -193,24 +197,24 @@ namespace TTTN {
         // BatchedForward
         // @doc: template <size_t Batch> PrependBatch<Batch, OutputTensor>::type BatchedForward(const typename PrependBatch<Batch, InputTensor>::type& X)
         /** Inference the model with a batch dimension, getting in return a `Tensor` of type: `PrependBatch<Batch, OutputTensor>::type` */
-        template <size_t Batch> 
-        [[nodiscard]] PrependBatch<Batch, OutputTensor>::type BatchedForward(const typename PrependBatch<Batch, InputTensor>::type& X)
-        {
+        template<size_t Batch>
+        [[nodiscard]] PrependBatch<Batch, OutputTensor>::type BatchedForward(
+            const typename PrependBatch<Batch, InputTensor>::type &X) {
             const auto A = BatchedForwardAll<Batch>(X);
             return A.template get<NumBlocks>();
         }
 
         // BatchedBackwardAll: takes the wrapper produced by BatchedForwardAll.
         template<size_t Batch>
-        void BatchedBackwardAll(const BatchedActivations<Batch>& A,
-                                const typename PrependBatch<Batch, OutputTensor>::type& grad) {
+        void BatchedBackwardAll(const BatchedActivations<Batch> &A,
+                                const typename PrependBatch<Batch, OutputTensor>::type &grad) {
             batched_backward_impl<Batch, NumBlocks>(A.tuple(), grad);
         }
 
         // BatchTrainStep: raw batched gradient version.
         template<size_t Batch>
-        void BatchTrainStep(const typename PrependBatch<Batch, InputTensor>::type& X,
-                            const typename PrependBatch<Batch, OutputTensor>::type& grad, float lr) {
+        void BatchTrainStep(const typename PrependBatch<Batch, InputTensor>::type &X,
+                            const typename PrependBatch<Batch, OutputTensor>::type &grad, float lr) {
             const auto A = BatchedForwardAll<Batch>(X);
 
             ZeroGrad();
@@ -223,18 +227,18 @@ namespace TTTN {
         // Returns the average loss over the batch at the start of the step.
         // Usage: float loss = net.BatchFit<CEL, 32>(X, Y, lr);
         template<typename Loss, size_t Batch>
-        float BatchFit(const typename PrependBatch<Batch, InputTensor>::type& X,
-                       const typename PrependBatch<Batch, OutputTensor>::type& Y, float lr) {
+        float BatchFit(const typename PrependBatch<Batch, InputTensor>::type &X,
+                       const typename PrependBatch<Batch, OutputTensor>::type &Y, float lr) {
             static_assert(LossFunction<Loss, OutputTensor>,
-                "Loss must expose static Loss(pred,target)->float and Grad(pred,target)->OutputTensor");
+                          "Loss must expose static Loss(pred,target)->float and Grad(pred,target)->OutputTensor");
             const auto A = BatchedForwardAll<Batch>(X);
-            const auto& A_out = A.template get<NumBlocks>();
+            const auto &A_out = A.template get<NumBlocks>();
             typename PrependBatch<Batch, OutputTensor>::type grad;
             float total_loss = 0.f;
             for (size_t b = 0; b < Batch; ++b) {
                 OutputTensor pred_b, target_b;
                 for (size_t i = 0; i < OutputTensor::Size; ++i) {
-                    pred_b.flat(i)   = A_out.flat(b * OutputTensor::Size + i);
+                    pred_b.flat(i) = A_out.flat(b * OutputTensor::Size + i);
                     target_b.flat(i) = Y.flat(b * OutputTensor::Size + i);
                 }
                 total_loss += Loss::Loss(pred_b, target_b);
@@ -287,7 +291,7 @@ namespace TTTN {
         // delta is dL/dA[I]: must be a Tensor and must match A[I]'s exact type
         template<size_t I, typename Delta>
             requires IsTensor<Delta> &&
-                     std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple>>
+                     std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple> >
         void backward_impl(const ActivationsTuple &A, const Delta &delta) {
             // block I-1 outputs A[I] and takes input A[I-1]
             // Backward peels off ActivatePrime, stores dW/db, returns dL/dA[I-1]
@@ -313,7 +317,7 @@ namespace TTTN {
         // delta must be a Tensor and must match A[I]'s exact type
         template<size_t Batch, size_t I, typename Delta>
             requires IsTensor<Delta> &&
-                     std::is_same_v<Delta, std::tuple_element_t<I, BatchedActivationsTuple<Batch>>>
+                     std::is_same_v<Delta, std::tuple_element_t<I, BatchedActivationsTuple<Batch> > >
         void batched_backward_impl(const BatchedActivationsTuple<Batch> &A, const Delta &delta) {
             // Blocks must implement BatchedBackward<Batch>!!!
             const auto grad = std::get<I - 1>(mBlocks).template BatchedBackward<Batch>(
@@ -341,7 +345,7 @@ namespace TTTN {
     struct CombineNetworks;
 
     template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB>
-    struct CombineNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...>> {
+    struct CombineNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> > {
         static_assert(
             std::is_same_v<
                 typename TrainableTensorNetwork<BlocksA...>::OutputTensor,
@@ -366,18 +370,19 @@ namespace TTTN {
     //           }
     //       });
     template<typename Loss, size_t Batch,
-             ConcreteBlock... Blocks, size_t N, size_t... DataDims, typename PrepFn>
-    float RunEpoch(TrainableTensorNetwork<Blocks...>& net,
-                   const Tensor<N, DataDims...>& dataset,
-                   std::mt19937& rng, float lr, PrepFn prep) {
+        ConcreteBlock... Blocks, size_t N, size_t... DataDims, typename PrepFn>
+    float RunEpoch(TrainableTensorNetwork<Blocks...> &net,
+                   const Tensor<N, DataDims...> &dataset,
+                   std::mt19937 &rng, float lr, PrepFn prep) {
         static constexpr size_t Steps = N / Batch;
-        using Net    = TrainableTensorNetwork<Blocks...>;
+        using Net = TrainableTensorNetwork<Blocks...>;
         using BatchX = typename PrependBatch<Batch, typename Net::InputTensor>::type;
         using BatchY = typename PrependBatch<Batch, typename Net::OutputTensor>::type;
         float total = 0.f;
         for (size_t s = 0; s < Steps; ++s) {
             auto batch = RandomBatch<Batch>(dataset, rng);
-            BatchX X; BatchY Y;
+            BatchX X;
+            BatchY Y;
             prep(batch, X, Y);
             total += net.template BatchFit<Loss, Batch>(X, Y, lr);
         }
@@ -390,13 +395,13 @@ namespace TTTN {
     template<typename In, typename... Recipes>
     struct NetworkBuilder {
         using FlatRecipes = typename FlattenRecipes<Recipes...>::type;
-        using BlockTuple  = typename ApplyBuildChain<In, FlatRecipes>::type;
+        using BlockTuple = typename ApplyBuildChain<In, FlatRecipes>::type;
 
         template<typename Tuple>
         struct Apply;
 
         template<typename... Bs>
-        struct Apply<std::tuple<Bs...>> {
+        struct Apply<std::tuple<Bs...> > {
             using type = TrainableTensorNetwork<Bs...>;
         };
 

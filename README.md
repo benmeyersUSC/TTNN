@@ -114,11 +114,75 @@ We align the shared axis `K`, then map + reduce:
 
 ## Future Directions
 
-- **SDL Visualization Plugin** — render
-  `Tensor`s and networks below rank 4; watch weight matrices, attention patterns, and activation volumes live during training
-- **Interpretability APIs
-  ** — comparison frameworks for two same-topology networks (weight similarity, head alignment, per-layer Frobenius cosine similarity across checkpoints or runs)
-- **GPU Utilization** — replace parallel CPU dispatch with CUDA/Metal kernels for real throughput on large networks
+### Interpretability API
+
+This is where shape-as-type pays its most interesting dividends.
+
+The goal is a general **`BrainSaladSurgery`** protocol: any block or network that opts in
+returns a structured snapshot of its internal activations, formatted and labeled for
+downstream exploration.  Think of it as a typed, self-describing introspection packet —
+not a raw dump, but something with enough compile-time shape information baked in that a
+visualization tool can consume it without guessing layout.
+
+The attention pattern work already in `main` is the proof of concept.  The head-weight
+matrices, the pre-softmax scores, the value-weighted outputs — all of those are already
+`Tensor<...>` objects with shapes fully known at compile time.  The step is to make that
+exposure **formal and uniform**: define a concept (`BrainSaladProvider` or similar) and
+require that conforming blocks expose a `peek()` method returning a `BrainSaladSurgery`
+struct whose members are themselves typed tensors.  No shape ambiguity, no runtime
+reinterpretation — the graphical tool on the other end knows exactly what it is receiving
+because the type says so.
+
+#### Cross-Network Comparison
+
+The shape-as-type model opens another powerful avenue: **comparing networks of the same
+type**.  Because topology is encoded in the C++ type, the compiler enforces that two
+networks being compared are actually structurally identical.  This makes the following
+operations trivially safe to express:
+
+- **Same random seed, different data direction** — train the same architecture on
+  transposed or permuted data, then compare learned representations layer by layer.
+  Because both networks are `SomeNet<...>` with identical template parameters, a
+  `compare(net_a, net_b)` function can zip their weight tensors together without any
+  runtime shape checking.
+
+- **Checkpoint-to-checkpoint drift** — save a typed snapshot at each epoch; compare
+  corresponding weight tensors across training time using Frobenius cosine similarity or
+  any other metric.  The type guarantees you are comparing the same layer in the same
+  position, not accidentally swapping heads or layers.
+
+- **Head alignment across runs** — for attention-based networks, identify which heads in
+  run A correspond most closely (by value similarity or by what they attend to) to heads
+  in run B.  With shape-as-type, the per-head slices are well-typed objects and can be
+  passed directly into alignment routines.
+
+- **Ablation studies** — zero out a layer or head in one network, compare its
+  `BrainSaladSurgery` snapshot against the intact network on the same input.  Because
+  both variants share a type, the diff is structurally clean.
+
+The common thread: **the type system is doing the bookkeeping** that in most frameworks
+requires careful string-matching on layer names or fragile index arithmetic.
+
+### SDL Visualization Plugin
+
+A companion C++ graphics library (in progress) will consume `BrainSaladSurgery` packets
+and render them live.  Planned views:
+
+- Rank-1 tensors as bar charts or histograms
+- Rank-2 tensors as heat maps (weight matrices, attention score grids)
+- Rank-3 tensors as stacked slices or volume renders
+- Network topology graphs with live activation overlays during a forward pass
+
+Because the visualization library will also be typed against the same `Tensor<...>`
+template, it can validate at compile time that the tensors it receives are within its
+renderable rank range — no runtime surprises when you accidentally pass a rank-5 weight
+blob to a heat-map view.
+
+### GPU Backend
+
+Replace the parallel CPU dispatch (`std::execution::par_unseq`) with CUDA or Metal
+kernels.  The contraction and elementwise op layers are the natural insertion point;
+higher-level code does not need to change because the `Tensor` API stays the same.
 
 ---
 

@@ -3,7 +3,6 @@
 #include "TensorReduce.hpp"
 #include "TTTN_ML.hpp"
 #include "NetworkUtil.hpp"
-#include "Params.hpp"
 
 namespace TTTN {
     // Permutation that block-swaps the two halves of W's axis list:

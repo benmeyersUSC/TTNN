@@ -72,13 +72,13 @@ namespace TTTN {
     };
 
 
-                   // @doc: template<typename F, typename G> struct Compose
-                   /**
-                    * Chain application of `FloatUnaryOp` with either another `FloatUnaryOp` or a `FloatBinaryOp`
-                    * Struct has two specialized overloads of `operator()` for the two following cases:
-                    *   - Unary ∘ Unary → Unary:  `Compose<Log, Abs>{}(x) == log(|x|)`
-                    *   - Unary ∘ Binary → Binary: `Compose<Exp, Sub>{}(a, b) == exp(a - b)`
-                    */
+                                                           // @doc: template<typename F, typename G> struct Compose
+                                                           /**
+                                                            * Chain application of `FloatUnaryOp` with either another `FloatUnaryOp` or a `FloatBinaryOp`
+                                                            * Struct has two specialized overloads of `operator()` for the two following cases:
+                                                            *   - Unary ∘ Unary → Unary:  `Compose<Log, Abs>{}(x) == log(|x|)`
+                                                            *   - Unary ∘ Binary → Binary: `Compose<Exp, Sub>{}(a, b) == exp(a - b)`
+                                                            */
     template<typename F, typename G>
     struct Compose {
         constexpr float operator()(float x) const

@@ -337,29 +337,31 @@ void runMNISTAttention() {
         }
     };
 
-    auto sample_acc = [&](const auto &dataset) -> float {
-        auto eval = RandomBatch<EvalN>(dataset, rng);
-        Tensor<EvalN, 28, 28> X_eval;
-        Tensor<EvalN, 10> Y_eval;
-        for (size_t b = 0; b < EvalN; ++b) {
-            const auto label = static_cast<size_t>(eval(b, 0));
-            for (size_t p = 0; p < 784; ++p)
-                X_eval.flat(b * 784 + p) = eval(b, p + 1) / 255.f;
-            for (size_t c = 0; c < 10; ++c)
-                Y_eval(b, c) = (c == label) ? 1.f : 0.f;
-        }
-        const auto A = net.template BatchedForwardAll<EvalN>(X_eval);
-        const auto &pred = A.template get<FinalIdx>();
-        return BatchAccuracy(pred, Y_eval);
-    };
+    // auto sample_acc = [&](const auto &dataset) -> float {
+    //     auto eval = RandomBatch<EvalN>(dataset, rng);
+    //     Tensor<EvalN, 28, 28> X_eval;
+    //     Tensor<EvalN, 10> Y_eval;
+    //     for (size_t b = 0; b < EvalN; ++b) {
+    //         const auto label = static_cast<size_t>(eval(b, 0));
+    //         for (size_t p = 0; p < 784; ++p)
+    //             X_eval.flat(b * 784 + p) = eval(b, p + 1) / 255.f;
+    //         for (size_t c = 0; c < 10; ++c)
+    //             Y_eval(b, c) = (c == label) ? 1.f : 0.f;
+    //     }
+    //     const auto A = net.template BatchedForwardAll<EvalN>(X_eval);
+    //     const auto &pred = A.template get<FinalIdx>();
+    //     return BatchAccuracy(pred, Y_eval);
+    // };
 
     for (int epoch = 0; epoch < 3; ++epoch) {
-        const float acc_before = sample_acc(train_data);
+        // const float acc_before = sample_acc(train_data);
         const float avg_loss = RunEpoch<CEL, Batch>(net, train_data, rng, 0.001f, prep);
-        const float acc_after = sample_acc(train_data);
+        // const float acc_after = sample_acc(train_data);
         std::cout << "  after epoch " << std::setw(2) << epoch
                 << "  CEL=" << std::fixed << std::setprecision(4) << avg_loss
-                << "  train: " << std::setprecision(1) << acc_before << "% -> " << acc_after << "%\n";
+                << "  train: " << std::setprecision(1) 
+                // << acc_before << "% -> " << acc_after 
+                << "%\n";
     }
 
     // test accuracy
@@ -376,7 +378,8 @@ void runMNISTAttention() {
     const auto A_test = net.template BatchedForwardAll<EvalN>(X_test);
     const auto &pred_test = A_test.template get<FinalIdx>();
     std::cout << "\n  test accuracy (" << EvalN << " held-out): "
-            << std::fixed << std::setprecision(1) << BatchAccuracy(pred_test, Y_test) << "%\n";
+            // << std::fixed << std::setprecision(1) << BatchAccuracy(pred_test, Y_test) << "%\n"
+            ;
 }
 
 // Generic CSV classifier: col 0 = integer class label, cols 1..Cols-1 = features.
@@ -457,12 +460,12 @@ void RunCSVClassifier(const std::string &name,
 }
 
 int main() {
-    runXOR();
-    runParity();
-    runXORFullBatch();
-    runCombineNetworks();
-    runRankNineAutoencoder();
-    runAttentionAutoencoder();
+    // runXOR();
+    // runParity();
+    // runXORFullBatch();
+    // runCombineNetworks();
+    // runRankNineAutoencoder();
+    // runAttentionAutoencoder();
     // ── MNIST-family: all 785-col CSVs, col 0 = label, cols 1-784 = pixels 0-255 ──────────────
 
 
