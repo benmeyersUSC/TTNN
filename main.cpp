@@ -238,7 +238,6 @@ void runRankNineAutoencoder() {
     for (size_t i = 0; i < 512; ++i)
         x.flat(i) = 0.5f + 0.45f * std::sin(static_cast<float>(i) * 3.14159f / 32.f);
 
-    // constexpr size_t N = decltype(x)::Size;  // 512
 
     for (int e = 0; e < 300; ++e) {
         const float loss = net.Fit<MSE>(x, x, 0.0001f);
@@ -309,8 +308,8 @@ void runMNISTAttention() {
 
     using TBlock = ComposeBlocks<
         MHAttention<4, 28>,
-        MapDense<1, Tensor<56>, ReLU>, // per-row FFN: 28 → 56
-        MapDense<1, Tensor<28> > // per-row FFN: 56 → 28
+        MapDense<1, Tensor<28>, ReLU>,  // per-row FFN: 28 → 28
+        MapDense<1, Tensor<28> >        // per-row FFN: 28 → 28
     >;
 
     // TBlock flattens to 3 concrete blocks; total = 6 blocks + Dense + Softmax = 8
@@ -467,10 +466,10 @@ int main() {
     // ── MNIST-family: all 785-col CSVs, col 0 = label, cols 1-784 = pixels 0-255 ──────────────
 
 
-    // RunCSVClassifier<60000, 10000, 785, 10>("MNIST", "mnist_train.csv", "mnist_test.csv", 0.0001f);
-    // RunCSVClassifier<60000, 10000, 785, 10>("Fashion-MNIST", "fashion_mnist_train.csv", "fashion_mnist_test.csv",
-    //                                         0.0001f);
-    // runMNISTAttention();
+    RunCSVClassifier<60000, 10000, 785, 10>("MNIST", "mnist_train.csv", "mnist_test.csv", 0.0001f);
+    RunCSVClassifier<60000, 10000, 785, 10>("Fashion-MNIST", "fashion_mnist_train.csv", "fashion_mnist_test.csv",
+                                            0.0001f);
+    runMNISTAttention();
 
     // RunCSVClassifier<60000,  10000,  785, 10>("KMNIST",        "kmnist_train.csv",        "kmnist_test.csv",        0.0001f); // Kuzushiji (Japanese cursive), ~93%
     // RunCSVClassifier<27455,   7172,  785, 24>("Sign MNIST",    "sign_mnist_train.csv",    "sign_mnist_test.csv",    0.0001f); // ASL A-Z (no J/Z), ~90%

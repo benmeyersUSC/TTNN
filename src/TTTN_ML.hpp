@@ -1,44 +1,46 @@
 #pragma once
 #include <random>
-#include "TensorOps.hpp"
+#include "TensorContract.hpp"
+#include "TensorReduce.hpp"
 
 namespace TTTN {
     static constexpr float EPS = 1e-8f;
 
     // ── Activation op tags ───────────────────────────────────────────────────────
-    // Each tag satisfies FloatUnaryOp: use with z.map(Act{}), MapApply<Act>(z), or
+    // Each tag satisfies FloatUnaryOp: use with z.map(Act{}), Map<Act>(z), or
     // Tensor::zip for the prime. prime(a) is the derivative wrt the post-activation value.
 
     struct ReLU {
-        constexpr float operator()(float x)  const { return x > 0.f ? x : 0.f; }
-        static constexpr float prime(float a)       { return a > 0.f ? 1.f : 0.f; }
+        constexpr float operator()(float x) const { return x > 0.f ? x : 0.f; }
+        static constexpr float prime(float a) { return a > 0.f ? 1.f : 0.f; }
     };
+
     struct Sigmoid {
-        constexpr float operator()(float x)  const { return 1.f / (1.f + std::exp(-x)); }
-        static constexpr float prime(float a)       { return a * (1.f - a); }
+        constexpr float operator()(float x) const { return 1.f / (1.f + std::exp(-x)); }
+        static constexpr float prime(float a) { return a * (1.f - a); }
     };
+
     struct Tanh {
-        constexpr float operator()(float x)  const { return std::tanh(x); }
-        static constexpr float prime(float a)       { return 1.f - a * a; }
+        constexpr float operator()(float x) const { return std::tanh(x); }
+        static constexpr float prime(float a) { return 1.f - a * a; }
     };
+
     struct Linear {
-        constexpr float operator()(float x)  const { return x; }
-        static constexpr float prime(float)         { return 1.f; }
+        constexpr float operator()(float x) const { return x; }
+        static constexpr float prime(float) { return 1.f; }
     };
 
     // Concept: FloatUnaryOp + has prime(float) -> float
     template<typename T>
-    concept ActivationOp = FloatUnaryOp<T> && requires(float a) {
+    concept ActivationOp = FloatUnaryOp<T> && requires(float a)
+    {
         { T::prime(a) } -> std::convertible_to<float>;
     };
 
     // CROSS ENTROPY LOSS
     template<size_t N>
     float CrossEntropyLoss(const Tensor<N> &output, const Tensor<N> &target) {
-        // collapse via sum of all elementwise pairs, where pairs are target[i] and log(output[i])
-        return -Contract(
-            target, output.map([](const float p) { return std::log(std::max(p, EPS)); })
-        );
+        return Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS>>>(output)) * -1.f;
     }
 
     // Xavier init for arbitrary-rank tensors.
@@ -54,17 +56,13 @@ namespace TTTN {
     }
 
     // SOFTMAX
-    // Two ReduceBroadcast passes:
+    // Two BroadcastReduce passes:
     //   1. reduce=max, apply=exp(a-m)   → numerically stable exps
     //   2. reduce=sum, apply=e/s        → normalize
     template<size_t Axis, size_t... Dims>
     Tensor<Dims...> Softmax(const Tensor<Dims...> &x) {
-        // reduce via/to max
-        // broadcast back with e^(v - max)
-        const auto exps = ReduceBroadcast<Axis>(x, Max::identity, Max{}, Compose<Exp, Sub>{});
-        // reduce via/to sum
-        // broadcast scaling by sum
-        return ReduceBroadcast<Axis, Add, Div>(exps);
+        const auto exps = BroadcastReduce<Axis, Compose<Exp,Sub>, Max>(x);
+        return BroadcastReduce<Axis, Div, Add>(exps);
     }
 
     // VJP of softmax: δx_i = a_i * (δy_i − dot(δy, a))  per pool along Axis.
@@ -96,7 +94,7 @@ namespace TTTN {
         using OutputTensor = Tensor<Dims...>;
         // @doc: auto all_params()
         /** Returns `std::tuple<>{}` — no parameters; TTN bulk helpers become no-ops automatically */
-        auto all_params()       { return std::tuple<>{}; }
+        auto all_params() { return std::tuple<>{}; }
         auto all_params() const { return std::tuple<>{}; }
 
         OutputTensor Forward(const InputTensor &x) const {
@@ -120,7 +118,6 @@ namespace TTTN {
                                                const Tensor<Batch, Dims...> & /*a_prev*/) {
             return SoftmaxPrime<Axis + 1>(delta_A, a);
         }
-
     };
 
     // SoftmaxLayer<Axis>: recipe for SoftmaxBlock.
@@ -153,17 +150,13 @@ namespace TTTN {
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             static constexpr float Inv = 1.f / Tensor<Dims...>::Size;
             //
-            return Collapse(pred, target,
-                            0.0f,
-                            [](float p, float t) { float d = p - t; return d * d; },
-                            std::plus<float>{}
-                   ) * Inv;
+            return Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv;
         }
 
         template<size_t... Dims>
         static Tensor<Dims...> Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             constexpr float inv = 2.f / static_cast<float>(Tensor<Dims...>::Size);
-            return pred.zip(target, [](const float p, const float t) { return inv * (p - t); });
+            return (pred - target) * inv;
         }
     };
 
@@ -174,12 +167,9 @@ namespace TTTN {
     struct BinaryCEL {
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
-            float s = 0.f;
-            for (size_t i = 0; i < Tensor<Dims...>::Size; ++i) {
-                const float p = std::max(std::min(pred.flat(i), 1.f - EPS), EPS);
-                s -= target.flat(i) * std::log(p) + (1.f - target.flat(i)) * std::log(1.f - p);
-            }
-            return s;
+            const auto p_c = Map<Clamp<EPS, 1.f - EPS>>(pred);
+            return -(Collapse<Mul, Add>(target,              Map<Log>(p_c)) +
+                     Collapse<Mul, Add>(Map<OneMinus>(target), Map<Compose<Log, OneMinus>>(p_c)));
         }
 
         template<size_t... Dims>
@@ -195,15 +185,12 @@ namespace TTTN {
     struct CEL {
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
-            return Collapse(target, pred.map([](float p) { return std::log(std::max(p, EPS)); }),
-                            0.0f,
-                            [](float t, float log_p) { return t * log_p; },
-                            std::plus<float>{}) * -1.f;
+            return Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS>>>(pred)) * -1.f;
         }
 
         template<size_t... Dims>
         static Tensor<Dims...> Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
-            return pred.zip(target, [](float p, float t) { return -t / std::max(p, EPS); });
+            return Zip<Compose<Neg, Div>>(target, Map<Clamp<EPS>>(pred));
         }
     };
 
@@ -213,9 +200,7 @@ namespace TTTN {
     float BatchAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels) {
         const auto p_correct = ReduceApply<1, Add>(pred * labels); // Tensor<Batch>
         const auto p_max     = ReduceApply<1, Max>(pred);          // Tensor<Batch>
-        int n = 0;
-        for (size_t b = 0; b < Batch; ++b)
-            if (p_max.flat(b) - p_correct.flat(b) < 1e-5f) ++n;
+        const float n = ReduceApply<0, Add>(Map<Step<1e-5f>>(p_max - p_correct)).flat(0);
         return 100.f * n / static_cast<float>(Batch);
     }
 };

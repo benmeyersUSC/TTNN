@@ -1,4 +1,6 @@
 #pragma once
+#include "TensorContract.hpp"
+#include "TensorReduce.hpp"
 #include "NetworkUtil.hpp"
 #include "Params.hpp"
 

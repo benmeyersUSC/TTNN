@@ -1,11 +1,11 @@
 #pragma once
-#include "TensorOps.hpp"
+#include "TensorContract.hpp"
+#include "TensorReduce.hpp"
 #include "TTTN_ML.hpp"
 #include "NetworkUtil.hpp"
 #include "Params.hpp"
 
 namespace TTTN {
-
     // Permutation that block-swaps the two halves of W's axis list:
     //   W   = Tensor<OutDims..., InDims...>   (N_out axes then N_in axes)
     //   W_T = Tensor<InDims..., OutDims...>   (N_in  axes then N_out axes)
@@ -63,18 +63,18 @@ namespace TTTN {
     public:
         // @doc: auto all_params()
         /** Returns `std::tie(W_, b_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this */
-        auto all_params()       { return std::tie(W_, b_); }
+        auto all_params() { return std::tie(W_, b_); }
         auto all_params() const { return std::tie(W_, b_); }
 
         DenseMDBlock() { XavierInitMD(W_.value, InputTensor::Size, OutputTensor::Size); }
 
         OutputTensor Forward(const InputTensor &x) const {
-            return MapApply<Act>(ΣΠ<N_in>(W_.value, x) + b_.value);
+            return Map<Act>(ΣΠ<N_in>(W_.value, x) + b_.value);
         }
 
         InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a,
                              const InputTensor &a_prev) {
-            const auto delta_z = delta_A.zip(a, [](float g, float ai){ return g * Act::prime(ai); });
+            const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
             W_.grad += ΣΠ<0>(delta_z, a_prev);
             b_.grad += delta_z;
@@ -89,7 +89,7 @@ namespace TTTN {
         Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...> &X) const {
             const auto W_T = PermuteFromHolder<WTBlockSwapPerm<N_out, N_in> >(
                 W_.value, std::make_index_sequence<N_out + N_in>{});
-            return MapApply<Act>(BroadcastApply<0, Add>(ΣΠ<N_in>(X, W_T), b_.value));
+            return Map<Act>(BroadcastApply<0, Add>(ΣΠ<N_in>(X, W_T), b_.value));
         }
 
         template<size_t Batch>
@@ -97,7 +97,7 @@ namespace TTTN {
                                                  const Tensor<Batch, OutDims...> &a,
                                                  const Tensor<Batch, InDims...> &a_prev) {
             const float inv_batch = 1.f / static_cast<float>(Batch);
-            const auto delta_z = delta_A.zip(a, [](float g, float ai){ return g * Act::prime(ai); });
+            const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
             constexpr size_t BatchOutRank = 1 + N_out;
             const auto delta_z_BL = PermuteFromHolder<MoveToLastPerm<0, BatchOutRank> >(
@@ -107,7 +107,6 @@ namespace TTTN {
 
             return ΣΠ<N_out>(delta_z, W_.value);
         }
-
     };
 
 
@@ -146,7 +145,7 @@ namespace TTTN {
     // W:      Tensor<PartOutDims..., ContractDims...>
     // b:      Tensor<PartOutDims...>
     //
-    // Forward:  MapApply<Act>(ΣΠ<N_contract>(X, W_T) + broadcast(b))
+    // Forward:  Map<Act>(ΣΠ<N_contract>(X, W_T) + broadcast(b))
     //           ΣΠ naturally maps over the leading MapDims — no per-slice loop.
     //
     // Backward: dW = ΣΠ<N_map>(swap(δz), X)       sum outer products over map positions
@@ -271,7 +270,7 @@ namespace TTTN {
         Param<BiasType> b_;
 
     public:
-        auto all_params()       { return std::tie(W_, b_); }
+        auto all_params() { return std::tie(W_, b_); }
         auto all_params() const { return std::tie(W_, b_); }
 
         MapDenseMDBlock() { XavierInitMD(W_.value, ContractSize, PartOutSize); }
@@ -283,12 +282,12 @@ namespace TTTN {
             for (size_t m = 0; m < MapVolume; ++m)
                 for (size_t i = 0; i < PartOutSize; ++i)
                     z.flat(m * PartOutSize + i) += b_.value.flat(i);
-            return MapApply<Act>(z);
+            return Map<Act>(z);
         }
 
         InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a,
                              const InputTensor &a_prev) {
-            const auto delta_z = delta_A.zip(a, [](float g, float ai){ return g * Act::prime(ai); });
+            const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
             const auto dz_swap = PermuteFromHolder<WTBlockSwapPerm<N_map, N_out_part> >(
                 delta_z, std::make_index_sequence<N_map + N_out_part>{});
@@ -312,7 +311,7 @@ namespace TTTN {
                 for (size_t m = 0; m < MapVolume; ++m)
                     for (size_t i = 0; i < PartOutSize; ++i)
                         z.flat(bi * slice + m * PartOutSize + i) += b_.value.flat(i);
-            return MapApply<Act>(z);
+            return Map<Act>(z);
         }
 
         template<size_t Batch>
@@ -322,7 +321,7 @@ namespace TTTN {
             const typename PrependBatch<Batch, InputTensor>::type &a_prev)
             -> typename PrependBatch<Batch, InputTensor>::type {
             const float inv_batch = 1.f / static_cast<float>(Batch);
-            const auto delta_z = delta_A.zip(a, [](float g, float ai){ return g * Act::prime(ai); });
+            const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
             constexpr size_t BmRank = 1 + N_map + N_out_part;
             const auto dz_swap = PermuteFromHolder<WTBlockSwapPerm<1 + N_map, N_out_part> >(
@@ -339,7 +338,6 @@ namespace TTTN {
 
             return ΣΠ<N_out_part>(delta_z, W_.value);
         }
-
     };
 
 

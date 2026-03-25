@@ -19,6 +19,14 @@
 #endif
 
 namespace TTTN {
+    template<typename F>
+    concept FloatUnaryOp = std::regular_invocable<F, float> &&
+                           std::same_as<std::invoke_result_t<F, float>, float>;
+
+    template<typename F>
+    concept FloatBinaryOp = std::regular_invocable<F, float, float> &&
+                            std::same_as<std::invoke_result_t<F, float, float>, float>;
+
     // @doc: struct TensorDimsProduct<size_t... Ds>
     /**
      * Template-specialization-based recursion to collapse variadic template `<size_t...Ds>` into single `size_t`, stored statically as `TensorDimsProduct<size_t...Ds>::value`
@@ -108,11 +116,12 @@ namespace TTTN {
 
     // @doc: struct TensorStorage<size_t S, bool Small>
     /**
-     * Storage policy for `Tensor`, selected at compile time on `Size`:
-     *   - `Small = true`  (Size <= 16): data stored inline, `alignas(64)` — zero heap allocation
-     *   - `Small = false` (Size >  16): 64-byte aligned heap allocation via `aligned_alloc`;
-     *     freed with `std::free` via a custom deleter on `unique_ptr`
-     * Both specializations expose `float* ptr()` / `const float* ptr() const`.
+     * Storage policy selected at compile time based on `Size`:
+     *   - `Small = true` (`Size <= 16`): data stored inline as `alignas(64) float data[S]{}` — zero heap allocation
+     *   - `Small = false` (`Size > 16`): 64-byte aligned heap allocation via `aligned_alloc`; freed with `std::free` via a custom `AlignedDeleter` on `unique_ptr`
+     * Both specializations expose `float* ptr()` / `const float* ptr() const`
+     * Copy-constructs and copy-assigns via `std::memcpy`; move is `noexcept` default
+     * Used exclusively as `TensorStorage<Size> storage_` inside `Tensor`; not intended to be used directly
      */
     template<size_t S, bool Small = (S <= 16)>
     struct TensorStorage;
@@ -161,12 +170,15 @@ namespace TTTN {
         // @doc: static constexpr size_t Rank
         /** Number of dimensions */
         static constexpr size_t Rank = sizeof...(Dims);
+        static constexpr size_t GetRank() {return Rank;}
      // @doc: static constexpr size_t Size
      /** Product of all dimensions = total distinct values in `Tensor` */
         static constexpr size_t Size = TensorDimsProduct<Dims...>::value;
+        static constexpr size_t GetSize() {return Size;}
         // @doc: static constexpr std::array<size_t, Rank> Shape
         /** `<size_t... Dims>` captured into an array */
         static constexpr std::array<size_t, Rank> Shape = {Dims...};
+        static constexpr std::array<size_t, Rank> GetShape() {return Shape;}
         // @doc: static constexpr std::array<size_t, Rank> Strides
         /**
          * Uses `ComputeStrides` to create array
@@ -174,6 +186,7 @@ namespace TTTN {
          * In general, for a `Tensor` with `Tensor::Shape = [A, B, ..., N]`, its `Tensor::Strides = [A * B * ... * N, B * ... * N, ..., 1]`
          */
         static constexpr std::array<size_t, Rank> Strides = ComputeStrides<Dims...>::value;
+        static constexpr std::array<size_t, Rank> GetStrides() {return Strides;}
 
         // @doc: static constexpr std::array<size_t, Rank> FlatToMulti(size_t flat)
         /**
@@ -281,9 +294,11 @@ namespace TTTN {
         /** Implicit scalar conversion — only valid for `Tensor<>` (rank-0, `Rank == 0`). Allows `ΣΠ<N>(A, B)` and `InnerContract<N>(...)` results to be used directly as `float` without calling `.flat(0)`. */
         operator float() const requires (Rank == 0) { return storage_.ptr()[0]; }
 
-        // @doc: template<typename F> Tensor map(F f) const
+        
+        
+        // @doc: template<FloatUnaryOp F> Tensor map(F f) const
         /** Use `std::execution::par_unseq` to `std::transform` `Tensor`'s underlying data by `float -> float` map `f`, returning a new `Tensor` */
-        template<typename F>
+        template<FloatUnaryOp F>
         Tensor map(F f) const {
             Tensor out;
             std::transform(std::execution::par_unseq,
@@ -291,9 +306,11 @@ namespace TTTN {
             return out;
         }
 
-        // @doc: template<typename F> Tensor zip(const Tensor& other, F f) const
+        
+        
+        // @doc: template<FloatBinaryOp F> Tensor zip(const Tensor& other, F f) const
         /** Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data by `float -> float -> float` map `f`, returning a new `Tensor` */
-        template<typename F>
+        template<FloatBinaryOp F>
         Tensor zip(const Tensor &other, F f) const {
             Tensor out;
             std::transform(std::execution::par_unseq,
@@ -301,6 +318,7 @@ namespace TTTN {
             return out;
         }
 
+        
         // @doc: template<typename F> void apply(F f)
         /** Use `std::execution::par_unseq` + `std::for_each` to apply `float -> float` map `f` to `Tensor`'s underlying data in-place */
         template<typename F>
@@ -308,16 +326,13 @@ namespace TTTN {
             std::for_each(std::execution::par_unseq, storage_.ptr(), storage_.ptr() + Size, f);
         }
 
-        // @doc: template<typename F> void zip_apply(const Tensor& other, F f)
-        /** Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data in-place by `float -> float -> float` map `f` */
-        template<typename F>
+        
+        // @doc: template<FloatBinaryOp F> void zip_apply(const Tensor& other, F f)
+        /** In-place binary transform: `self[i] = f(self[i], other[i])` for all `i`. Mutating counterpart to `zip`. Accepts any `FloatBinaryOp` including op tags: `zip_apply(b, Add{})` */
+        template<FloatBinaryOp F>
         void zip_apply(const Tensor &other, F f) {
             std::transform(std::execution::par_unseq,
-                           storage_.ptr(), storage_.ptr() + Size, other.storage_.ptr(), storage_.ptr(),
-                           [&f](float a, float b) -> float {
-                               f(a, b);
-                               return a;
-                           });
+                           storage_.ptr(), storage_.ptr() + Size, other.storage_.ptr(), storage_.ptr(), f);
         }
 
 #define ACCESS_IMPL {                                                                       \
