@@ -308,8 +308,8 @@ void runMNISTAttention() {
 
     using TBlock = ComposeBlocks<
         MHAttention<4, 28>,
-        MapDense<1, Tensor<28>, ReLU>,  // per-row FFN: 28 → 28
-        MapDense<1, Tensor<28> >        // per-row FFN: 28 → 28
+        MapDense<1, Tensor<28>, ReLU>, // per-row FFN: 28 → 28
+        MapDense<1, Tensor<28> > // per-row FFN: 28 → 28
     >;
 
     // TBlock flattens to 3 concrete blocks; total = 6 blocks + Dense + Softmax = 8
@@ -337,30 +337,30 @@ void runMNISTAttention() {
         }
     };
 
-    // auto sample_acc = [&](const auto &dataset) -> float {
-    //     auto eval = RandomBatch<EvalN>(dataset, rng);
-    //     Tensor<EvalN, 28, 28> X_eval;
-    //     Tensor<EvalN, 10> Y_eval;
-    //     for (size_t b = 0; b < EvalN; ++b) {
-    //         const auto label = static_cast<size_t>(eval(b, 0));
-    //         for (size_t p = 0; p < 784; ++p)
-    //             X_eval.flat(b * 784 + p) = eval(b, p + 1) / 255.f;
-    //         for (size_t c = 0; c < 10; ++c)
-    //             Y_eval(b, c) = (c == label) ? 1.f : 0.f;
-    //     }
-    //     const auto A = net.template BatchedForwardAll<EvalN>(X_eval);
-    //     const auto &pred = A.template get<FinalIdx>();
-    //     return BatchAccuracy(pred, Y_eval);
-    // };
+    auto sample_acc = [&](const auto &dataset) -> float {
+        auto eval = RandomBatch<EvalN>(dataset, rng);
+        Tensor<EvalN, 28, 28> X_eval;
+        Tensor<EvalN, 10> Y_eval;
+        for (size_t b = 0; b < EvalN; ++b) {
+            const auto label = static_cast<size_t>(eval(b, 0));
+            for (size_t p = 0; p < 784; ++p)
+                X_eval.flat(b * 784 + p) = eval(b, p + 1) / 255.f;
+            for (size_t c = 0; c < 10; ++c)
+                Y_eval(b, c) = (c == label) ? 1.f : 0.f;
+        }
+        const auto A = net.template BatchedForwardAll<EvalN>(X_eval);
+        const auto &pred = A.template get<FinalIdx>();
+        return BatchAccuracy(pred, Y_eval);
+    };
 
     for (int epoch = 0; epoch < 3; ++epoch) {
-        // const float acc_before = sample_acc(train_data);
+        const float acc_before = sample_acc(train_data);
         const float avg_loss = RunEpoch<CEL, Batch>(net, train_data, rng, 0.001f, prep);
-        // const float acc_after = sample_acc(train_data);
+        const float acc_after = sample_acc(train_data);
         std::cout << "  after epoch " << std::setw(2) << epoch
                 << "  CEL=" << std::fixed << std::setprecision(4) << avg_loss
-                << "  train: " << std::setprecision(1) 
-                // << acc_before << "% -> " << acc_after 
+                << "  train: " << std::setprecision(1)
+                << acc_before << "% -> " << acc_after
                 << "%\n";
     }
 
