@@ -1,9 +1,7 @@
 #pragma once
 
-
-#include "Tensor.hpp"
-#include "TensorContract.hpp"
-#include "TensorReduce.hpp"
+#include "Snapshot.hpp"
+#include "TensorUtil.hpp"
 #include "TrainableTensorNetwork.hpp"
 
 #include "Dense.hpp"

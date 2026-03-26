@@ -17,9 +17,6 @@ namespace TTTN {
         static constexpr size_t NumBlocks = sizeof...(Blocks);
         using BlockTuple = std::tuple<Blocks...>;
 
-        // @doc: using OutputTensor
-        // @doc: using InputTensor
-        /** Tensor type of the first block's input */
         // connectivity check: every Blocks[I]::OutputTensor must equal Blocks[I+1]::InputTensor
         static constexpr bool check_connected() {
             return []<size_t... Is>(std::index_sequence<Is...>) -> bool {
@@ -45,8 +42,6 @@ namespace TTTN {
         // base case: single block --> (InputTensor, OutputTensor)
         template<typename Last>
         struct TensorTupleBuilder<Last> {
-        // @doc: using type
-        /** Result of splicing the block lists of `NetA` and `NetB`; a complete network supporting all single-sample and batched interfaces */
             using type = std::tuple<typename Last::InputTensor, typename Last::OutputTensor>;
         };
 
@@ -86,7 +81,11 @@ namespace TTTN {
 
     public:
         // tensor types flow directly from the first and last blocks
+        // @doc: using InputTensor
+        /** Tensor type of the first block's input */
         using InputTensor = typename std::tuple_element_t<0, BlockTuple>::InputTensor;
+        // @doc: using OutputTensor
+        /** Tensor type of the last block's output */
         using OutputTensor = typename std::tuple_element_t<NumBlocks - 1, BlockTuple>::OutputTensor;
 
         // scalar convenience aliases derived from the tensor types
@@ -115,8 +114,6 @@ namespace TTTN {
 
         // ForwardAll: returns an ActivationsWrap (input + one tensor per block).
         // Bind to a named variable — calling .get<N>() on a temporary is a compile error.
-        // @doc: Activations ForwardAll(const InputTensor& x) const
-        /** Run forward pass through entire network, returning `Activations` tuple of `Tensor`s from each layer */
         [[nodiscard]] Activations ForwardAll(const InputTensor &x) const {
             ActivationsTuple A;
             std::get<0>(A) = x;
@@ -124,8 +121,6 @@ namespace TTTN {
             return Activations{std::move(A)};
         }
 
-        // @doc: OutputTensor Forward(const InputTensor& x) const
-        /** Run forward pass through entire network, returning a `Tensor` of type: `OutputTensor`, the final activation */
         [[nodiscard]] OutputTensor Forward(const InputTensor &x) const {
             auto A = ForwardAll(x);
             return A.template get<NumBlocks>();
@@ -153,6 +148,21 @@ namespace TTTN {
             [&]<size_t... Is>(std::index_sequence<Is...>) {
                 (ZeroAllGrads(std::get<Is>(mBlocks).all_params()), ...);
             }(std::make_index_sequence<NumBlocks>{});
+        }
+
+        // snap: collect activation snapshots from all PeekableBlock blocks.
+        // Called after Forward() — reads each block's cached state.
+        // Keys: "block_0.field", "block_1.field", etc.
+        [[nodiscard]] SnapshotMap snap() const {
+            SnapshotMap out;
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                ([&] {
+                    const auto& blk = std::get<Is>(mBlocks);
+                    if constexpr (PeekableBlock<std::remove_cvref_t<decltype(blk)>>)
+                        blk.peek(out, "block_" + std::to_string(Is) + ".");
+                }(), ...);
+            }(std::make_index_sequence<NumBlocks>{});
+            return out;
         }
 
         // TrainStep: raw gradient version (caller owns gradient computation).
@@ -183,8 +193,6 @@ namespace TTTN {
         }
 
         // BatchedForwardAll: returns a BatchedActivations wrapper (same safety guarantee).
-        // @doc: template<size_t Batch> BatchedActivations<Batch> BatchedForwardAll(const typename PrependBatch<Batch, InputTensor>::type& X) const
-        /** Inference a batch and get a `Tensor` of type: `BatchedActivations<Batch>` */
         template<size_t Batch>
         [[nodiscard]] BatchedActivations<Batch> BatchedForwardAll(
             const typename PrependBatch<Batch, InputTensor>::type &X) const {
@@ -195,8 +203,6 @@ namespace TTTN {
         }
 
         // BatchedForward
-        // @doc: template <size_t Batch> PrependBatch<Batch, OutputTensor>::type BatchedForward(const typename PrependBatch<Batch, InputTensor>::type& X)
-        /** Inference the model with a batch dimension, getting in return a `Tensor` of type: `PrependBatch<Batch, OutputTensor>::type` */
         template<size_t Batch>
         [[nodiscard]] PrependBatch<Batch, OutputTensor>::type BatchedForward(
             const typename PrependBatch<Batch, InputTensor>::type &X) {
@@ -402,6 +408,8 @@ namespace TTTN {
 
         template<typename... Bs>
         struct Apply<std::tuple<Bs...> > {
+            // @doc: using type
+            /** Result of splicing the block lists of `NetA` and `NetB`; a complete network supporting all single-sample and batched interfaces */
             using type = TrainableTensorNetwork<Bs...>;
         };
 

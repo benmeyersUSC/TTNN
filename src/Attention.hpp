@@ -75,6 +75,11 @@ namespace TTTN {
         /** Cached attention weights `Tensor<Heads, SeqLen, SeqLen>` from the most recent `Forward` call. */
         const Scores_Type& attn_weights() const { return attn_weights_; }
 
+        /** PeekableBlock: expose attn_weights into a SnapshotMap under `prefix`. */
+        void peek(SnapshotMap& out, const std::string& prefix) const {
+            snap_add(out, prefix + "attn_weights", attn_weights_);
+        }
+
         // @doc: MultiHeadAttentionBlock()
         /** Xavier-initializes `WQ`, `WK`, `WV`, `WO` */
         MultiHeadAttentionBlock() {
@@ -129,6 +134,12 @@ namespace TTTN {
         // }
 
 
+        // @doc: OutputTensor Forward(const InputTensor& X) const
+        /**
+         * ***Backward*** — [ `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Attention.hpp) -
+         * ***BatchedForward*** — [ `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(...)`](src/Attention.hpp) -
+         * ***BatchedBackward*** — [ `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(...)`](src/Attention.hpp) -
+         */
         OutputTensor Forward(const InputTensor &X) const {
             const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
             X_cache_ = X;
@@ -246,6 +257,11 @@ namespace TTTN {
         //     return dX;
         // }
 
+        // @doc: InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)
+        /**
+         * ***BatchedForward*** — [ `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(...)`](src/Attention.hpp) -
+         * ***BatchedBackward*** — [ `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(...)`](src/Attention.hpp) -
+         */
         InputTensor Backward(const OutputTensor &delta_A,
                              const OutputTensor & /*a*/,
                              const InputTensor & /*a_prev*/) {
@@ -323,6 +339,8 @@ namespace TTTN {
 
         // ─── BATCHED (loop over leading Batch dimension) ─────────────────────────
 
+        // @doc: template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(...)
+        /** ***BatchedBackward*** — [ `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(...)`](src/Attention.hpp) - */
         template<size_t Batch>
         Tensor<Batch, SeqLen, EmbDims...> BatchedForward(const Tensor<Batch, SeqLen, EmbDims...> &X) const {
             Tensor<Batch, SeqLen, EmbDims...> result;

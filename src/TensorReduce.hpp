@@ -3,15 +3,15 @@
 
 namespace TTTN {
 
-        // @doc: template<size_t Axis, size_t... Dims> struct ReduceKernel
-        /**
-         * Shared kernel for all axis-reduction and broadcast operations
-         * Compile-time `static constexpr`:
-         *   - `axis_dim = SizeTemplateGet<Axis, Dims...>::value`
-         *   - `axis_stride = Source::Strides[Axis]`
-         *   - `std::array<size_t, Result::Size> bases` — flat index in `Source` for each output index with axis set to 0
-         *   - `static constexpr size_t project(size_t i)` — flat index in `Result` for source flat index `i` (axis contribution stripped); closed-form `i - ((i / axis_stride) % axis_dim) * axis_stride`; no table, `axis_stride` compile-time so division compiles to multiply-shift
-         */
+    // @doc: template<size_t Axis, size_t... Dims> struct ReduceKernel
+    /**
+     * Shared kernel for all axis-reduction and broadcast operations
+     * Compile-time `static constexpr`:
+     * `axis_dim = SizeTemplateGet<Axis, Dims...>::value`
+     * `axis_stride = Source::Strides[Axis]`
+     * `std::array<size_t, Result::Size> bases` — flat index in `Source` for each output index with axis set to 0
+     * `static constexpr size_t project(size_t i)` — flat index in `Result` for source flat index `i` (axis contribution stripped); closed-form `i - ((i / axis_stride) % axis_dim) * axis_stride`; no table, `axis_stride` compile-time so division compiles to multiply-shift
+     */
     template<size_t Axis, size_t... Dims>
     struct ReduceKernel {
         using Source = Tensor<Dims...>;
@@ -68,6 +68,20 @@ namespace TTTN {
         return ReduceApply<Axis>(src, Op::identity, Op{});
     }
 
+    // MOVE VERSIONS (these are not actually move, just for API unification)
+    template<size_t Axis, FloatBinaryOp ReduceFn, size_t... Dims>
+    typename RemoveAxis<Axis, Dims...>::type
+    ReduceApplyMove(Tensor<Dims...>&& src, float init, ReduceFn rfn) {
+        return ReduceApply<Axis>(src, init, rfn);
+    }
+
+    template<size_t Axis, typename Op, size_t... Dims>
+        requires FloatBinaryOp<Op> && requires { { Op::identity } -> std::convertible_to<float>; }
+    typename RemoveAxis<Axis, Dims...>::type
+    ReduceApplyMove(Tensor<Dims...>&& src) {
+        return ReduceApply<Axis>(src, Op::identity, Op{});
+    }
+
     // @doc: template<size_t Axis, size_t N, size_t... Dims> InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...>& src)
     /**
      * Broadcasts a reduced tensor back up by repeating it `N` times along `Axis`
@@ -84,6 +98,14 @@ namespace TTTN {
             });
             return result;
         }(std::type_identity<Full>{});
+    }
+
+    // MOVE VERSION (also not actually a move, must change shape)
+    template<size_t Axis, size_t N, size_t... Dims>
+    typename InsertAxis<Axis, N, Dims...>::type
+    ExpandMove(Tensor<Dims...>&& src) {
+        // must allocate new tensor
+        return Expand<Axis, N>(src);
     }
 
     // @doc: template<size_t Axis, FloatBinaryOp F, size_t... Dims> Tensor<Dims...> BroadcastApply(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b, F f)
@@ -109,6 +131,56 @@ namespace TTTN {
         return BroadcastApply<Axis>(A, b, F{});
     }
 
+    // MOVE VERSIONS OF BROADCAST: TRUE MOVE
+    template<size_t Axis, FloatBinaryOp F, size_t... Dims>
+    Tensor<Dims...>
+    BroadcastApplyMove(Tensor<Dims...>&& A,
+                    const typename RemoveAxis<Axis, Dims...>::type& b,
+                    F f) {
+        using K = ReduceKernel<Axis, Dims...>;
+
+        // overwrite on A
+        ParForEach(Tensor<Dims...>::Size, [&](size_t i) {
+            A.flat(i) = f(A.flat(i), b.flat(K::project(i)));
+        });
+
+        return std::move(A);
+    }
+    // tag version
+    template<size_t Axis, typename F, size_t... Dims>
+    requires FloatBinaryOp<F> && std::default_initializable<F>
+    Tensor<Dims...>
+    BroadcastApplyMove(Tensor<Dims...>&& A,
+                    const typename RemoveAxis<Axis, Dims...>::type& b) {
+        return BroadcastApplyMove<Axis>(std::move(A), b, F{});
+    }
+
+    // these are basically in-place, but wrap in move and can delete old A
+        template<size_t Axis, FloatBinaryOp F, size_t... Dims>
+    Tensor<Dims...>&
+    BroadcastApplyInplace(Tensor<Dims...>& A,
+                    const typename RemoveAxis<Axis, Dims...>::type& b,
+                    F f) {
+        using K = ReduceKernel<Axis, Dims...>;
+
+        // overwrite on A
+        ParForEach(Tensor<Dims...>::Size, [&](size_t i) {
+            A.flat(i) = f(A.flat(i), b.flat(K::project(i)));
+        });
+
+        return A;
+    }
+    // tag version
+    template<size_t Axis, typename F, size_t... Dims>
+    requires FloatBinaryOp<F> && std::default_initializable<F>
+    Tensor<Dims...>&
+    BroadcastApplyInplace(Tensor<Dims...>& A,
+                    const typename RemoveAxis<Axis, Dims...>::type& b) {
+        return BroadcastApplyInplace<Axis>(A, b, F{});
+    }
+
+
+
 
     // @doc: template<size_t Axis, FloatBinaryOp ApplyFn, FloatBinaryOp ReduceFn, size_t... Dims> Tensor<Dims...> BroadcastReduce(const Tensor<Dims...>& src, float init, ApplyFn afn, ReduceFn rfn)
     /**
@@ -129,44 +201,53 @@ namespace TTTN {
         return BroadcastApply<Axis>(src, ReduceApply<Axis>(src, ReduceOp::identity, ReduceOp{}), ApplyOp{});
     }
 
-    // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...>& src, size_t idx)
-    /**
-     * Extract the `idx`-th `RemoveAxis<Axis, Dims...>::type` sub-`Tensor` from `Tensor<Dims...> src` on the `Axis` axis
-     * Essentially fills new `Tensor` with values from `src` by looping through dimensions in `Rank`, but passing `idx` for `Axis` dimension on all values
-     */
-    template<size_t Axis, size_t... Dims>
-    typename RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...> &src, size_t idx) {
-        using Source = Tensor<Dims...>;
-        using Result = typename RemoveAxis<Axis, Dims...>::type;
 
-        Result dst;
-        for (size_t i = 0; i < Result::Size; ++i) {
-            auto dst_multi = Result::FlatToMulti(i);
-            std::array<size_t, Source::Rank> src_multi{};
-            size_t dst_d = 0;
-            for (size_t d = 0; d < Source::Rank; ++d) {
-                src_multi[d] = d == Axis ? idx : dst_multi[dst_d++];
-            }
-            dst.flat(i) = src.flat(Source::MultiToFlat(src_multi));
-        }
-        return dst;
+    // MOVE VERSION (still needs temp alloc for reduced, but then overwrites src)
+    template<size_t Axis, FloatBinaryOp ApplyFn, FloatBinaryOp ReduceFn, size_t... Dims>
+    Tensor<Dims...>
+    BroadcastReduceMove(Tensor<Dims...>&& src,
+                        float init,
+                        ApplyFn afn,
+                        ReduceFn rfn) {
+        // must do this
+        auto reduced = ReduceApply<Axis>(src, init, rfn);
+        // here, we can use Move!
+        return BroadcastApplyMove<Axis>(std::move(src), reduced, afn);
+    }
+    template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims>
+    requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> &&
+             std::default_initializable<ApplyOp> &&
+             std::default_initializable<ReduceOp> &&
+             requires { { ReduceOp::identity } -> std::convertible_to<float>; }
+    Tensor<Dims...>
+    BroadcastReduceMove(Tensor<Dims...>&& src) {
+        auto reduced = ReduceApply<Axis>(src, ReduceOp::identity, ReduceOp{});
+        return BroadcastApplyMove<Axis>(std::move(src), reduced, ApplyOp{});
     }
 
-    // @doc: template<size_t Axis, FloatBinaryOp F, size_t... Dims> void TensorIndexApply(Tensor<Dims...>& dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type& src, F f)
-    /** Apply binary `f(existing, incoming) -> float` to each element of the `idx`-th slice of `dst` along `Axis` using the corresponding element of `src` */
-    template<size_t Axis, FloatBinaryOp F, size_t... Dims>
-    void TensorIndexApply(Tensor<Dims...> &dst, size_t idx,
-                          const typename RemoveAxis<Axis, Dims...>::type &src, F f) {
-        using Dest = Tensor<Dims...>;
-        using Slice = typename RemoveAxis<Axis, Dims...>::type;
-        for (size_t i = 0; i < Slice::Size; ++i) {
-            auto src_multi = Slice::FlatToMulti(i);
-            std::array<size_t, Dest::Rank> dst_multi{};
-            size_t src_d = 0;
-            for (size_t d = 0; d < Dest::Rank; ++d)
-                dst_multi[d] = d == Axis ? idx : src_multi[src_d++];
-            const size_t flat = Dest::MultiToFlat(dst_multi);
-            dst.flat(flat) = f(dst.flat(flat), src.flat(i));
-        }
+
+    // inplace
+        template<size_t Axis, FloatBinaryOp ApplyFn, FloatBinaryOp ReduceFn, size_t... Dims>
+    Tensor<Dims...>&
+    BroadcastReduceInplace(Tensor<Dims...>& src,
+                        float init,
+                        ApplyFn afn,
+                        ReduceFn rfn) {
+        // must do this
+        auto reduced = ReduceApply<Axis>(src, init, rfn);
+        // here, we can use Inplace!
+        return BroadcastApplyInplace<Axis>(src, reduced, afn);
     }
+        template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims>
+    requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> &&
+             std::default_initializable<ApplyOp> &&
+             std::default_initializable<ReduceOp> &&
+             requires { { ReduceOp::identity } -> std::convertible_to<float>; }
+    Tensor<Dims...>&
+    BroadcastReduceMove(Tensor<Dims...>& src) {
+        auto reduced = ReduceApply<Axis>(src, ReduceOp::identity, ReduceOp{});
+        return BroadcastApplyInplace<Axis>(src, reduced, ApplyOp{});
+    }
+
+
 }

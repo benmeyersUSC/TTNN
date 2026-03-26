@@ -42,8 +42,6 @@ namespace TTTN {
     template<typename InT, typename OutT, ActivationOp Act_ = Linear>
     class DenseMDBlock;
 
-    // @doc: DenseMDBlock()
-    /** Xavier-initializes `W` */
     template<size_t... InDims, size_t... OutDims, ActivationOp Act_>
     class DenseMDBlock<Tensor<InDims...>, Tensor<OutDims...>, Act_> {
     public:
@@ -65,12 +63,21 @@ namespace TTTN {
         auto all_params() { return std::tie(W_, b_); }
         auto all_params() const { return std::tie(W_, b_); }
 
+        // @doc: DenseMDBlock()
+        /** Xavier-initializes `W` */
         DenseMDBlock() { XavierInitMD(W_.value, InputTensor::Size, OutputTensor::Size); }
 
+        // @doc: OutputTensor Forward(const InputTensor& x) const
+        /**
+         * ***Backward*** — [ `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Dense.hpp) -
+         * ***BatchedForward*** — [ `template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp) -
+         */
         OutputTensor Forward(const InputTensor &x) const {
             return Map<Act>(ΣΠ<N_in>(W_.value, x) + b_.value);
         }
 
+        // @doc: InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)
+        /** ***BatchedForward*** — [ `template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp) - */
         InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a,
                              const InputTensor &a_prev) {
             const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
@@ -124,9 +131,9 @@ namespace TTTN {
         using Resolve = DenseMDBlock<InputT, OutT, Act_>;
     };
 
+    // Dense<N, Act>: rank-1 shorthand for DenseMD<Tensor<N>, Act>
     // @doc: using Dense = DenseMD<Tensor<N>, Act_>
     /** `Dense<128, ReLU>`, `Dense<10, Sigmoid>`, `Dense<10>` (defaults to `Linear`) */
-    // Dense<N, Act>: rank-1 shorthand for DenseMD<Tensor<N>, Act>
     template<size_t N, ActivationOp Act_ = Linear>
     using Dense = DenseMD<Tensor<N>, Act_>;
 

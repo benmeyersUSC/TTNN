@@ -47,8 +47,8 @@ namespace TTTN {
     void snap_add(SnapshotMap& out, const std::string& key, const Tensor<Dims...>& t) {
         SnapshotEntry entry;
         entry.shape = { Dims... };
-        entry.data.resize(t.flat_size());
-        for (size_t i = 0; i < t.flat_size(); ++i)
+        entry.data.resize(Tensor<Dims...>::Size);
+        for (size_t i = 0; i < Tensor<Dims...>::Size; ++i)
             entry.data[i] = t.flat(i);
         out.emplace(key, std::move(entry));
     }

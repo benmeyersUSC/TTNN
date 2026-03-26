@@ -102,8 +102,6 @@ namespace TTTN {
     constexpr size_t tuple_param_count_impl(std::index_sequence<Is...>) {
         return (size_t(0) + ... + std::remove_reference_t<std::tuple_element_t<Is, Tuple>>::Size);
     }
-    // @doc: template<typename Tuple> constexpr size_t TupleParamCount
-    /** Sums `::Size` across every `Param` in an `all_params()` tuple; returns `0` for `std::tuple<>` (parameter-free blocks) */
     template<typename Tuple>
     constexpr size_t TupleParamCount =
         tuple_param_count_impl<std::remove_cvref_t<Tuple>>(

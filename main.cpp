@@ -2,320 +2,190 @@
 #include <iostream>
 #include <iomanip>
 #include <array>
+#include <algorithm>
 #include <cmath>
+#include <filesystem>
 
 using namespace TTTN;
 
-// XOR: 2 inputs, 4 hidden (ReLU), 1 output (Sigmoid)
-void runXOR() {
-    std::cout << "=== XOR ===\n";
+// ── Image primitives ──────────────────────────────────────────────────────────
 
-    NetworkBuilder<
-        Input<2>,
-        Dense<4, ReLU>,
-        Dense<1, Sigmoid>
-    >::type net;
-    std::cout << "    params: " << net.TotalParamCount << "\n\n";
+struct RGB { uint8_t r, g, b; };
 
-    std::array inputs{
-        Tensor<2>{0.f, 0.f},
-        Tensor<2>{0.f, 1.f},
-        Tensor<2>{1.f, 0.f},
-        Tensor<2>{1.f, 1.f},
-    };
-    std::array targets{
-        Tensor<1>{0.f},
-        Tensor<1>{1.f},
-        Tensor<1>{1.f},
-        Tensor<1>{0.f},
-    };
-
-    for (int e = 0; e < 1000; ++e) {
-        float total_loss = 0.f;
-        for (int i = 0; i < 4; ++i)
-            total_loss += net.Fit<BinaryCEL>(inputs[i], targets[i], 0.01f);
-        if (e % 100 == 0)
-            std::cout << "  epoch " << e << "  loss=" << total_loss / 4.f << "\n";
-    }
-
-    std::cout << "  predictions:\n";
-    for (int i = 0; i < 4; ++i) {
-        const auto out = net.Forward(inputs[i]);
-        std::cout << "    [" << inputs[i].flat(0) << "," << inputs[i].flat(1) << "]"
-                << " -> " << out.flat(0)
-                << "  (target=" << targets[i].flat(0) << ")\n";
-    }
+static RGB grayRGB(float v) {
+    const uint8_t g = static_cast<uint8_t>(std::clamp(v, 0.f, 1.f) * 255.f);
+    return {g, g, g};
 }
 
-// 3-bit parity: output is 1 iff an odd number of inputs are 1.
-// All 8 corners of the unit cube must be classified — strictly harder than XOR.
-// Architecture: 3 -> 8 (ReLU) -> 4 (ReLU) -> 1 (Sigmoid)
-void runParity() {
-    std::cout << "\n=== 3-bit Parity ===\n";
-
-    NetworkBuilder<
-        Input<3>,
-        Dense<8, ReLU>,
-        Dense<4, ReLU>,
-        Dense<1, Sigmoid>
-    >::type net;
-    std::cout << "    params: " << net.TotalParamCount << "\n\n";
-
-    // all 8 corners of {0,1}^3
-    std::array inputs{
-        Tensor<3>{0.f, 0.f, 0.f}, // 0 ones  -> 0
-        Tensor<3>{0.f, 0.f, 1.f}, // 1 one   -> 1
-        Tensor<3>{0.f, 1.f, 0.f}, // 1 one   -> 1
-        Tensor<3>{0.f, 1.f, 1.f}, // 2 ones  -> 0
-        Tensor<3>{1.f, 0.f, 0.f}, // 1 one   -> 1
-        Tensor<3>{1.f, 0.f, 1.f}, // 2 ones  -> 0
-        Tensor<3>{1.f, 1.f, 0.f}, // 2 ones  -> 0
-        Tensor<3>{1.f, 1.f, 1.f}, // 3 ones  -> 1
-    };
-    std::array targets{
-        Tensor<1>{0.f},
-        Tensor<1>{1.f},
-        Tensor<1>{1.f},
-        Tensor<1>{0.f},
-        Tensor<1>{1.f},
-        Tensor<1>{0.f},
-        Tensor<1>{0.f},
-        Tensor<1>{1.f},
-    };
-
-    for (int e = 0; e < 1000; ++e) {
-        float total_loss = 0.f;
-        for (int i = 0; i < 8; ++i)
-            total_loss += net.Fit<BinaryCEL>(inputs[i], targets[i], 0.005f);
-        if (e % 100 == 0)
-            std::cout << "  epoch " << e << "  loss=" << total_loss / 8.f << "\n";
-    }
-
-    std::cout << "  predictions:\n";
-    for (int i = 0; i < 8; ++i) {
-        const auto out = net.Forward(inputs[i]);
-        std::cout << "    [" << inputs[i].flat(0) << "," << inputs[i].flat(1) << "," << inputs[i].flat(2) << "]"
-                << " -> " << std::round(out.flat(0))
-                << "  (target=" << targets[i].flat(0) << ")\n";
-    }
+static RGB hotRGB(float v) {
+    v = std::clamp(v, 0.f, 1.f);
+    return { static_cast<uint8_t>(std::min(v * 3.f,       1.f) * 255),
+             static_cast<uint8_t>(std::max(v * 3.f - 1.f, 0.f) * 255),
+             static_cast<uint8_t>(std::max(v * 3.f - 2.f, 0.f) * 255) };
 }
 
-// XOR full-batch B=4: demonstrates gradient cancellation.
-// XOR's +/- targets are perfectly symmetric, so all 4 gradients sum to zero — stuck at loss=ln(2).
-void runXORFullBatch() {
-    std::cout << "\n=== XOR (full-batch, B=4) — expect gradient cancellation ===\n";
-
-    NetworkBuilder<
-        Input<2>,
-        Dense<4, ReLU>,
-        Dense<1, Sigmoid>
-    >::type net;
-    std::cout << "    params: " << net.TotalParamCount << "\n\n";
-
-    Tensor<4, 2> X{0.f, 0.f, 0.f, 1.f, 1.f, 0.f, 1.f, 1.f};
-    Tensor<4, 1> T{0.f, 1.f, 1.f, 0.f};
-
-    for (int e = 0; e < 1000; ++e) {
-        const float loss = net.BatchFit<BinaryCEL, 4>(X, T, 0.01f);
-        if (e % 100 == 0)
-            std::cout << "  epoch " << e << "  loss=" << loss << "\n";
-    }
-
-    std::cout << "  predictions:\n";
-    const auto A_final = net.BatchedForwardAll<4>(X);
-    const auto &Y = A_final.template get<2>();
-    for (int i = 0; i < 4; ++i)
-        std::cout << "    [" << X(i, 0) << "," << X(i, 1) << "]"
-                << " -> " << Y(i, 0) << "  (target=" << T(i, 0) << ")\n";
-}
-
-// CombineNetworks: encoder + decoder declared separately, combined into an autoencoder.
-// Encoder:     Input<16> -> Dense<8, ReLU> -> Dense<4>   (bottleneck)
-// Decoder:     Input<4>  -> Dense<8, ReLU> -> Dense<16>
-// Autoencoder: CombineNetworks<Encoder, Decoder>::type    (all 6 blocks, end-to-end)
+// ── Generic SnapshotMap visualizer ───────────────────────────────────────────
 //
-// Demonstrates:
-//   - type-level network composition with compile-time shape check
-//   - training the combined network end-to-end
-//   - using the encoder standalone (same type, independent weights)
-void runCombineNetworks() {
-    std::cout << "\n=== CombineNetworks: Encoder + Decoder -> Autoencoder ===\n";
+// Renders every rank-2 or rank-3 entry in a SnapshotMap as a hot-colormap PPM.
+// Rank-3 (e.g. Tensor<H,S,S>): H slices placed side by side.
+// Output: viz/<key_with_dots_replaced_by_underscores>.ppm
 
-    // --- declare sub-network types independently ---
-    using Encoder = NetworkBuilder<
-        Input<16>,
-        Dense<8, ReLU>,
-        Dense<4> // linear bottleneck
-    >::type;
+static void viz_entry(const std::string& path, const SnapshotEntry& e, size_t scale) {
+    if (e.shape.size() < 2) return;
+    const size_t n_sl  = e.shape.size() == 2 ? 1 : e.shape[0];
+    const size_t rows  = e.shape[e.shape.size() - 2];
+    const size_t cols  = e.shape[e.shape.size() - 1];
+    const size_t sl_sz = rows * cols;
 
-    using Decoder = NetworkBuilder<
-        Input<4>,
-        Dense<8, ReLU>,
-        Dense<16> // linear reconstruction
-    >::type;
+    float mx = 0.f;
+    for (float v : e.data) mx = std::max(mx, v);
 
-    // compile-time check: Encoder::OutputTensor == Decoder::InputTensor (both Tensor<4>)
-    using Autoencoder = CombineNetworks<Encoder, Decoder>::type;
+    const size_t gap   = std::max(scale / 2, size_t(1));
+    const size_t img_w = n_sl * cols * scale + (n_sl > 1 ? (n_sl - 1) * gap : 0);
+    const size_t img_h = rows * scale;
 
-    Encoder enc; // standalone encoder — own weights
-    Autoencoder ae; // full autoencoder   — own weights
+    std::ofstream f(path, std::ios::binary);
+    f << "P6\n" << img_w << " " << img_h << "\n255\n";
+    auto put = [&](RGB c) { f.put(c.r); f.put(c.g); f.put(c.b); };
+    const RGB dark{20, 20, 20};
 
-    std::cout << "    encoder params:     " << enc.TotalParamCount << "\n";
-    std::cout << "    autoencoder params: " << ae.TotalParamCount << "\n\n";
+    for (size_t r = 0; r < rows; ++r)
+        for (size_t py = 0; py < scale; ++py)
+            for (size_t sl = 0; sl < n_sl; ++sl) {
+                for (size_t c = 0; c < cols; ++c) {
+                    float v = mx > 1e-6f ? e.data[sl * sl_sz + r * cols + c] / mx : 0.f;
+                    for (size_t px = 0; px < scale; ++px) put(hotRGB(v));
+                }
+                if (sl + 1 < n_sl)
+                    for (size_t px = 0; px < gap; ++px) put(dark);
+            }
+}
 
-    // four 16-dim training vectors spread across [0,1]
-    std::array<Tensor<16>, 4> xs = {
-        {
-            {0.1f, 0.9f, 0.4f, 0.7f, 0.2f, 0.8f, 0.3f, 0.6f, 0.5f, 0.1f, 0.95f, 0.05f, 0.65f, 0.35f, 0.75f, 0.25f},
-            {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f},
-            {0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f, 0.9f, 0.8f, 0.7f, 0.6f, 0.5f},
-            {1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f},
+void viz_snapshot(const std::string& dir, const SnapshotMap& snaps, size_t scale = 8) {
+    std::filesystem::create_directories(dir);
+    for (const auto& [key, entry] : snaps) {
+        if (entry.shape.size() < 2) continue;
+        std::string fname = key;
+        for (char& c : fname) if (c == '.') c = '_';
+        const std::string path = dir + "/" + fname + "ppm";
+        viz_entry(path, entry, scale);
+        std::cout << "  viz -> " << path << "\n";
+        std::system(("open " + path).c_str());
+    }
+}
+
+// ── MNIST attention visualizer ────────────────────────────────────────────────
+//
+// Checkerboard row+col attention on 28×28 images.
+// Terminal: digit | row-attn | col-attn  (unicode shading, 28 rows).
+// Image:    viz/attn_viz.ppm  (grayscale digit + hot attn panels, stacked).
+
+template<size_t H, size_t S>
+static Tensor<S, S> headAvgNorm(const Tensor<H, S, S>& t) {
+    Tensor<S, S> out;
+    const float inv = 1.f / static_cast<float>(H);
+    for (size_t h = 0; h < H; ++h)
+        for (size_t q = 0; q < S; ++q)
+            for (size_t k = 0; k < S; ++k)
+                out(q, k) += t(h, q, k) * inv;
+    float mx = 0.f;
+    for (size_t i = 0; i < S * S; ++i) mx = std::max(mx, out.flat(i));
+    if (mx > 1e-6f) for (size_t i = 0; i < S * S; ++i) out.flat(i) /= mx;
+    return out;
+}
+
+static void printAttnViz(const Tensor<28,28>& digit,
+                         const Tensor<28,28>& row_attn,
+                         const Tensor<28,28>& col_attn) {
+    static constexpr const char* shade[] = { " ", "░", "▒", "▓", "█" };
+    auto cell = [](float v) { return shade[static_cast<size_t>(std::clamp(v,0.f,1.f)*4.f)]; };
+    std::cout << "  digit                        "
+              << "row-attn (row→row)           "
+              << "col-attn (col→col)\n";
+    for (size_t r = 0; r < 28; ++r) {
+        std::cout << "  ";
+        for (size_t c = 0; c < 28; ++c) std::cout << cell(digit(r,c));
+        std::cout << "   ";
+        for (size_t c = 0; c < 28; ++c) std::cout << cell(row_attn(r,c));
+        std::cout << "   ";
+        for (size_t c = 0; c < 28; ++c) std::cout << cell(col_attn(r,c));
+        std::cout << "\n";
+    }
+}
+
+struct AttnSample {
+    size_t label, pred;
+    Tensor<28,28> digit, row_attn, col_attn;
+};
+
+static void writeAndOpenAttnPPM(const std::string& path,
+                                const std::vector<AttnSample>& samples,
+                                size_t scale = 8) {
+    const size_t cell  = 28 * scale;
+    const size_t gap   = scale;
+    const size_t sep   = scale / 2;
+    const size_t img_w = cell * 3 + gap * 2;
+    const size_t n     = samples.size();
+    const size_t img_h = n * cell + (n > 1 ? (n-1)*sep : 0);
+
+    std::ofstream f(path, std::ios::binary);
+    f << "P6\n" << img_w << " " << img_h << "\n255\n";
+    auto put = [&](RGB c){ f.put(c.r); f.put(c.g); f.put(c.b); };
+    const RGB dark{20,20,20};
+
+    for (size_t si = 0; si < n; ++si) {
+        const auto& s = samples[si];
+        for (size_t py = 0; py < cell; ++py) {
+            const size_t r = py / scale;
+            for (size_t px = 0; px < cell; ++px) put(grayRGB(s.digit(r, px/scale)));
+            for (size_t px = 0; px < gap;  ++px) put(dark);
+            for (size_t px = 0; px < cell; ++px) put(hotRGB(s.row_attn(r, px/scale)));
+            for (size_t px = 0; px < gap;  ++px) put(dark);
+            for (size_t px = 0; px < cell; ++px) put(hotRGB(s.col_attn(r, px/scale)));
         }
-    };
-
-    // train the autoencoder end-to-end (all 6 blocks update together)
-    for (int e = 0; e < 500; ++e) {
-        float total = 0.f;
-        for (auto &x: xs)
-            total += ae.Fit<MSE>(x, x, 0.005f);
-        if (e % 100 == 0)
-            std::cout << "  epoch " << std::setw(4) << e
-                    << "  MSE = " << std::fixed << std::setprecision(6) << total / 4.f << "\n";
+        if (si + 1 < n)
+            for (size_t py = 0; py < sep; ++py)
+                for (size_t px = 0; px < img_w; ++px) put(dark);
     }
-
-    // show reconstruction through the combined network
-    std::cout << "\n  autoencoder reconstruction (first sample):\n";
-    std::cout << std::fixed << std::setprecision(2);
-    const auto recon = ae.Forward(xs[0]);
-    std::cout << "    input  : ";
-    for (size_t i = 0; i < 16; ++i) std::cout << xs[0].flat(i) << " ";
-    std::cout << "\n";
-    std::cout << "    output : ";
-    for (size_t i = 0; i < 16; ++i) std::cout << recon.flat(i) << " ";
-    std::cout << "\n";
-
-    // use the standalone encoder independently — its weights are separate from ae
-    // train it briefly on the same inputs (identity target = embedding of itself)
-    std::cout << "\n  encoder standalone: bottleneck embeddings (4-dim) after short solo training:\n";
-    for (int e = 0; e < 200; ++e)
-        for (auto &x: xs)
-            enc.Fit<MSE>(x, {0.25f, 0.5f, 0.75f, 1.0f}, 0.005f); // arbitrary target to show it trains
-    for (size_t s = 0; s < 4; ++s) {
-        const auto emb = enc.Forward(xs[s]);
-        std::cout << "    sample " << s << " -> [";
-        for (size_t i = 0; i < 4; ++i)
-            std::cout << std::setprecision(3) << emb.flat(i) << (i < 3 ? ", " : "");
-        std::cout << "]\n";
-    }
+    std::cout << "  image -> " << path << "  (" << img_w << "x" << img_h << " px)\n";
+    std::system(("open " + path).c_str());
 }
 
-// Rank-5 tensor autoencoder.
-// Input lives in Tensor<2,3,2,2,2> (48 elements). The network compresses it through
-// rank-2 bottleneck tensors, then reconstructs the original rank-5 shape.
-// Shape-as-type: every layer boundary is a distinct tensor type, checked at compile time.
-// Rank-9 tensor autoencoder.
-// Input lives in Tensor<2,2,2,2,2,2,2,2,2> = 2^9 = 512 elements.
-// Compressed through rank-3 then rank-2 intermediates, reconstructed back to rank-9.
-void runRankNineAutoencoder() {
-    std::cout << "\n=== Rank-9 Tensor Autoencoder ===\n";
-    std::cout <<
-            "    Tensor<2^9>(512) -> Tensor<4,4,2>(32) -> Tensor<4,2>(8) -> Tensor<4,4,2>(32) -> Tensor<2^9>(512)\n";
+template<typename Net>
+static AttnSample extractAttnSample(const Net& net, const Tensor<28,28>& img, size_t label) {
+    const auto pred_out = net.Forward(img);
+    size_t pred = 0;
+    for (size_t c = 1; c < 10; ++c)
+        if (pred_out.flat(c) > pred_out.flat(pred)) pred = c;
 
-    NetworkBuilder<
-        Input<2, 2, 2, 2, 2, 2, 2, 2, 2>,
-        DenseMD<Tensor<4, 4, 2>, ReLU>, // 512 -> 32, rank-3
-        DenseMD<Tensor<4, 2>, ReLU>, // 32  ->  8, rank-2 bottleneck
-        DenseMD<Tensor<1, 2, 2, 1>, ReLU>,
-        DenseMD<Tensor<4, 2>, ReLU>,
-        DenseMD<Tensor<4, 4, 2>, ReLU>, // 8   -> 32, rank-3
-        DenseMD<Tensor<2, 2, 2, 2, 2, 2, 2, 2, 2> > // 32  -> 512, back to rank-9
-    >::type net;
-    std::cout << "    params: " << net.TotalParamCount << "\n";
-    std::cout << "    one sample, MSE loss, watch backprop trickle through\n\n";
+    const auto& inner_par  = net.template block<0>().block_a();
+    const auto& row_mhattn = inner_par.block_a().template block<0>();
+    const auto& col_mhattn = inner_par.block_b().inner().template block<0>();
 
-    // 512 values in [0,1] generated from a sine wave — varied but deterministic
-    Tensor<2, 2, 2, 2, 2, 2, 2, 2, 2> x;
-    for (size_t i = 0; i < 512; ++i)
-        x.flat(i) = 0.5f + 0.45f * std::sin(static_cast<float>(i) * 3.14159f / 32.f);
-
-
-    for (int e = 0; e < 300; ++e) {
-        const float loss = net.Fit<MSE>(x, x, 0.0001f);
-        if (e % 10 == 0)
-            std::cout << "  epoch " << std::setw(4) << e
-                    << "  MSE = " << std::fixed << std::setprecision(6) << loss << "\n";
-    }
-
-    std::cout << "\n  final reconstruction (flat):\n";
-    const auto out = net.Forward(x);
-    std::cout << std::fixed << std::setprecision(2);
-    std::cout << "    target : ";
-    for (size_t i = 0; i < 27; ++i) std::cout << x.flat(i) << " ";
-    std::cout << "...\n    output : ";
-    for (size_t i = 0; i < 27; ++i) std::cout << out.flat(i) << " ";
-    std::cout << "...\n";
+    return { label, pred, img,
+             headAvgNorm(row_mhattn.attn_weights()),
+             headAvgNorm(col_mhattn.attn_weights()) };
 }
 
-// Transformer autoencoder: attention + per-token FFN (MapDense), the real transformer block.
-// ComposeBlocks vanishes at build time — the network is a flat chain of concrete blocks.
-// With MapDense providing per-token nonlinear capacity, the model can actually learn identity.
-void runAttentionAutoencoder() {
-    std::cout << "\n=== Transformer Autoencoder (seq=8, emb=6x6, 2 blocks: attn+FFN) ===\n";
+void runMNISTAttnViz() {
+    std::cout << "\n=== MNIST Attention Visualizer (checkerboard row+col) ===\n";
 
-    // Define a transformer block: attention + expand/project FFN
-    using TBlock = ComposeBlocks<
-        MHAttention<4, 6, 6>,
-        MapDense<1, Tensor<72>, ReLU>, // per-token FFN: 36 → 72
-        MapDense<1, Tensor<6, 6> > // per-token FFN: 72 → 36
-    >;
+    auto train_data = LoadCSV<20000, 785>("mnist_train.csv", true);
 
-    NetworkBuilder<
-        Input<8, 6, 6>,
-        TBlock,
-        TBlock
-    >::type net;
-    std::cout << "    params: " << net.TotalParamCount << "\n\n";
-
-    // 8 tokens × 6×6 embedding, values from a sine wave
-    Tensor<8, 6, 6> x;
-    for (size_t i = 0; i < 288; ++i)
-        x.flat(i) = 0.5f + 0.4f * std::sin(static_cast<float>(i) * 3.14159f / 8.f);
-
-    for (int e = 0; e < 3000; ++e) {
-        const float loss = net.Fit<MSE>(x, x, 0.003f);
-        if (e % 100 == 0)
-            std::cout << "  epoch " << std::setw(4) << e
-                    << "  MSE = " << std::fixed << std::setprecision(6) << loss << "\n";
-    }
-
-    const auto out = net.Forward(x);
-    std::cout << "\n  target : ";
-    for (size_t i = 0; i < 36; ++i)
-        std::cout << std::fixed << std::setprecision(2) << x.flat(i) << " ";
-    std::cout << "...\n  output : ";
-    for (size_t i = 0; i < 36; ++i)
-        std::cout << std::fixed << std::setprecision(2) << out.flat(i) << " ";
-    std::cout << "...\n";
-}
-
-// MNIST with transformer: attention + per-token FFN + Dense classifier.
-// ComposeBlocks defines a reusable transformer block that flattens at build time.
-void runMNISTAttention() {
-    std::cout << "\n=== MNIST Transformer (28 tokens x 28 dims, attn+FFN -> Dense -> Softmax+CEL) ===\n";
-
-    auto train_data = LoadCSV<60000, 785>("mnist_train.csv", true);
-    auto test_data = LoadCSV<10000, 785>("mnist_test.csv", true);
-
-    using TBlock = ComposeBlocks<
+    using RowAttn = ComposeBlocks<
         MHAttention<4, 28>,
-        MapDense<1, Tensor<28>, ReLU>, // per-row FFN: 28 → 28
-        MapDense<1, Tensor<28> > // per-row FFN: 28 → 28
+        MapDense<1, Tensor<28>, ReLU>,
+        MapDense<1, Tensor<28>>
     >;
+    using ColAttn = Transposed<ComposeBlocks<
+        MHAttention<4, 28>,
+        MapDense<1, Tensor<28>, ReLU>,
+        MapDense<1, Tensor<28>>
+    >>;
 
-    // TBlock flattens to 3 concrete blocks; total = 6 blocks + Dense + Softmax = 8
     typename NetworkBuilder<
         Input<28, 28>,
-        TBlock,
+        Residual<Parallel<RowAttn, ColAttn>>,
         Dense<10>,
         SoftmaxLayer<0>
     >::type net;
@@ -323,73 +193,314 @@ void runMNISTAttention() {
 
     std::mt19937 rng{42};
     constexpr size_t Batch = 32;
-    constexpr size_t EvalN = 500;
-    // NumBlocks after flattening: MHAttention, MapDense, MapDense, Dense, Softmax = 5
-    constexpr size_t FinalIdx = 5;
 
-    auto prep = [](const auto &batch, Tensor<Batch, 28, 28> &X, Tensor<Batch, 10> &Y) {
+    auto prep = [](const auto& batch, Tensor<Batch,28,28>& X, Tensor<Batch,10>& Y) {
         for (size_t b = 0; b < Batch; ++b) {
-            const auto label = static_cast<size_t>(batch(b, 0));
+            const auto label = static_cast<size_t>(batch(b,0));
             for (size_t p = 0; p < 784; ++p)
-                X.flat(b * 784 + p) = batch(b, p + 1) / 255.f;
+                X.flat(b*784+p) = batch(b, p+1) / 255.f;
             for (size_t c = 0; c < 10; ++c)
-                Y(b, c) = (c == label) ? 1.f : 0.f;
+                Y(b,c) = (c == label) ? 1.f : 0.f;
         }
     };
 
-    auto sample_acc = [&](const auto &dataset) -> float {
-        auto eval = RandomBatch<EvalN>(dataset, rng);
-        Tensor<EvalN, 28, 28> X_eval;
-        Tensor<EvalN, 10> Y_eval;
-        for (size_t b = 0; b < EvalN; ++b) {
-            const auto label = static_cast<size_t>(eval(b, 0));
-            for (size_t p = 0; p < 784; ++p)
-                X_eval.flat(b * 784 + p) = eval(b, p + 1) / 255.f;
-            for (size_t c = 0; c < 10; ++c)
-                Y_eval(b, c) = (c == label) ? 1.f : 0.f;
-        }
-        const auto A = net.template BatchedForwardAll<EvalN>(X_eval);
-        const auto &pred = A.template get<FinalIdx>();
-        return BatchAccuracy(pred, Y_eval);
-    };
-
-    for (int epoch = 0; epoch < 3; ++epoch) {
-        const float acc_before = sample_acc(train_data);
-        const float avg_loss = RunEpoch<CEL, Batch>(net, train_data, rng, 0.001f, prep);
-        const float acc_after = sample_acc(train_data);
-        std::cout << "  after epoch " << std::setw(2) << epoch
-                << "  CEL=" << std::fixed << std::setprecision(4) << avg_loss
-                << "  train: " << std::setprecision(1)
-                << acc_before << "% -> " << acc_after
-                << "%\n";
+    for (int epoch = 0; epoch < 10; ++epoch) {
+        const float loss = RunEpoch<CEL, Batch>(net, train_data, rng, 0.001f, prep);
+        std::cout << "  epoch " << epoch << "  CEL=" << std::fixed << std::setprecision(4) << loss << "\n";
     }
 
-    // test accuracy
-    auto raw = RandomBatch<EvalN>(test_data, rng);
-    Tensor<EvalN, 28, 28> X_test;
-    Tensor<EvalN, 10> Y_test;
-    for (size_t b = 0; b < EvalN; ++b) {
-        const auto label = static_cast<size_t>(raw(b, 0));
+    std::cout << "\n  -- attention patterns (one sample per digit) --\n";
+    std::vector<AttnSample> ppm_samples;
+    std::array<int,10> shown{}; shown.fill(0);
+
+    for (size_t i = 0; i < 2000 && *std::min_element(shown.begin(), shown.end()) == 0; ++i) {
+        const auto label = static_cast<size_t>(train_data(i,0));
+        if (shown[label]) continue;
+        shown[label] = 1;
+
+        Tensor<28,28> img;
         for (size_t p = 0; p < 784; ++p)
-            X_test.flat(b * 784 + p) = raw(b, p + 1) / 255.f;
-        for (size_t c = 0; c < 10; ++c)
-            Y_test(b, c) = (c == label) ? 1.f : 0.f;
+            img.flat(p) = train_data(i, p+1) / 255.f;
+
+        const auto s = extractAttnSample(net, img, label);
+        std::cout << "\n  [digit " << s.label << "  pred=" << s.pred << "]\n\n";
+        printAttnViz(s.digit, s.row_attn, s.col_attn);
+        ppm_samples.push_back(s);
     }
-    const auto A_test = net.template BatchedForwardAll<EvalN>(X_test);
-    const auto &pred_test = A_test.template get<FinalIdx>();
-    std::cout << "\n  test accuracy (" << EvalN << " held-out): "
-            // << std::fixed << std::setprecision(1) << BatchAccuracy(pred_test, Y_test) << "%\n"
-            ;
+
+    std::sort(ppm_samples.begin(), ppm_samples.end(),
+              [](const AttnSample& a, const AttnSample& b){ return a.label < b.label; });
+
+    std::filesystem::create_directories("viz");
+    writeAndOpenAttnPPM("viz/attn_viz.ppm", ppm_samples);
 }
 
-// Generic CSV classifier: col 0 = integer class label, cols 1..Cols-1 = features.
-// Network is hardcoded: Input<Cols-1> -> Dense<128,ReLU> -> Dense<64,ReLU> -> Dense<NumClasses> -> Softmax
-// Features are normalized by `norm` (default 255 for pixel data).
+// ── Bracket attention visualizer ──────────────────────────────────────────────
+//
+// Token vocab: 0=(  1=)  2=[  3=]  4={  5=}  6=blank
+// Network: Input<32,7> → embed → MHAttn(4 heads) → FFN → Dense<2> → Softmax
+// snap() collects "block_1.attn_weights" (shape [4,32,32]) after each Forward.
+// PPM: 4 files (one per head) with token-color labeled query/key axes.
+
+static constexpr const char* BRACKET_CHARS = "()[]{} ";
+
+static const RGB BRACKET_COLORS[7] = {
+    {100,149,237}, // ( cornflower blue
+    {135,206,250}, // ) sky blue
+    { 60,179,113}, // [ medium sea green
+    {144,238,144}, // ] light green
+    {255,165,  0}, // { orange
+    {220, 20, 60}, // } crimson
+    { 25, 25, 25}, // blank
+};
+
+// 5-wide × 7-tall pixel bitmaps for ()[]{} and blank.
+// Each row is 5 bits; bit 4 = leftmost pixel (col 0).
+static const uint8_t BRACKET_FONT[7][7] = {
+    { 0x04, 0x08, 0x10, 0x10, 0x10, 0x08, 0x04 }, // (
+    { 0x04, 0x02, 0x01, 0x01, 0x01, 0x02, 0x04 }, // )
+    { 0x0C, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0C }, // [
+    { 0x06, 0x02, 0x02, 0x02, 0x02, 0x02, 0x06 }, // ]
+    { 0x06, 0x08, 0x08, 0x10, 0x08, 0x08, 0x06 }, // {
+    { 0x0C, 0x02, 0x02, 0x01, 0x02, 0x02, 0x0C }, // }
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, // blank
+};
+
+struct BracketSample {
+    size_t label, pred;
+    std::array<int,32> tokens;
+    SnapshotMap snaps;   // from net.snap() — contains "block_1.attn_weights"
+};
+
+static void printBracketsViz(const BracketSample& s) {
+    static constexpr const char* shade[] = { " ", "░", "▒", "▓", "█" };
+    auto cell = [](float v){ return shade[static_cast<size_t>(std::clamp(v,0.f,1.f)*4.f)]; };
+
+    std::cout << "  seq: ";
+    for (int tok : s.tokens) std::cout << BRACKET_CHARS[tok];
+    std::cout << "\n  label=" << s.label << "  pred=" << s.pred
+              << "  (" << (s.label==s.pred ? "correct" : "WRONG") << ")\n\n";
+
+    const auto& e = s.snaps.at("block_1.attn_weights");
+    // shape [4, 32, 32] — normalize each head, show all 4 side by side
+    std::array<std::array<float,32*32>, 4> norm;
+    for (size_t h = 0; h < 4; ++h) {
+        float mx = 0.f;
+        for (size_t i = 0; i < 32*32; ++i) mx = std::max(mx, e.data[h*32*32+i]);
+        for (size_t i = 0; i < 32*32; ++i)
+            norm[h][i] = mx > 1e-6f ? e.data[h*32*32+i] / mx : 0.f;
+    }
+
+    std::cout << "  head-0                          "
+              << "head-1                          "
+              << "head-2                          "
+              << "head-3\n";
+    for (size_t q = 0; q < 32; ++q) {
+        std::cout << "  ";
+        for (size_t h = 0; h < 4; ++h) {
+            for (size_t k = 0; k < 32; ++k) std::cout << cell(norm[h][q*32+k]);
+            if (h < 3) std::cout << "  ";
+        }
+        std::cout << "\n";
+    }
+}
+
+// PPM: 4 separate files (one per head) in `dir/`.
+// Layout: [corner | key-token labels →] / [query-token labels ↓ | heatmap]
+// Samples stacked vertically with a dark separator.
+static void writeBracketsAttnPPM(const std::string& dir,
+                                 const std::vector<BracketSample>& samples,
+                                 size_t scale = 16) {
+    std::filesystem::create_directories(dir);
+
+    static constexpr size_t FW = 5, FH = 7;
+    const RGB dark{20,20,20};
+
+    auto draw_cell = [&](std::ofstream& f, int tok, size_t py_in_cell) {
+        auto put = [&](RGB c){ f.put(c.r); f.put(c.g); f.put(c.b); };
+        RGB bg = BRACKET_COLORS[tok];
+        int cy = (int)py_in_cell - (int)(scale - FH) / 2;
+        for (size_t px = 0; px < scale; ++px) {
+            int cx = (int)px - (int)(scale - FW) / 2;
+            bool lit = cx >= 0 && cx < (int)FW && cy >= 0 && cy < (int)FH
+                       && ((BRACKET_FONT[tok][cy] >> (FW-1-cx)) & 1);
+            put(lit ? RGB{255,255,255} : bg);
+        }
+    };
+
+    const size_t n       = samples.size();
+    const size_t sep     = scale / 2;
+    const size_t img_w   = scale + 32 * scale;
+    const size_t block_h = scale + 32 * scale;
+    const size_t img_h   = n * block_h + (n > 1 ? (n-1)*sep : 0);
+
+    for (size_t head = 0; head < 4; ++head) {
+        const std::string path = dir + "/head_" + std::to_string(head) + ".ppm";
+        std::ofstream f(path, std::ios::binary);
+        f << "P6\n" << img_w << " " << img_h << "\n255\n";
+        auto put = [&](RGB c){ f.put(c.r); f.put(c.g); f.put(c.b); };
+
+        for (size_t si = 0; si < n; ++si) {
+            const auto& s  = samples[si];
+            const auto& e  = s.snaps.at("block_1.attn_weights");
+            const size_t off = head * 32 * 32;
+
+            // normalize this head
+            float mx = 0.f;
+            for (size_t i = 0; i < 32*32; ++i) mx = std::max(mx, e.data[off+i]);
+            auto val = [&](size_t q, size_t k) {
+                return mx > 1e-6f ? e.data[off + q*32 + k] / mx : 0.f;
+            };
+
+            // top margin: corner + key token labels
+            for (size_t py = 0; py < scale; ++py) {
+                for (size_t px = 0; px < scale; ++px) put(dark);
+                for (size_t k = 0; k < 32; ++k) draw_cell(f, s.tokens[k], py);
+            }
+
+            // 32 query rows
+            for (size_t q = 0; q < 32; ++q)
+                for (size_t py = 0; py < scale; ++py) {
+                    draw_cell(f, s.tokens[q], py);
+                    for (size_t k = 0; k < 32; ++k)
+                        for (size_t px = 0; px < scale; ++px)
+                            put(hotRGB(val(q, k)));
+                }
+
+            if (si + 1 < n)
+                for (size_t py = 0; py < sep; ++py)
+                    for (size_t px = 0; px < img_w; ++px) put(dark);
+        }
+
+        std::cout << "  image -> " << path << "  (" << img_w << "x" << img_h << " px)\n";
+        std::system(("open " + path).c_str());
+    }
+}
+
+template<typename Net>
+static BracketSample extractBracketSample(const Net& net,
+                                          const Tensor<32,7>& x,
+                                          size_t label,
+                                          const std::array<int,32>& tokens) {
+    const auto pred_out = net.Forward(x);
+    const size_t pred = pred_out.flat(1) > pred_out.flat(0) ? 1u : 0u;
+    return { label, pred, tokens, net.snap() };
+}
+
+void runBracketsAttnViz() {
+    std::cout << "\n=== Brackets Attention Visualizer (valid/invalid classifier) ===\n";
+
+    constexpr size_t TrainN = 10000, TestN = 1000, Cols = 33;
+    auto train_data = LoadCSV<TrainN, Cols>("brackets_train.csv", true);
+    auto test_data  = LoadCSV<TestN,  Cols>("brackets_test.csv",  true);
+
+    typename NetworkBuilder<
+        Input<32, 7>,
+        MapDense<1, Tensor<32>>,
+        MHAttention<4, 32>,
+        MapDense<1, Tensor<64>, ReLU>,
+        MapDense<1, Tensor<32>>,
+        Dense<2>,
+        SoftmaxLayer<0>
+    >::type net;
+    std::cout << "    params: " << net.TotalParamCount << "\n\n";
+
+    std::mt19937 rng{42};
+    constexpr size_t Batch = 32;
+    constexpr size_t EvalN = 500;
+
+    auto make_input = [](const auto& ds, size_t row) {
+        Tensor<32,7> x;
+        for (size_t t = 0; t < 32; ++t) {
+            const auto tok = static_cast<size_t>(ds(row, t+1));
+            for (size_t c = 0; c < 7; ++c) x(t,c) = (c == tok) ? 1.f : 0.f;
+        }
+        return x;
+    };
+
+    auto prep = [](const auto& batch, Tensor<Batch,32,7>& X, Tensor<Batch,2>& Y) {
+        for (size_t b = 0; b < Batch; ++b) {
+            const auto label = static_cast<size_t>(batch(b,0));
+            for (size_t t = 0; t < 32; ++t) {
+                const auto tok = static_cast<size_t>(batch(b, t+1));
+                for (size_t c = 0; c < 7; ++c) X(b,t,c) = (c == tok) ? 1.f : 0.f;
+            }
+            for (size_t c = 0; c < 2; ++c) Y(b,c) = (c == label) ? 1.f : 0.f;
+        }
+    };
+
+    auto sample_acc = [&](const auto& dataset) {
+        auto eval = RandomBatch<EvalN>(dataset, rng);
+        Tensor<EvalN,32,7> X; Tensor<EvalN,2> Y;
+        for (size_t b = 0; b < EvalN; ++b) {
+            const auto label = static_cast<size_t>(eval(b,0));
+            for (size_t t = 0; t < 32; ++t) {
+                const auto tok = static_cast<size_t>(eval(b, t+1));
+                for (size_t c = 0; c < 7; ++c) X(b,t,c) = (c == tok) ? 1.f : 0.f;
+            }
+            for (size_t c = 0; c < 2; ++c) Y(b,c) = (c == label) ? 1.f : 0.f;
+        }
+        const auto A = net.template BatchedForwardAll<EvalN>(X);
+        return BatchAccuracy(A.template get<6>(), Y);
+    };
+
+    for (int epoch = 0; epoch < 15; ++epoch) {
+        const float bef  = sample_acc(train_data);
+        const float loss = RunEpoch<CEL, Batch>(net, train_data, rng, 0.0005f, prep);
+        const float aft  = sample_acc(train_data);
+        std::cout << "  epoch " << std::setw(2) << epoch
+                  << "  CEL=" << std::fixed << std::setprecision(4) << loss
+                  << "  train: " << std::setprecision(1) << bef << "% -> " << aft << "%\n";
+    }
+
+    {
+        auto raw = RandomBatch<1000>(test_data, rng);
+        Tensor<1000,32,7> Xt; Tensor<1000,2> Yt;
+        for (size_t b = 0; b < 1000; ++b) {
+            const auto label = static_cast<size_t>(raw(b,0));
+            for (size_t t = 0; t < 32; ++t) {
+                const auto tok = static_cast<size_t>(raw(b, t+1));
+                for (size_t c = 0; c < 7; ++c) Xt(b,t,c) = (c == tok) ? 1.f : 0.f;
+            }
+            for (size_t c = 0; c < 2; ++c) Yt(b,c) = (c == label) ? 1.f : 0.f;
+        }
+        const auto At = net.template BatchedForwardAll<1000>(Xt);
+        std::cout << "\n  test accuracy (1000): " << std::setprecision(1)
+                  << BatchAccuracy(At.template get<6>(), Yt) << "%\n";
+    }
+
+    std::cout << "\n  -- attention patterns --\n";
+    std::vector<BracketSample> ppm_samples;
+    int n_valid = 0, n_invalid = 0;
+    for (size_t i = 0; i < TrainN && (n_valid < 2 || n_invalid < 2); ++i) {
+        const auto label = static_cast<size_t>(train_data(i,0));
+        if (label == 1 && n_valid   >= 2) continue;
+        if (label == 0 && n_invalid >= 2) continue;
+
+        std::array<int,32> tokens;
+        for (size_t t = 0; t < 32; ++t) tokens[t] = static_cast<int>(train_data(i, t+1));
+
+        const auto s = extractBracketSample(net, make_input(train_data, i), label, tokens);
+        std::cout << "\n  [" << (label == 1 ? "VALID  " : "INVALID") << "]\n";
+        printBracketsViz(s);
+        ppm_samples.push_back(s);
+
+        if (label == 1) ++n_valid; else ++n_invalid;
+    }
+
+    writeBracketsAttnPPM("viz", ppm_samples);
+}
+
+// ── Generic CSV classifier ────────────────────────────────────────────────────
+//
+// col 0 = integer class label, cols 1..Cols-1 = features.
+// Network: Input<Features> → Dense<128,ReLU> → Dense<64,ReLU> → Dense<NumClasses> → Softmax
+
 template<size_t TrainRows, size_t TestRows, size_t Cols, size_t NumClasses,
-    size_t Batch = 32, size_t EvalN = 1000, size_t TestBatch = 1000>
-void RunCSVClassifier(const std::string &name,
-                      const std::string &train_csv,
-                      const std::string &test_csv,
+         size_t Batch = 32, size_t EvalN = 1000, size_t TestBatch = 1000>
+void RunCSVClassifier(const std::string& name,
+                      const std::string& train_csv,
+                      const std::string& test_csv,
                       float lr = 0.001f,
                       int epochs = 5,
                       float norm = 255.f,
@@ -397,15 +508,15 @@ void RunCSVClassifier(const std::string &name,
     constexpr size_t Features = Cols - 1;
 
     std::cout << "\n=== " << name << " ("
-            << Features << " -> 128 -> 64 -> " << NumClasses << ", Softmax+CEL) ===\n";
+              << Features << " -> 128 -> 64 -> " << NumClasses << ", Softmax+CEL) ===\n";
 
     auto train_data = LoadCSV<TrainRows, Cols>(train_csv, skip_hdr);
-    auto test_data = LoadCSV<TestRows, Cols>(test_csv, skip_hdr);
+    auto test_data  = LoadCSV<TestRows,  Cols>(test_csv,  skip_hdr);
 
     typename NetworkBuilder<
         Input<Features>,
         Dense<128, ReLU>,
-        Dense<64, ReLU>,
+        Dense<64,  ReLU>,
         Dense<NumClasses>,
         SoftmaxLayer<0>
     >::type net;
@@ -413,69 +524,50 @@ void RunCSVClassifier(const std::string &name,
 
     std::mt19937 rng{42};
 
-    auto prep = [norm](const auto &batch, Tensor<Batch, Features> &X, Tensor<Batch, NumClasses> &Y) {
+    auto prep = [norm](const auto& batch, Tensor<Batch,Features>& X, Tensor<Batch,NumClasses>& Y) {
         for (size_t b = 0; b < Batch; ++b) {
-            const auto label = static_cast<size_t>(batch(b, 0));
-            for (size_t p = 0; p < Features; ++p) X(b, p) = batch(b, p + 1) / norm;
-            for (size_t c = 0; c < NumClasses; ++c) Y(b, c) = (c == label) ? 1.f : 0.f;
+            const auto label = static_cast<size_t>(batch(b,0));
+            for (size_t p = 0; p < Features; ++p) X(b,p) = batch(b, p+1) / norm;
+            for (size_t c = 0; c < NumClasses; ++c) Y(b,c) = (c == label) ? 1.f : 0.f;
         }
     };
 
-    auto sample_acc = [&](const auto &dataset) -> float {
+    auto sample_acc = [&](const auto& dataset) {
         auto eval = RandomBatch<EvalN>(dataset, rng);
-        Tensor<EvalN, Features> X_eval;
-        Tensor<EvalN, NumClasses> Y_eval;
+        Tensor<EvalN,Features> Xe; Tensor<EvalN,NumClasses> Ye;
         for (size_t b = 0; b < EvalN; ++b) {
-            const auto label = static_cast<size_t>(eval(b, 0));
-            for (size_t p = 0; p < Features; ++p) X_eval(b, p) = eval(b, p + 1) / norm;
-            for (size_t c = 0; c < NumClasses; ++c) Y_eval(b, c) = (c == label) ? 1.f : 0.f;
+            const auto label = static_cast<size_t>(eval(b,0));
+            for (size_t p = 0; p < Features; ++p) Xe(b,p) = eval(b, p+1) / norm;
+            for (size_t c = 0; c < NumClasses; ++c) Ye(b,c) = (c == label) ? 1.f : 0.f;
         }
-        const auto A = net.template BatchedForwardAll<EvalN>(X_eval);
-        const auto &pred = A.template get<4>();
-        return BatchAccuracy(pred, Y_eval);
+        return BatchAccuracy(net.template BatchedForwardAll<EvalN>(Xe).template get<4>(), Ye);
     };
 
     for (int epoch = 0; epoch < epochs; ++epoch) {
-        const float acc_before = sample_acc(train_data);
-        const float avg_loss = RunEpoch<CEL, Batch>(net, train_data, rng, lr, prep);
-        const float acc_after = sample_acc(train_data);
-        std::cout << "  after epoch " << std::setw(2) << epoch
-                << "  CEL=" << std::fixed << std::setprecision(4) << avg_loss
-                << "  train: " << std::setprecision(1) << acc_before << "% -> " << acc_after << "%\n";
+        const float bef  = sample_acc(train_data);
+        const float loss = RunEpoch<CEL, Batch>(net, train_data, rng, lr, prep);
+        const float aft  = sample_acc(train_data);
+        std::cout << "  epoch " << std::setw(2) << epoch
+                  << "  CEL=" << std::fixed << std::setprecision(4) << loss
+                  << "  train: " << std::setprecision(1) << bef << "% -> " << aft << "%\n";
     }
 
-    // test accuracy via BatchAccuracy (ReduceSum<1>(pred ⊙ Y) vs ReduceMax<1>(pred))
     auto raw = RandomBatch<TestBatch>(test_data, rng);
-    Tensor<TestBatch, Features> X_test;
-    Tensor<TestBatch, NumClasses> Y_test;
+    Tensor<TestBatch,Features> Xt; Tensor<TestBatch,NumClasses> Yt;
     for (size_t b = 0; b < TestBatch; ++b) {
-        const auto label = static_cast<size_t>(raw(b, 0));
-        for (size_t p = 0; p < Features; ++p) X_test(b, p) = raw(b, p + 1) / norm;
-        for (size_t c = 0; c < NumClasses; ++c) Y_test(b, c) = (c == label) ? 1.f : 0.f;
+        const auto label = static_cast<size_t>(raw(b,0));
+        for (size_t p = 0; p < Features; ++p) Xt(b,p) = raw(b, p+1) / norm;
+        for (size_t c = 0; c < NumClasses; ++c) Yt(b,c) = (c == label) ? 1.f : 0.f;
     }
-    const auto A_test = net.template BatchedForwardAll<TestBatch>(X_test);
-    const auto &pred_batch = A_test.template get<4>();
     std::cout << "\n  test accuracy (" << TestBatch << " held-out): "
-            << std::fixed << std::setprecision(1) << BatchAccuracy(pred_batch, Y_test) << "%\n";
+              << std::fixed << std::setprecision(1)
+              << BatchAccuracy(net.template BatchedForwardAll<TestBatch>(Xt).template get<4>(), Yt) << "%\n";
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+
 int main() {
-    // runXOR();
-    // runParity();
-    // runXORFullBatch();
-    // runCombineNetworks();
-    // runRankNineAutoencoder();
-    // runAttentionAutoencoder();
-    // ── MNIST-family: all 785-col CSVs, col 0 = label, cols 1-784 = pixels 0-255 ──────────────
-
-
-    RunCSVClassifier<60000, 10000, 785, 10>("MNIST", "mnist_train.csv", "mnist_test.csv", 0.0001f);
-    RunCSVClassifier<60000, 10000, 785, 10>("Fashion-MNIST", "fashion_mnist_train.csv", "fashion_mnist_test.csv",
-                                            0.0001f);
-    runMNISTAttention();
-
-    // RunCSVClassifier<60000,  10000,  785, 10>("KMNIST",        "kmnist_train.csv",        "kmnist_test.csv",        0.0001f); // Kuzushiji (Japanese cursive), ~93%
-    // RunCSVClassifier<27455,   7172,  785, 24>("Sign MNIST",    "sign_mnist_train.csv",    "sign_mnist_test.csv",    0.0001f); // ASL A-Z (no J/Z), ~90%
-    // RunCSVClassifier<112800, 18800,  785, 47>("EMNIST",        "emnist_train.csv",        "emnist_test.csv",        0.0001f); // letters+digits, 47 classes, ~85%
+    // runMNISTAttnViz();
+    runBracketsAttnViz();
     return 0;
 }

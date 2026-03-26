@@ -17,11 +17,6 @@ namespace TTTN {
     // ConcreteBlock (hidden) concept
     // any block in a TTN must define InputTensor and OutputTensor type aliases (must satisfy IsTensor),
     // and implement Forward/Backward/Update/ZeroGrad/Save/Load with matching signatures
-    // @doc: concept ConcreteBlock<T>
-    /**
-     * Requires `InputTensor`, `OutputTensor` (both `IsTensor`), `Forward`, `Backward`, and `all_params()` (const + non-const).
-     * `Update`, `ZeroGrad`, `Save`, `Load` are **not** in the concept — TTN derives them from `all_params()` via the bulk helpers in `Params.hpp`. Blocks only declare what they own.
-     */
     template<typename T>
     concept ConcreteBlock =
             requires { typename T::InputTensor; } &&
@@ -100,6 +95,11 @@ namespace TTTN {
     //
     // =========================================================================
 
+    // @doc: concept ConcreteBlock<T>
+    /**
+     * Requires `InputTensor`, `OutputTensor` (both `IsTensor`), `Forward`, `Backward`, and `all_params()` (const + non-const).
+     * `Update`, `ZeroGrad`, `Save`, `Load` are **not** in the concept — TTN derives them from `all_params()` via the bulk helpers in `Params.hpp`. Blocks only declare what they own.
+     */
     template<ConcreteBlock... Blocks>
     class ChainBlock {
         static_assert(sizeof...(Blocks) >= 1, "ChainBlock needs at least one block");

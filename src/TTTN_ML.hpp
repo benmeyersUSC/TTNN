@@ -61,15 +61,20 @@ namespace TTTN {
     //   2. reduce=sum, apply=e/s        → normalize
     template<size_t Axis, size_t... Dims>
     Tensor<Dims...> Softmax(const Tensor<Dims...> &x) {
-        return BroadcastReduce<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp,Sub>, Max>(x));
+        return BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp,Sub>, Max>(x));
     }
 
-    // VJP of softmax: δx_i = a_i * (δy_i − dot(δy, a))  per pool along Axis.
-    template<size_t Axis, size_t... Dims>
-    Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a) {
-        return a * BroadcastApply<Axis, Sub>(grad, ReduceApply<Axis, Add>(a * grad));
-    }
+template<size_t Axis, size_t... Dims>
+Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a) {
+    auto dot = ReduceApply<Axis, Add>(a * grad);
 
+    auto g = grad;
+
+    BroadcastApplyInplace<Axis, Sub>(g, dot);  // no move needed
+    g *= a;
+
+    return g;
+}
 
     // SOFTMAX BLOCK
     // Shape-preserving, parameter-free block: applies Softmax<Axis> forward and
@@ -145,6 +150,12 @@ namespace TTTN {
 
     // MSE: mean squared error, any-rank tensor.
     struct MSE {
+        // @doc: template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)
+        /** ***Grad*** — [ `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp) - */
+        // @doc: template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)
+        /** ***Grad*** — [ `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp) - */
+        // @doc: template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)
+        /** ***Grad*** — [ `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp) - */
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             static constexpr float Inv = 1.f / Tensor<Dims...>::Size;
