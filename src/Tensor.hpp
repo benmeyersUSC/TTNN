@@ -4,7 +4,6 @@
 #include "TensorStorage.hpp"
 #include "TensorPrereqs.hpp"
 
-
 namespace TTTN {
     template<size_t... Dims>
     class Tensor {
@@ -15,6 +14,8 @@ namespace TTTN {
         static constexpr size_t GetRank() { return Rank; }
         // @doc: static constexpr size_t Size
         /** Product of all dimensions = total distinct values in `Tensor` */
+        // @doc: struct TensorDimsProduct<size_t... Ds>
+        /** Template-specialization-based recursion to collapse variadic template `<size_t...Ds>` into single `size_t`, stored statically as `TensorDimsProduct<size_t...Ds>::value` */
         static constexpr size_t Size = TensorDimsProduct<Dims...>::value;
         static constexpr size_t GetSize() { return Size; }
         // @doc: static constexpr std::array<size_t, Rank> Shape
@@ -27,19 +28,26 @@ namespace TTTN {
          * The `Tensor::Strides` array is vital to mapping from indices into `Tensor::Shape` to flat indices for the backing array
          * In general, for a `Tensor` with `Tensor::Shape = [A, B, ..., N]`, its `Tensor::Strides = [A * B * ... * N, B * ... * N, ..., 1]`
          */
+        // @doc: struct ComputeStrides<size_t... Ds>
+        /**
+         * Template-specialization-based recursion to compute `Tensor::Strides` array
+         * The `Tensor::Strides` array is vital to mapping from indices into `Tensor::Shape` to flat indices for the backing array
+         * In general, for a `Tensor` with `Tensor::Shape = [A, B, ..., N]`, its `Tensor::Strides = [A * B * ... * N, B * ... * N, ..., 1]`
+         * Specialize for `<>` and `<size_t D>`
+         * `value = ` `[]` and `[1]`, respectively
+         * Specialize for `<size_t First, size_t Second, size_t... Rest>`
+         * recursively compute `tail = ComputeStrides<Second, Rest...>::value`
+         * `value[0] = TensorDimsProduct<Second, Rest...>::value`
+         * `value[i] = tail[i + 1]`
+         */
         static constexpr std::array<size_t, Rank> Strides = ComputeStrides<Dims...>::value;
         static constexpr std::array<size_t, Rank> GetStrides() { return Strides; }
 
+        // raw conversion, no mapping
         // @doc: float flat(size_t idx) const
         /** Returns `const float&` reference to item at `idx` in underlying array */
         // @doc: float& flat(size_t idx)
         /** Returns `float&` reference to item at `idx` in underlying array */
-        // @doc: static constexpr std::array<size_t, Rank> FlatToMulti(size_t flat)
-        /**
-         * Inverse of `MultiToFlat`; map a flat index `[0, Size)` to its `Rank`-term index
-         * Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (= `[0, ..., Rank]`) and unpacks into an array: `[(flat / Strides[0]) % Shape[0], ..., (flat / Strides[Rank]) % Shape[Rank]]`
-         */
-        // raw conversion, no mapping
         static constexpr std::array<size_t, Rank> flat_to_multi(const size_t flat) {
             std::array<size_t, Rank> multi{};
             size_t remainder = flat;
@@ -50,11 +58,21 @@ namespace TTTN {
             return multi;
         }
 
-        // public accessor, applies the current axis_map_
+        // @doc: static constexpr std::array<size_t, Rank> FlatToMulti(size_t flat)
+        /**
+         * Inverse of `MultiToFlat`; map a flat index `[0, Size)` to its `Rank`-term index
+         * Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (= `[0, ..., Rank]`) and unpacks into an array: `[(flat / Strides[0]) % Shape[0], ..., (flat / Strides[Rank]) % Shape[Rank]]`
+         */
         constexpr std::array<size_t, Rank> FlatToMulti(const size_t flat) const {
-            return apply_index_map(flat_to_multi(flat), inverse_axis_map_);
+            return flat_to_multi(flat);
         }
 
+
+        static constexpr size_t multi_to_flat(const std::array<size_t, Rank> &multi) {
+            return [&]<size_t... Is>(std::index_sequence<Is...>) {
+                return (... + (multi[Is] * Strides[Is]));
+            }(std::make_index_sequence<Rank>{});
+        }
 
         // @doc: static constexpr size_t MultiToFlat(const std::array<size_t, Rank>& multi)
         /**
@@ -62,90 +80,60 @@ namespace TTTN {
          * Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (= `[0, ..., Rank]`) and `+`-folds terms `multi[0] * Strides[0] + ... + multi[Rank] * Strides[Rank]`
          * Dot product of given `multi` index and `Strides`
          */
-        static constexpr size_t multi_to_flat(const std::array<size_t, Rank> &multi) {
-            return [&]<size_t... Is>(std::index_sequence<Is...>) {
-                return (... + (multi[Is] * Strides[Is]));
-            }(std::make_index_sequence<Rank>{});
-        }
-
-        constexpr size_t MultiToFlat(const std::array<size_t, Rank> &multi) {
-            return multi_to_flat(apply_index_map(multi, axis_map_));
+        constexpr size_t MultiToFlat(const std::array<size_t, Rank> &multi) const {
+            return multi_to_flat(multi);
         }
 
     private:
         TensorStorage<Size> storage_;
 
-        std::array<size_t, Rank> axis_map_{};
-        std::array<size_t, Rank> inverse_axis_map_{};
-
-        void init_axis_map() {
-            for (size_t i = 0; i < Rank; ++i) axis_map_[i] = i;
-        }
-
-        template<size_t Rank>
-        static std::array<size_t, Rank> apply_index_map(
-            const std::array<size_t, Rank> &idx,
-            const std::array<size_t, Rank> &map) {
-            std::array<size_t, Rank> out{};
-            for (size_t i = 0; i < Rank; ++i)
-                out[i] = idx[map[i]];
-            return out;
-        }
-
-        static constexpr std::array<size_t, Rank> make_inverse_map(const std::array<size_t, Rank> &map) {
-            std::array<size_t, Rank> inv{};
-            for (size_t i = 0; i < Rank; ++i) inv[map[i]] = i;
-            return inv;
-        }
-
     public:
-        Tensor() {
-            init_axis_map();
-        }
+        // @doc: Tensor()
+        /**
+         * Default constructor
+         * Initialize `float[Size]` on the heap
+         */
+        Tensor() = default;
 
-        void permute_inplace(const std::array<size_t, Rank> &perm) {
-            std::array<size_t, Rank> new_map{};
-            for (size_t i = 0; i < Rank; ++i) {
-                new_map[i] = axis_map_[perm[i]];
-            }
-            axis_map_ = new_map;
-            inverse_axis_map_ = make_inverse_map(axis_map_);
-        }
-
-        // Remap multi-indices according to current permutation
+        // @doc: float& operator()(Indices... idxs)
+        /**
+         * Variadic multi-index access, returns reference
+         * Uses compile-time-templated `MultiToFlat` for efficient access
+         */
         template<typename... Indices>
         float &operator()(Indices... idxs) {
             static_assert(sizeof...(idxs) == Rank, "Number of indices must match tensor rank");
-            const size_t idx_arr[] = {static_cast<size_t>(idxs)...};
-            size_t flat_index = 0;
-            for (size_t i = 0; i < Rank; ++i)
-                flat_index += idx_arr[axis_map_[i]] * Strides[i];
-            return storage_.ptr()[flat_index];
+            return storage_.ptr()[multi_to_flat({static_cast<size_t>(idxs)...})];
         }
 
+        // @doc: float operator()(Indices... idxs) const
+        /**
+         * Variadic multi-index access, returns copy
+         * Uses compile-time-templated `MultiToFlat` for efficient access
+         */
         template<typename... Indices>
         float operator()(Indices... idxs) const {
             static_assert(sizeof...(idxs) == Rank, "Number of indices must match tensor rank");
-            const size_t idx_arr[] = {static_cast<size_t>(idxs)...};
-            size_t flat_index = 0;
-            for (size_t i = 0; i < Rank; ++i)
-                flat_index += idx_arr[axis_map_[i]] * Strides[i];
-            return storage_.ptr()[flat_index];
+            return storage_.ptr()[multi_to_flat({static_cast<size_t>(idxs)...})];
         }
 
-        // Optional: remap array-based access too
+        // @doc: float& operator()(const std::array<size_t, Rank>& multi)
+        /**
+         * Array-based multi-index access, returns reference
+         * Uses compile-time-templated `MultiToFlat` for efficient access
+         */
         float &operator()(const std::array<size_t, Rank> &multi) {
-            std::array<size_t, Rank> mapped{};
-            for (size_t i = 0; i < Rank; ++i) mapped[i] = multi[axis_map_[i]];
-            return storage_.ptr()[MultiToFlat(mapped)];
+            return storage_.ptr()[multi_to_flat(multi)];
         }
 
+        // @doc: float operator()(const std::array<size_t, Rank>& multi) const
+        /**
+         * Array-based multi-index access, returns copy
+         * Uses compile-time-templated `MultiToFlat` for efficient access
+         */
         float operator()(const std::array<size_t, Rank> &multi) const {
-            std::array<size_t, Rank> mapped{};
-            for (size_t i = 0; i < Rank; ++i) mapped[i] = multi[axis_map_[i]];
-            return storage_.ptr()[MultiToFlat(mapped)];
+            return storage_.ptr()[multi_to_flat(multi)];
         }
-
 
         // @doc: ~Tensor() = default
         /**
@@ -184,6 +172,11 @@ namespace TTTN {
          * Default move assigment operator
          * `std::unique_ptr` to data handles this already
          */
+        // @doc: Tensor(std::initializer_list<float> init)
+        /**
+         * Initializer list constructor
+         * Fill the first `Size` elements of `std::initializer_list<float> init` to flat indices of backing array
+         */
         Tensor &operator=(Tensor &&) noexcept = default;
 
         // @doc: const float* data() const
@@ -221,38 +214,37 @@ namespace TTTN {
 
         // @doc: template<typename F> void apply(F f)
         /** Use `std::execution::par_unseq` + `std::for_each` to apply `float -> float` map `f` to `Tensor`'s underlying data in-place */
-        template<typename F>
-            requires requires(F f)
-            {
-                { f(*storage_.ptr()) } -> std::same_as<float>;
-            }
+        template<FloatUnaryOp F>
         void apply(F f) {
-            std::for_each(std::execution::par_unseq, storage_.ptr(), storage_.ptr() + Size, f);
+            std::transform(std::execution::par_unseq,
+                           storage_.ptr(), storage_.ptr() + Size, storage_.ptr(), f);
+        }
+
+        template<FloatUnaryOp F>
+        [[nodiscard]] Tensor map(F f) const {
+            Tensor result(*this);
+            result.apply(f);
+            return result;
+        }
+
+        template<FloatBinaryOp F>
+        [[nodiscard]] Tensor zip(const Tensor &other, F f) const {
+            Tensor result(*this);
+            result.zip_apply(other, f);
+            return result;
         }
 
         // @doc: template<FloatBinaryOp F> void zip_apply(const Tensor& other, F f)
         /** In-place binary transform: `self[i] = f(self[i], other[i])` for all `i`. Mutating counterpart to `zip`. Accepts any `FloatBinaryOp` including op tags: `zip_apply(b, Add{})` */
+        // @doc: template<FloatBinaryOp F> Tensor zip(const Tensor& other, F f) const
+        /** Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data by `float -> float -> float` map `f`, returning a new `Tensor` */
         template<FloatBinaryOp F>
         void zip_apply(const Tensor &other, F f) {
             std::transform(std::execution::par_unseq,
                            storage_.ptr(), storage_.ptr() + Size, other.storage_.ptr(), storage_.ptr(), f);
         }
 
-        // @doc: template<FloatUnaryOp F> Tensor map(F f) const
-        /** Use `std::execution::par_unseq` to `std::transform` `Tensor`'s underlying data by `float -> float` map `f`, returning a new `Tensor` */
-        template<FloatUnaryOp F>
-        void map(F f) {
-            std::transform(std::execution::par_unseq,
-                           storage_.ptr(), storage_.ptr() + Size, storage_.ptr(), f);
-        }
 
-        // @doc: template<FloatBinaryOp F> Tensor zip(const Tensor& other, F f) const
-        /** Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data by `float -> float -> float` map `f`, returning a new `Tensor` */
-        template<FloatBinaryOp F>
-        void zip(const Tensor &other, F f) {
-            std::transform(std::execution::par_unseq,
-                           storage_.ptr(), storage_.ptr() + Size, other.storage_.ptr(), f);
-        }
     };
 
     // @doc: struct is_tensor<T>

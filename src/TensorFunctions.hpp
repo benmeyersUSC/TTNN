@@ -2,9 +2,6 @@
 #include "TensorShapeOps.hpp"
 
 
-// THESE NEED TO BE FIXED !!!!
-// USE INPLACE VERSIONS IN TENSOR!
-
 namespace TTTN {
     struct Add {
         constexpr float operator()(float a, float b) const { return a + b; }
@@ -58,6 +55,21 @@ namespace TTTN {
         constexpr float operator()(float x) const { return 1.f - x; }
     };
 
+    // SubMean<D>: BroadcastReduce ApplyOp — a - b/D  (mean-subtract when b = sum over D elements)
+    // Use: BroadcastReduce<Axis, SubMean<D>, Add>(src) → src[i] - mean_of_slice(src, i)
+    template<size_t D>
+    struct SubMean {
+        constexpr float operator()(float a, float b) const {
+            return a - b / static_cast<float>(D);
+        }
+    };
+
+    // SqAdd: ReduceOp accumulating sum of squares. Use with ReduceApply<Axis, SqAdd>.
+    struct SqAdd {
+        constexpr float operator()(float acc, float x) const { return acc + x * x; }
+        static constexpr float identity = 0.f;
+    };
+
     // Clamp<Lo, Hi>: clamp x to [Lo, Hi]. Omit Hi for one-sided ClampMin.
     template<float Lo, float Hi = std::numeric_limits<float>::infinity()>
     struct Clamp {
@@ -73,64 +85,14 @@ namespace TTTN {
 
     // ======================== MAP ========================
 
-    // MapCopy (current map) → returns new tensor (deep copy)
-    template<FloatUnaryOp F, size_t... Dimensions>
-    static Tensor<Dimensions...> MapCopy(const Tensor<Dimensions...> &src) {
-        return src.map(F{});
-    }
-
-    // MapInplace → applies F in-place, modifies src
-    template<FloatUnaryOp F, size_t... Dimensions>
-    static void MapInplace(Tensor<Dimensions...> &src) {
-        src.apply(F{});
-    }
-
-    // MapMove → consumes src, applies F, reuses storage, returns tensor
-    template<FloatUnaryOp F, size_t... Dimensions>
-    static Tensor<Dimensions...> MapMove(Tensor<Dimensions...> &&src) {
-        src.apply(F{});
-        return std::move(src);
-    }
-
-    // ======================== ZIP ========================
-
-    // ZipCopy (current zip) → returns new tensor (deep copy)
-    template<FloatBinaryOp F, size_t... Dimensions>
-    static Tensor<Dimensions...> ZipCopy(const Tensor<Dimensions...> &a, const Tensor<Dimensions...> &b) {
-        return a.zip(b, F{});
-    }
-
-    // ZipInplace → writes into first argument, modifies it
-    template<FloatBinaryOp F, size_t... Dimensions>
-    static void ZipInplace(Tensor<Dimensions...> &dst, const Tensor<Dimensions...> &src, F f) {
-        dst.zip_apply(src, f);
-    }
-
-    // ZipMove → consumes dst, overwrites it, reuses storage
-    template<FloatBinaryOp F, size_t... Dimensions>
-    static Tensor<Dimensions...> ZipMove(Tensor<Dimensions...> &&dst, const Tensor<Dimensions...> &src, F f) {
-        dst.zip_apply(src, f);
-        return std::move(dst);
-    }
-
-
-    // ======================== MAP ========================
-
-    // MapCopy → returns new tensor (deep copy)
+    // Map → copy: returns new tensor with Op applied element-wise
     template<typename Op, size_t... Dims>
         requires FloatUnaryOp<Op> && std::default_initializable<Op>
-    Tensor<Dims...> MapCopy(const Tensor<Dims...> &src) {
+    Tensor<Dims...> Map(const Tensor<Dims...> &src) {
         return src.map(Op{});
     }
 
-    // MapInplace → applies Op in-place, modifies src
-    template<typename Op, size_t... Dims>
-        requires FloatUnaryOp<Op> && std::default_initializable<Op>
-    void MapInplace(Tensor<Dims...> &src) {
-        src.apply(Op{});
-    }
-
-    // MapMove → consumes src, applies Op, reuses storage
+    // MapMove → move: consumes src, applies Op in-place, returns it (no extra alloc)
     template<typename Op, size_t... Dims>
         requires FloatUnaryOp<Op> && std::default_initializable<Op>
     Tensor<Dims...> MapMove(Tensor<Dims...> &&src) {
@@ -140,42 +102,21 @@ namespace TTTN {
 
     // ======================== ZIP ========================
 
-    // ZipCopy → returns new tensor (deep copy)
+    // Zip → copy: returns new tensor; result[i] = Op{}(A[i], B[i])
     template<typename Op, size_t... Dims>
-        requires FloatBinaryOp<Op>
-    Tensor<Dims...> ZipCopy(const Tensor<Dims...> &A, const Tensor<Dims...> &B) {
-        return A.zip(B, Op{});
-    }
-
-    // ZipInplace → writes into first argument, modifies it
-    template<typename Op, size_t... Dims>
-        requires FloatBinaryOp<Op>
-    void ZipInplace(Tensor<Dims...> &dst, const Tensor<Dims...> &src) {
-        dst.zip_apply(src, Op{});
-    }
-
-    // ZipMove → consumes dst, overwrites it, reuses storage
-    template<typename Op, size_t... Dims>
-        requires FloatBinaryOp<Op>
-    Tensor<Dims...> ZipMove(Tensor<Dims...> &&dst, const Tensor<Dims...> &src) {
-        dst.zip_apply(src, Op{});
-        return std::move(dst);
-    }
-
-    // ======================== EXISTING TEMPLATED FUNCTIONS ========================
-
-    // Original Map → just calls copy
-    template<typename Op, size_t... Dims>
-        requires FloatUnaryOp<Op> && std::default_initializable<Op>
-    Tensor<Dims...> Map(const Tensor<Dims...> &src) {
-        return MapCopy<Op>(src);
-    }
-
-    // Original Zip → just calls copy
-    template<typename Op, size_t... Dims>
-        requires FloatBinaryOp<Op>
+        requires FloatBinaryOp<Op> && std::default_initializable<Op>
     Tensor<Dims...> Zip(const Tensor<Dims...> &A, const Tensor<Dims...> &B) {
-        return ZipCopy<Op>(A, B);
+        Tensor<Dims...> result(A);
+        result.zip_apply(B, Op{});
+        return result;
+    }
+
+    // ZipMove → move: consumes A, overwrites it with Op{}(A[i], B[i]), returns (no extra alloc)
+    template<typename Op, size_t... Dims>
+        requires FloatBinaryOp<Op> && std::default_initializable<Op>
+    Tensor<Dims...> ZipMove(Tensor<Dims...> &&A, const Tensor<Dims...> &B) {
+        A.zip_apply(B, Op{});
+        return std::move(A);
     }
 
 
@@ -185,13 +126,13 @@ namespace TTTN {
         using Dest = Tensor<Dims...>;
         using Slice = RemoveAxis<Axis, Dims...>::type;
         ParForEach(Slice::Size, [&](const size_t i) {
-            auto src_multi = Slice::FlatToMulti(i);
+            auto src_multi = Slice::flat_to_multi(i);
             std::array<size_t, Dest::Rank> dst_multi{};
             size_t src_d = 0;
             for (size_t d = 0; d < Dest::Rank; ++d) {
                 dst_multi[d] = d == Axis ? idx : src_multi[src_d++];
             }
-            const size_t flat = Dest::MultiToFlat(dst_multi);
+            const size_t flat = Dest::multi_to_flat(dst_multi);
             dst.flat(flat) = f(dst.flat(flat), src.flat(i));
         });
         for (size_t i = 0; i < Slice::Size; ++i) {
@@ -199,60 +140,39 @@ namespace TTTN {
     }
 
 
-    // -------------------
-    // 1) In-place permutation
-    // -------------------
+    // Physical permutation — rearranges data, changes the type.
+    // Permute<1,0>(Tensor<3,5>) → Tensor<5,3> with data physically transposed.
+    // result(i0, i1, ...) = src(i_{perm[0]}, i_{perm[1]}, ...)
     template<size_t... Perm, size_t... Dims>
-    void PermuteInplace(Tensor<Dims...> &t) {
-        t.permute_inplace({Perm...});
+    Tensor<SizeTemplateGet<Perm, Dims...>::value...>
+    Permute(const Tensor<Dims...> &src) {
+        static_assert(sizeof...(Perm) == sizeof...(Dims), "Permutation length must match rank");
+        using Source = Tensor<Dims...>;
+        using Result = Tensor<SizeTemplateGet<Perm, Dims...>::value...>;
+        constexpr std::array<size_t, sizeof...(Dims)> perm = {Perm...};
+        Result dst;
+        ParForEach(Result::Size, [&](size_t i) {
+            auto dst_multi = Result::flat_to_multi(i);
+            std::array<size_t, sizeof...(Dims)> src_multi{};
+            for (size_t j = 0; j < sizeof...(Dims); ++j)
+                src_multi[perm[j]] = dst_multi[j];
+            dst.flat(i) = src.flat(Source::multi_to_flat(src_multi));
+        });
+        return dst;
     }
 
+    // Transpose — reverse all axes.
+    // Transpose(Tensor<A,B,C>) → Tensor<C,B,A>
     template<size_t... Dims>
-    void TransposeInplace(Tensor<Dims...> &t) {
-        std::array<size_t, sizeof...(Dims)> perm{};
-        for (size_t i = 0; i < sizeof...(Dims); ++i) perm[i] = sizeof...(Dims) - 1 - i;
-        t.permute_inplace(perm);
-    }
-
-    // -------------------
-    // 2) Move / zero-copy permutation
-    // -------------------
-    template<size_t... Perm, size_t... Dims>
-    Tensor<Dims...> PermuteMove(Tensor<Dims...> &&src) {
-        Tensor<Dims...> dst = std::move(src); // move storage
-        dst.permute_inplace({Perm...});
-        return dst;
-    }
-
-    template<size_t... Dims>
-    Tensor<Dims...> TransposeMove(Tensor<Dims...> &&src) {
-        Tensor<Dims...> dst = std::move(src); // move storage
-        std::array<size_t, sizeof...(Dims)> perm{};
-        for (size_t i = 0; i < sizeof...(Dims); ++i) perm[i] = sizeof...(Dims) - 1 - i;
-        dst.permute_inplace(perm);
-        return dst;
-    }
-
-    // -------------------
-    // 3) Deep-copy permutation
-    // -------------------
-    template<size_t... Perm, size_t... Dims>
-    Tensor<Dims...> Permute(const Tensor<Dims...> &src) {
-        Tensor<Dims...> dst = src; // deep copy storage
-        dst.permute_inplace({Perm...});
-        return dst;
-    }
-
-    template<size_t... Dims>
-    Tensor<Dims...> Transpose(const Tensor<Dims...> &src) {
-        Tensor<Dims...> dst = src; // deep copy storage
-        std::array<size_t, sizeof...(Dims)> perm{};
-        for (size_t i = 0; i < sizeof...(Dims); ++i) perm[i] = sizeof...(Dims) - 1 - i;
-        dst.permute_inplace(perm);
-        return dst;
+    auto Transpose(const Tensor<Dims...> &src) {
+        return []<size_t... I>(const auto &s, std::index_sequence<I...>) {
+            return Permute<(sizeof...(Dims) - 1 - I)...>(s);
+        }(src, std::make_index_sequence<sizeof...(Dims)>{});
     }
 
 
+    // @doc: template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...>& src, size_t idx)
+    /** ######### */
     template<size_t Axis, size_t... Dims>
     RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...> &src, size_t idx) {
         using Source = Tensor<Dims...>;
@@ -260,13 +180,13 @@ namespace TTTN {
 
         Result dst;
         ParForEach(Result::Size, [&](const size_t i) {
-            auto dst_multi = Result::FlatToMulti(i);
+            auto dst_multi = Result::flat_to_multi(i);
             std::array<size_t, Source::Rank> src_multi{};
             size_t dst_d = 0;
             for (size_t d = 0; d < Source::Rank; ++d) {
                 src_multi[d] = d == Axis ? idx : dst_multi[dst_d++];
             }
-            dst.flat(i) = src.flat(Source::MultiToFlat(src_multi));
+            dst.flat(i) = src.flat(Source::multi_to_flat(src_multi));
         });
         return dst;
     }

@@ -1,4 +1,5 @@
 #pragma once
+#include <Accelerate/Accelerate.h>
 #include "TensorOps.hpp"
 
 namespace TTTN {
@@ -85,6 +86,36 @@ namespace TTTN {
         }();
     };
 
+    // Permutation that moves axis Src to the last position, shifting others left.
+    // e.g. MoveToLastPerm<0, 3>::value = {1, 2, 0}
+    template<size_t Src, size_t Rank>
+    struct MoveToLastPerm {
+        static constexpr auto value = [] {
+            std::array<size_t, Rank> p{};
+            size_t j = 0;
+            for (size_t i = 0; i < Rank; ++i)
+                if (i != Src) p[j++] = i;
+            p[Rank - 1] = Src;
+            return p;
+        }();
+    };
+
+    // Permutation that moves axis Src to position 0, shifting others right.
+    // e.g. MoveToFirstPerm<2, 3>::value = {2, 0, 1}
+    template<size_t Src, size_t Rank>
+    struct MoveToFirstPerm {
+        static constexpr auto value = [] {
+            std::array<size_t, Rank> p{};
+            p[0] = Src;
+            size_t j = 1;
+            for (size_t i = 0; i < Rank; ++i)
+                if (i != Src) p[j++] = i;
+            return p;
+        }();
+    };
+
+    // Type-based: PermuteFromHolder<SomeType>(t, idx_seq)
+    // SomeType must have a static constexpr .value array member
     // @doc: template<typename PermHolder, size_t... I, size_t... Dims> auto PermuteFromHolder(const Tensor<Dims...>& t, std::index_sequence<I...>)
     /**
      * Unpack a `constexpr` permutation indices array into a proper `Permute`-given `Tensor` type
@@ -94,6 +125,13 @@ namespace TTTN {
     template<typename PermHolder, size_t... I, size_t... Dims>
     auto PermuteFromHolder(const Tensor<Dims...> &t, std::index_sequence<I...>) {
         return Permute<PermHolder::value[I]...>(t);
+    }
+
+    // Value-based: PermuteFromArray<some_constexpr_array>(t, idx_seq)
+    // Uses C++20 auto NTTP for passing constexpr arrays directly
+    template<auto Perm, size_t... I, size_t... Dims>
+    auto PermuteFromArray(const Tensor<Dims...> &t, std::index_sequence<I...>) {
+        return Permute<Perm[I]...>(t);
     }
 
 
@@ -220,7 +258,7 @@ namespace TTTN {
                 std::array<size_t, Contracted::Size> a{}, b{};
             } t;
             for (size_t c = 0; c < Contracted::Size; ++c) {
-                const auto Contracted_Multi_Index = Contracted::FlatToMulti(c);
+                const auto Contracted_Multi_Index = Contracted::flat_to_multi(c);
                 size_t A_Offset = 0, B_Offset = 0;
                 for (size_t i = 0; i < N_Contracted; ++i) {
                     A_Offset += Contracted_Multi_Index[i] * Tensor<A_Dims...>::Strides[M_Mapped + A_Free_Rank + i];
@@ -279,6 +317,32 @@ namespace TTTN {
                     return map(A.flat(base_a + oa), B.flat(base_b + ob));
                 });
         });
+        return result;
+    }
+
+    // BLAS overload: BatchInnerContract<M, N>(A, B, 0, Mul{}, Add{})
+    // Dispatches to cblas_sgemm (Apple AMX) instead of the scalar transform_reduce loop.
+    // Selected by overload resolution for Mul+Add — the dominant case in training.
+    template<size_t M, size_t N, size_t... ADims, size_t... BDims>
+    auto BatchInnerContract(const Tensor<ADims...> &A,
+                            const Tensor<BDims...> &B,
+                            float /*init*/, Mul, Add) {
+        using K = BatchedContractionKernel<M, N, Tensor<ADims...>, Tensor<BDims...>>;
+        typename K::ResultType result;
+        const float *a_ptr = A.data();
+        const float *b_ptr = B.data();
+        float       *c_ptr = result.data();
+        for (size_t m = 0; m < K::Map_Size; ++m) {
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                static_cast<int>(K::A_Free_Size),
+                static_cast<int>(K::B_Free_Size),
+                static_cast<int>(K::Contracted_Size),
+                1.f,
+                a_ptr + m * K::A_Inner_Size, static_cast<int>(K::Contracted_Size),
+                b_ptr + m * K::B_Inner_Size, static_cast<int>(K::B_Free_Size),
+                0.f,
+                c_ptr + m * K::AB_Free_Size, static_cast<int>(K::B_Free_Size));
+        }
         return result;
     }
 
@@ -363,8 +427,8 @@ namespace TTTN {
         using PermA = BC_Permute<ARank, AxisList<>{}, AAxes, false>;
         using PermB = BC_Permute<BRank, AxisList<>{}, BAxes, true>;
 
-        auto permutedA = PermuteFromHolder<PermA::value>(A, std::make_index_sequence<ARank>{});
-        auto permutedB = PermuteFromHolder<PermB::value>(B, std::make_index_sequence<BRank>{});
+        auto permutedA = PermuteFromArray<PermA::value>(A, std::make_index_sequence<ARank>{});
+        auto permutedB = PermuteFromArray<PermB::value>(B, std::make_index_sequence<BRank>{});
 
         return InnerContract<N>(permutedA, permutedB, init, map, reduce);
     }
@@ -390,11 +454,11 @@ namespace TTTN {
         static_assert(
             SizeTemplateGet<I, ADims...>::value == SizeTemplateGet<J, BDims...>::value,
             "axis I of A and axis J of B must have the same size");
-        constexpr size_t RankA = sizeof...(ADims);
-        constexpr size_t RankB = sizeof...(BDims);
+        // constexpr size_t RankA = sizeof...(ADims);
+        // constexpr size_t RankB = sizeof...(BDims);
         return Contract<
-            AxisList<I>,
-            AxisList<J>,
+            AxisList<I>{},
+            AxisList<J>{},
             Mul,
             Add
         >(A, B);
@@ -406,8 +470,8 @@ namespace TTTN {
     template<size_t N>
     auto Dot(const Tensor<N> &A, const Tensor<N> &B) {
         return Contract<
-            AxisList<0>,
-            AxisList<0>,
+            AxisList<0>{},
+            AxisList<0>{},
             Mul,
             Add
         >(A, B);
@@ -418,8 +482,8 @@ namespace TTTN {
     template<size_t M, size_t K, size_t N>
     auto Matmul(const Tensor<M, K> &A, const Tensor<K, N> &B) {
         return Contract<
-            AxisList<1>, // K in A
-            AxisList<0>, // K in B
+            AxisList<1>{}, // K in A
+            AxisList<0>{}, // K in B
             Mul,
             Add
         >(A, B);
@@ -430,8 +494,8 @@ namespace TTTN {
     template<size_t... ADims, size_t... BDims>
     auto Outer(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
         return Contract<
-            AxisList<>, // nothing
-            AxisList<>,
+            AxisList<>{}, // nothing
+            AxisList<>{},
             Mul,
             Add
         >(A, B);
@@ -493,12 +557,25 @@ namespace TTTN {
         using PermA = BC_Permute<A_Rank, ABatchAxes, AContractAxes, false>;
         using PermB = BC_Permute<B_Rank, BBatchAxes, BContractAxes, true>;
 
-        auto permA = PermuteFromHolder<PermA::value>(A, std::make_index_sequence<A_Rank>{});
-        auto permB = PermuteFromHolder<PermB::value>(B, std::make_index_sequence<B_Rank>{});
+        auto permA = PermuteFromArray<PermA::value>(A, std::make_index_sequence<A_Rank>{});
+        auto permB = PermuteFromArray<PermB::value>(B, std::make_index_sequence<B_Rank>{});
 
         return BatchInnerContract<BatchSize, InnerSize>(
             permA, permB, init, map, reduce
         );
+    }
+
+    // Tag-param overload: BatchContract<ABatch, BBatch, AContract, BContract, Map, Reduce>(A, B)
+    template<AxisList ABatchAxes, AxisList BBatchAxes,
+        AxisList AContractAxes, AxisList BContractAxes,
+        typename Map, typename Reduce,
+        size_t... ADims, size_t... BDims>
+        requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> &&
+                 std::default_initializable<Map> && std::default_initializable<Reduce> &&
+                 requires { { Reduce::identity } -> std::convertible_to<float>; }
+    auto BatchContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
+        return BatchContract<ABatchAxes, BBatchAxes, AContractAxes, BContractAxes>(
+            A, B, Reduce::identity, Map{}, Reduce{});
     }
 
     // @doc: template<size_t... Dims, FloatBinaryOp M, FloatBinaryOp R> float Collapse(const Tensor<Dims...>& A, const Tensor<Dims...>& B, float init, M m, R r)

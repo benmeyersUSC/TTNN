@@ -430,4 +430,9 @@ namespace TTTN {
         // Raw tuple access for internal backward pass machinery.
         const TupleT &tuple() const { return data_; }
     };
+
+    // Extract the leading (SeqLen) dimension from Tensor<SeqLen, Rest...>
+    template<typename T> struct TensorFirstDim;
+    template<size_t D0, size_t... Rest>
+    struct TensorFirstDim<Tensor<D0, Rest...>> { static constexpr size_t value = D0; };
 };

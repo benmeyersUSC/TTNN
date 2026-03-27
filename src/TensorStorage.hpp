@@ -32,14 +32,7 @@ namespace TTTN {
         TensorStorage() = default;
 
         // @doc: struct TensorStorage<size_t S, bool Small>
-        /**
-         * Storage policy selected at compile time based on `Size`:
-         * `Small = true` (`Size <= 16`): data stored inline as `alignas(64) float data[S]{}` — zero heap allocation
-         * `Small = false` (`Size > 16`): 64-byte aligned heap allocation via `aligned_alloc`; freed with `std::free` via a custom `AlignedDeleter` on `unique_ptr`
-         * Both specializations expose `float* ptr()` / `const float* ptr() const`
-         * Copy-constructs and copy-assigns via `std::memcpy`; move is `noexcept` default
-         * Used exclusively as `TensorStorage<Size> storage_` inside `Tensor`; not intended to be used directly
-         */
+        /** ######### */
         TensorStorage(const TensorStorage &o) noexcept { std::memcpy(data, o.data, S * sizeof(float)); }
 
         TensorStorage &operator=(const TensorStorage &o) noexcept {

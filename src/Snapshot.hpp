@@ -43,6 +43,8 @@ namespace TTTN {
 
     // snap_add — helper called inside block peek() implementations.
     // Deduces shape from the Tensor type, copies flat data.
+    // @doc: template<size_t... Dims> void snap_add(SnapshotMap& out, const std::string& key, const Tensor<Dims...>& t)
+    /** ######### */
     template<size_t... Dims>
     void snap_add(SnapshotMap& out, const std::string& key, const Tensor<Dims...>& t) {
         SnapshotEntry entry;

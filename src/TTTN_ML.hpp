@@ -50,9 +50,8 @@ namespace TTTN {
         static std::mt19937 rng{std::random_device{}()};
         const float limit = std::sqrt(6.f / static_cast<float>(fan_in + fan_out));
         std::uniform_real_distribution<float> dist{-limit, limit};
-        W.apply([&](float &x) {
-            x = dist(rng);
-        });
+        for (size_t i = 0; i < Tensor<Dims...>::Size; ++i)
+            W.flat(i) = dist(rng);
     }
 
     // SOFTMAX
@@ -151,11 +150,7 @@ Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> 
     // MSE: mean squared error, any-rank tensor.
     struct MSE {
         // @doc: template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)
-        /** ***Grad*** — [ `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp) - */
-        // @doc: template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)
-        /** ***Grad*** — [ `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp) - */
-        // @doc: template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)
-        /** ***Grad*** — [ `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp) - */
+        /** ######### */
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             static constexpr float Inv = 1.f / Tensor<Dims...>::Size;

@@ -147,6 +147,8 @@ namespace TTTN {
             }(std::make_index_sequence<N>{});
         }
 
+        // @doc: OutputTensor Forward(const InputTensor& x) const
+        /** ######### */
         OutputTensor Forward(const InputTensor &x) const {
             std::get<0>(acts_) = x;
             forward_impl();

@@ -188,16 +188,51 @@ higher-level code does not need to change because the `Tensor` API stays the sam
 
 ## Table of Contents
 
-1. [Tensor.hpp: The Foundational Object](#tensorhpp--the-foundational-object)
-2. [TensorOps.hpp: Op Tags and Element-wise Primitives](#tensoropshpp--op-tags-and-element-wise-primitives)
-3. [TensorContract.hpp: Contraction](#tensorcontracthpp--contraction)
-4. [TensorReduce.hpp: Reduction and Broadcast](#tensorreducehpp--reduction-and-broadcast)
-5. [TTTN_ML.hpp: ML Primitives](#tttn_mlhpp--ml-primitives)
-6. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
-7. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
-8. [NetworkUtil.hpp: Concepts, Types, and Utilities](#networkutilhpp--concepts-types-and-utilities)
-9. [TrainableTensorNetwork.hpp: The Network](#trainabletensornetworkhpp--the-network)
-10. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
+1. [TensorPrereqs.hpp: Compile-Time Fundamentals](#tensorprereqshpp--compile-time-fundamentals)
+2. [TensorStorage.hpp: Storage Policy](#tensorstoragehpp--storage-policy)
+3. [Tensor.hpp: The Foundational Object](#tensorhpp--the-foundational-object)
+4. [TensorShapeOps.hpp: Tensor Type Algebra](#tensorshapeopshpp--tensor-type-algebra)
+5. [TensorOps.hpp: Op Tags and Element-wise Primitives](#tensoropshpp--op-tags-and-element-wise-primitives)
+6. [TensorFunctions.hpp: Functional Helpers](#tensorfunctionshpp--functional-helpers)
+7. [TensorContract.hpp: Contraction](#tensorcontracthpp--contraction)
+8. [TensorReduce.hpp: Reduction and Broadcast](#tensorreducehpp--reduction-and-broadcast)
+9. [TensorUtil.hpp: Tensor Layer Umbrella](#tensorutilhpp--tensor-layer-umbrella)
+10. [TTTN_ML.hpp: ML Primitives](#tttn_mlhpp--ml-primitives)
+11. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
+12. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
+13. [ChainBlock.hpp: Sequential Block Composition](#chainblockhpp--sequential-block-composition)
+14. [NetworkUtil.hpp: Concepts, Types, and Utilities](#networkutilhpp--concepts-types-and-utilities)
+15. [Params.hpp: Parameter Storage and Optimizer](#paramshpp--parameter-storage-and-optimizer)
+16. [TrainableTensorNetwork.hpp: The Network](#trainabletensornetworkhpp--the-network)
+17. [Snapshot.hpp: Activation Snapshots](#snapshothpp--activation-snapshots)
+18. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
+
+---
+
+## [TensorPrereqs.hpp](src/TensorPrereqs.hpp): Compile-Time Fundamentals
+
+Concepts, compile-time dimension arithmetic, stride computation, and the parallel loop helper. Everything `Tensor.hpp` needs before it can define the `Tensor` class itself.
+
+- ***TensorDimsProduct*** — [`struct TensorDimsProduct<size_t... Ds>`](src/TensorPrereqs.hpp)
+    - #########
+
+- ***SizeTemplateGet*** — [`struct SizeTemplateGet<size_t N, size_t... Ds>`](src/TensorPrereqs.hpp)
+    - #########
+
+- ***ComputeStrides*** — [`struct ComputeStrides<size_t... Ds>`](src/TensorPrereqs.hpp)
+    - #########
+
+- ***ParForEach*** — [`template<std::invocable<size_t> F> void ParForEach(size_t n, F f)`](src/TensorPrereqs.hpp)
+    - #########
+
+---
+
+## [TensorStorage.hpp](src/TensorStorage.hpp): Storage Policy
+
+Two specializations of `TensorStorage<S, bool Small>` selected at compile time: inline `alignas(64) float[S]` for small tensors (≤ 16 elements) and 64-byte aligned heap allocation for large ones. `Tensor` owns one instance as `storage_`.
+
+- ***TensorStorage*** — [`struct TensorStorage<size_t S, bool Small>`](src/TensorStorage.hpp)
+    - #########
 
 ---
 
@@ -218,11 +253,6 @@ vector (row-major) for the type at compile-time which compose in a dot-product w
     - Used to compute `Tensor::Shape`, used in [`struct ComputeStrides<size_t... Ds>`](src/Tensor.hpp) to compute
       `Tensor::Strides`
 
-- ***SizeTemplateGet*** — [`struct SizeTemplateGet<size_t N, size_t... Ds>`](src/Tensor.hpp)
-    - Template-specialization-based recursion grab `N`-th `size_t` from `<size_t...Ds>`
-    - Uses functional-style aggregation and pattern-matching to decrement `N` and peel off
-      `size_t`s from variadic array until reaching basecase where `N = 0`
-    - Used for clean, compile-time syntax in [TensorOps.hpp](src/TensorOps.hpp)
 
 - ***ComputeStrides*** — [`struct ComputeStrides<size_t... Ds>`](src/Tensor.hpp)
     - Template-specialization-based recursion to compute `Tensor::Strides` array
@@ -240,14 +270,6 @@ vector (row-major) for the type at compile-time which compose in a dot-product w
 ---
 
 ### Storage Policy
-
-- ***TensorStorage*** — [`struct TensorStorage<size_t S, bool Small>`](src/Tensor.hpp)
-    - Storage policy selected at compile time based on `Size`:
-        - `Small = true` (`Size <= 16`): data stored inline as `alignas(64) float data[S]{}` — zero heap allocation
-        - `Small = false` (`Size > 16`): 64-byte aligned heap allocation via `aligned_alloc`; freed with `std::free` via a custom `AlignedDeleter` on `unique_ptr`
-    - Both specializations expose `float* ptr()` / `const float* ptr() const`
-    - Copy-constructs and copy-assigns via `std::memcpy`; move is `noexcept` default
-    - Used exclusively as `TensorStorage<Size> storage_` inside `Tensor`; not intended to be used directly
 
 ---
 
@@ -332,15 +354,7 @@ The primary data structure. `Dims...` encodes the full shape at compile time, in
 - ***flat*** — [`float flat(size_t idx) const`](src/Tensor.hpp)
     - Returns `const float&` reference to item at `idx` in underlying array
 
-- ***operator float*** — [`operator float() const`](src/Tensor.hpp)
-    - Implicit scalar conversion — only valid for `Tensor<>` (rank-0, `Rank == 0`). Allows
-      `ΣΠ<N>(A, B)` and `InnerContract<N>(...)` results to be used directly as `float` without calling `.flat(0)`.
-
 **Functional transforms:**
-
-- ***map*** — [`template<FloatUnaryOp F> Tensor map(F f) const`](src/Tensor.hpp)
-    - Use `std::execution::par_unseq` to `std::transform` `Tensor`'s underlying data by `float -> float` map
-      `f`, returning a new `Tensor`
 
 - ***zip*** — [`template<FloatBinaryOp F> Tensor zip(const Tensor& other, F f) const`](src/Tensor.hpp)
     - Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data by `float -> float -> float`
@@ -405,41 +419,6 @@ The primary data structure. `Dims...` encodes the full shape at compile time, in
 Shape-only metaprogramming. No data, no runtime — purely compile-time type-level operations on
 `Tensor` dimension packs. Available to any code that includes `Tensor.hpp`.
 
-- ***TensorConcat*** — [`struct TensorConcat<typename T1, typename T2>`](src/Tensor.hpp)
-    - Concatenate the dimension packs of two `Tensor` types
-    - `TensorConcat<Tensor<A,B>, Tensor<C>>::type == Tensor<A,B,C>`
-
-- ***ArrayToTensor*** — [`struct ArrayToTensor<typename KeptIdxs, typename Iota>`](src/Tensor.hpp)
-    - Convert a compile-time `std::array<size_t, N>` (held in `KeptIdxs::value`) into a `Tensor` type
-    - `type = Tensor<arr[Iota]...>` where `Iota` is an `index_sequence` over `[0, N)`
-
-- ***KeptDimsHolder*** — [`struct KeptDimsHolder<size_t Skip, size_t... Dims>`](src/Tensor.hpp)
-    - Compute `Dims...` with the axis at position `Skip` removed
-    - `value` holds the resulting `std::array<size_t, sizeof...(Dims) - 1>`
-
-- ***RemoveAxis*** — [`struct RemoveAxis<size_t Skip, size_t... Dims>`](src/Tensor.hpp)
-    - `Tensor<Dims...>` with axis `Skip` dropped
-    - `RemoveAxis<1, A, B, C>::type == Tensor<A, C>`
-
-- ***InsertAxisHolder*** — [`struct InsertAxisHolder<size_t Axis, size_t N, size_t... Dims>`](src/Tensor.hpp)
-    - Compute `Dims...` with dimension `N` inserted at position `Axis`
-    - `value` holds the resulting `std::array<size_t, sizeof...(Dims) + 1>`
-
-- ***InsertAxis*** — [`struct InsertAxis<size_t Axis, size_t N, size_t... Dims>`](src/Tensor.hpp)
-    - `Tensor<Dims...>` with dimension `N` inserted at position `Axis`
-    - `InsertAxis<1, 4, A, C>::type == Tensor<A, 4, C>`
-
-- ***SliceDimsHolder*** — [`struct SliceDimsHolder<size_t Start, size_t Len, size_t... Dims>`](src/Tensor.hpp)
-    - Extract `Len` contiguous dimensions starting at `Start` from `Dims...`
-    - `value` holds the resulting `std::array<size_t, Len>`
-
-- ***TensorSlice*** — [`struct TensorSlice<size_t Start, size_t Len, size_t... Dims>`](src/Tensor.hpp)
-    - `Tensor` type formed from dimensions `[Start, Start+Len)` of `Tensor<Dims...>`
-    - `TensorSlice<1, 2, A, B, C, D>::type == Tensor<B, C>`
-
-- ***PermutedTensorType*** — [`struct PermutedTensorType<typename T, size_t... Perm>`](src/Tensor.hpp)
-    - `Tensor` type with dimensions reordered according to `Perm`
-    - `PermutedTensorType<Tensor<4,5,3>, 2,0,1>::type == Tensor<3,4,5>`
 
 ### Tensor Demonstration
 
@@ -468,9 +447,27 @@ Tensor<3> vec = {1.0f, 2.0f, 3.0f};
 // functional transforms (all parallel under the hood)
 auto tripled = vec.map([](float x){ return 3.0f * x; });
 auto summed  = vec.zip(tripled, [](float a, float b){ return a + b; });
-vec.apply([](float& x){ x *= -1.0f; });            // in-place
+vec.apply([](float x){ return -x; });              // in-place
 
 ```
+
+---
+
+## [TensorShapeOps.hpp](src/TensorShapeOps.hpp): Tensor Type Algebra
+
+Shape-only metaprogramming — no data, no runtime. Purely compile-time type-level operations on `Tensor` dimension packs: concatenation, axis removal/insertion, slicing, and permutation type computation.
+
+- ***TensorConcat*** — [`struct TensorConcat<typename T1, typename T2>`](src/TensorShapeOps.hpp)
+    - #########
+
+- ***ArrayToTensor*** — [`struct ArrayToTensor<typename KeptIdxs, typename Iota>`](src/TensorShapeOps.hpp)
+    - #########
+
+- ***RemoveAxis*** — [`struct RemoveAxis<size_t Skip, size_t... Dims>`](src/TensorShapeOps.hpp)
+    - #########
+
+- ***PermutedTensorType*** — [`struct PermutedTensorType<typename T, size_t... Perm>`](src/TensorShapeOps.hpp)
+    - #########
 
 ---
 
@@ -517,19 +514,6 @@ Default-constructible callable structs satisfying `FloatBinaryOp` or
 
 ---
 
-### Templated Functional
-
-- ***Map*** — [
-  `template<typename Op, size_t... Dims> Tensor<Dims...> Map(const Tensor<Dims...>& src)`](src/TensorOps.hpp)
-    - Apply unary tag `Op` element-wise. Equivalent to `src.map(Op{})` but named and passable as a type.
-    - `Map<Log>(t)`, `Map<Exp>(t)`, `Map<Neg>(t)`, `Map<Sq>(t)`, `Map<Abs>(t)`
-
-- ***Zip*** — [
-  `template<typename Op, size_t... Dims> Tensor<Dims...> Zip(const Tensor<Dims...> &A, const Tensor<Dims...> &B)`](src/TensorOps.hpp)
-    - Apply binary tag `Op` element-wise. Equivalent to `A.zip(B, Op{})` but named and passable as a type.
-
----
-
 ### Arithmetic Operators
 
 - ***operator+*** — [
@@ -539,10 +523,6 @@ Default-constructible callable structs satisfying `FloatBinaryOp` or
 - ***operator-*** — [
   `template<size_t... Dims> Tensor<Dims...> operator-(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
     - Element-wise subtract, uses parallel functional `zip`
-
-- ***operator+=*** — [
-  `template<size_t... Dims> Tensor<Dims...>& operator+=(Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
-    - Element-wise add-to, uses parallel functional `zip_apply`
 
 - **operator*** — [
   `template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, float s)`](src/TensorOps.hpp)
@@ -575,25 +555,6 @@ A += B;                                            // in-place accumulate
 
 ### Permutation
 
-- ***Permute*** — [
-  `template<size_t... Perm, size_t... Dims> auto Permute(const Tensor<Dims...>& src)`](src/TensorOps.hpp)
-    - Parallelized arbitrary permutation of `Tensor`'s indices
-    - Returns `PermutedTensorType`
-    - Algorithm:
-        - `using Source = Tensor<Dims...>`
-        - `using Result = PermutedTensorType<Source, Perm>::type`
-        - `std::array<size_t, Rank> perm_arr = {Perm...}`
-        - `Result dst;`
-        - For each (parallelized) individual index in `Result::Size`:
-            - `auto dst_idx = Result::FlatToMulti(i)`
-                - get `Result` multi-index
-            - `std::array<size_t, Rank> src_multi = [perm_arr[Rank]...]`
-                - get `Source` multi-index
-            - `size_t src_index = Source::MultiToFlat(src_multi)`
-                - get `Source` flat index
-            - dst.flat(i) = src.flat(src_index)
-                - Assign `Source` value at that index to `Result`
-
 - ***MoveToLastPerm*** — [`struct MoveToLastPerm<size_t Src, size_t Rank>`](src/TensorContract.hpp)
     - Compile-time helper to rearrange `Tensor`'s shape such that `Src` is at index
       `[Rank - 1]` and all others are kept in order
@@ -608,12 +569,6 @@ A += B;                                            // in-place accumulate
     - `PermHolder` is an array of permutation indices, typically the result of `MoveToLastPerm` or `MoveToFirstPerm`
     - Call with `PermHolder` as template arg, `Tensor<Dims...>` as first arg,
       `std::make_index_sequence<sizeof...(Dims)>{}` as second arg
-
-- ***Transpose*** — [`template<size_t... Dims> auto Transpose(const Tensor<Dims...>& t)`](src/TensorOps.hpp)
-    - Reverse all dimensions of a `Tensor<Dims...>`
-    - `Permute<(sizeof...(Dims) - 1 - I)...>(s)`, for `I` in `Dims...`
-    - so if `Dims` are `<3, 5, 4>` (`sizeof = 3`) we will have:
-        - `Permute<`(3-1) - 0 = `2,` (3-1) - 1 = `1,` (3-1) - 2 = `0>`
 
 ```cpp
 Tensor<3, 4, 5> cube;
@@ -635,6 +590,16 @@ static_assert(std::is_same_v<decltype(Wt), Tensor<4, 3>>);
 // Permute<0, 0, 1>(cube);                         // ✗ repeated axis
 // Permute<0, 1>(cube);                            // ✗ wrong number of axes
 ```
+
+---
+
+## [TensorFunctions.hpp](src/TensorFunctions.hpp): Functional Helpers
+
+Free-function wrappers for the core tensor transforms: `Map`, `MapMove`, `Zip`, `ZipMove`, `Permute`, `Transpose`, `TensorIndex`, and `TensorIndexApply`. Also the canonical home of all op-tag structs (`Add`, `Mul`, `Max`, `Exp`, `Compose`, etc.) — these are the types you pass as template arguments to `BroadcastReduce`, `ReduceApply`, `Map`, and friends.
+
+- ***TensorIndex*** — [
+  `template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...>& src, size_t idx)`](src/TensorFunctions.hpp)
+    - #########
 
 ---
 
@@ -777,11 +742,6 @@ Axis-reduction kernel, `ReduceApply`, `Expand`, `BroadcastApply`, `BroadcastRedu
           `i` (axis contribution stripped); closed-form `i - ((i / axis_stride) % axis_dim) * axis_stride`; no table,
           `axis_stride` compile-time so division compiles to multiply-shift
 
-- ***ReduceApply*** — [
-  `template<size_t Axis, FloatBinaryOp ReduceFn, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...>& src, float init, ReduceFn rfn)`](src/TensorReduce.hpp)
-    - Generalized axis reduction: collapses `Axis` by folding elements with `rfn(acc, val)` starting from `init`
-    - **Tag-param overload**: `ReduceApply<Axis, Op>(src)` — `Op::identity` used as init; requires monoid `Op`
-    - `ReduceApply<Axis, Add>(src)` == sum; `ReduceApply<Axis, Max>(src)` == max
 
 - ***Expand*** — [
   `template<size_t Axis, size_t N, size_t... Dims> InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...>& src)`](src/TensorReduce.hpp)
@@ -815,11 +775,6 @@ auto row_max = ReduceApply<1, Max>(logits);         // max per sample → Tensor
 static_assert(std::is_same_v<decltype(col_sum), Tensor<10>>);
 static_assert(std::is_same_v<decltype(row_max), Tensor<32>>);
 
-// lambda form still available for ops without identity (e.g. min):
-auto row_min = ReduceApply<1>(logits,
-    std::numeric_limits<float>::infinity(),
-    [](float a, float b) { return std::min(a, b); });
-
 // ── Expand: dual of reduction ─────────────────────────────────────────────────
 auto stacked = Expand<0, 32>(bias);                 // Tensor<10> → Tensor<32, 10>
 static_assert(std::is_same_v<decltype(stacked), Tensor<32, 10>>);
@@ -833,10 +788,7 @@ static_assert(std::is_same_v<decltype(biased), Tensor<32, 10>>);
 // tag form — both ops from tags, identity automatic:
 auto normed = BroadcastReduce<1, Div, Add>(logits); // divide each element by its row sum
 
-// lambda form — for ops that need a custom apply (no identity required on apply side):
-auto centered = BroadcastReduce<1>(logits,
-    Max::identity,
-    Compose<Exp, Sub>{}, Max{});                           // exp(x - row_max) — numerically stable
+auto centered = BroadcastReduce<1, Compose<Exp, Sub>, Max>(logits); // exp(x - row_max) — numerically stable
 static_assert(std::is_same_v<decltype(centered), Tensor<32, 10>>);
 
 // ── higher-rank ───────────────────────────────────────────────────────────────
@@ -851,19 +803,7 @@ static_assert(std::is_same_v<decltype(restored),  Tensor<8, 16, 64>>);
 
 ### Indexed Slice Access
 
-- ***TensorIndex*** — [
-  `template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...>& src, size_t idx)`](src/TensorReduce.hpp)
-    - Extract the `idx`-th `RemoveAxis<Axis, Dims...>::type` sub-`Tensor` from `Tensor<Dims...> src` on the `Axis` axis
-    - Essentially fills new `Tensor` with values from `src` by looping through dimensions in `Rank`, but passing
-      `idx` for `Axis` dimension on all values
-
-- ***TensorIndexApply*** — [
-  `template<size_t Axis, FloatBinaryOp F, size_t... Dims> void TensorIndexApply(Tensor<Dims...>& dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type& src, F f)`](src/TensorReduce.hpp)
-    - Apply binary `f(existing, incoming) -> float` to each element of the `idx`-th slice of `dst` along
-      `Axis` using the corresponding element of `src`
-
-`TensorIndex` and
-`TensorIndexApply` are the gather/scatter primitives. The axis is compile-time — the compiler knows the slice shape and stride layout. Only the index into that axis is runtime.
+`TensorIndex` and `TensorIndexApply` are the gather/scatter primitives. The axis is compile-time — the compiler knows the slice shape and stride layout. Only the index into that axis is runtime.
 
 ```cpp
 Tensor<16, 64> seq;                                 // 16 tokens, 64-dim embeddings
@@ -890,12 +830,6 @@ static_assert(std::is_same_v<decltype(col3), Tensor<8, 64>>);
 
 ---
 
-### Parallel Loop Helper
-
-- ***ParForEach*** — [`template<std::invocable<size_t> F> void ParForEach(size_t n, F f)`](src/TensorOps.hpp)
-    - Helper to parallel-execute `std::for_each` on a `std::views::iota(size_t{0}, n)`, calling `f` (something
-      `std::invocable` on `size_t`) on each index
-
 ---
 
 ### End-to-End: Forward and Backward by Hand
@@ -916,7 +850,7 @@ auto a1 = z1.map([](float v) {
 auto z2 = ΣΠ<1>(W2, a1) + b2;                      // Tensor<10,128> × Tensor<128> + Tensor<10> → Tensor<10>
 
 // softmax output (two BroadcastReduce calls — stable, parallel, one line each):
-auto exps  = BroadcastReduce<0>(z2, Max::identity, Compose<Exp, Sub>{}, Max{});
+auto exps  = BroadcastReduce<0, Compose<Exp, Sub>, Max>(z2);
 auto probs = BroadcastReduce<0, Div, Add>(exps);
 
 static_assert(std::is_same_v<decltype(z1), Tensor<128>>);
@@ -948,6 +882,12 @@ b1 += dz1 * lr;   b2 += dz2 * lr;
 // W2 += Outer(a1, dz2);          // ✗ Tensor<128,10> into Tensor<10,128>: order flipped
 // W1 + W2;                       // ✗ Tensor<128,784> + Tensor<10,128>: mixing layers
 ```
+
+---
+
+## [TensorUtil.hpp](src/TensorUtil.hpp): Tensor Layer Umbrella
+
+Thin include-only header that pulls in `TensorContract.hpp` and `TensorReduce.hpp` together. This is the last of the `Tensor___` headers; `TTTN.hpp` includes `TensorUtil.hpp` transitively via `TrainableTensorNetwork.hpp`. No public declarations — nothing to sentinel here.
 
 ---
 
@@ -1041,7 +981,7 @@ A shape-preserving, parameter-free block. `all_params()` returns
 
 - ***Loss*** — [
   `template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-    -
+    - #########
 - ***Grad*** — [
   `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
     -
@@ -1093,10 +1033,10 @@ The concrete fully-connected block. `W = Tensor<OutDims..., InDims...>`, `b = Te
 - ***DenseMDBlock*** — [`DenseMDBlock()`](src/Dense.hpp)
     - Xavier-initializes `W`
 - ***Forward*** — [`OutputTensor Forward(const InputTensor& x) const`](src/Dense.hpp)
-  -
+    - #########
 - ***Backward*** — [
   `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Dense.hpp)
-    -
+    - #########
 - ***BatchedForward*** — [
   `template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp)
     -
@@ -1131,13 +1071,13 @@ Implements scaled dot-product multi-head self-attention over sequences of arbitr
 - ***MultiHeadAttentionBlock*** — [`MultiHeadAttentionBlock()`](src/Attention.hpp)
     - Xavier-initializes `WQ`, `WK`, `WV`, `WO`
 - ***Forward*** — [`OutputTensor Forward(const InputTensor& X) const`](src/Attention.hpp)
-  -
+    - #########
 - ***Backward*** — [
   `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Attention.hpp)
-    -
+    - #########
 - ***BatchedForward*** — [
   `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(...)`](src/Attention.hpp)
-    -
+    - #########
 - ***BatchedBackward*** — [
   `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(...)`](src/Attention.hpp)
     -
@@ -1158,6 +1098,15 @@ Implements scaled dot-product multi-head self-attention over sequences of arbitr
 - ***Resolve*** — [
   `template<typename InputT> using Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`](src/Attention.hpp)
     -
+
+---
+
+## [ChainBlock.hpp](src/ChainBlock.hpp): Sequential Block Composition
+
+`ChainBlock<Blocks...>` composes an arbitrary sequence of `ConcreteBlock`s into a single block satisfying the `ConcreteBlock` concept. `InputTensor` is the first block's input; `OutputTensor` is the last block's output. Forward and backward threads through the chain in order; `all_params()` aggregates all sub-block parameters into one tuple.
+
+- ***Forward*** — [`OutputTensor Forward(const InputTensor& x) const`](src/ChainBlock.hpp)
+    - #########
 
 ---
 
@@ -1269,12 +1218,6 @@ Operate over the `std::tuple<Param<T>&...>` returned by `all_params()`.
 - ***LoadAll*** — [`template<typename Tuple> void LoadAll(Tuple&& params, std::ifstream& f)`](src/Params.hpp)
     - Calls `load(f)` on every `Param` in the tuple
 
-### Compile-time Helpers
-
-- ***TupleParamCount*** — [`template<typename Tuple> constexpr size_t TupleParamCount`](src/Params.hpp)
-    - Sums `::Size` across every `Param` in an `all_params()` tuple; returns `0` for
-      `std::tuple<>` (parameter-free blocks)
-
 ---
 
 ## [TrainableTensorNetwork.hpp](src/TrainableTensorNetwork.hpp): The Network
@@ -1304,12 +1247,6 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
 
 **Single-sample interface:**
 
-- ***ForwardAll*** — [`Activations ForwardAll(const InputTensor& x) const`](src/TrainableTensorNetwork.hpp)
-    - Run forward pass through entire network, returning `Activations` tuple of `Tensor`s from each layer
-
-- ***Forward*** — [`OutputTensor Forward(const InputTensor& x) const`](src/TrainableTensorNetwork.hpp)
-    - Run forward pass through entire network, returning a `Tensor` of type: `OutputTensor`, the final activation
-
 - ***BackwardAll*** — [
   `void BackwardAll(const Activations& A, const OutputTensor& grad)`](src/TrainableTensorNetwork.hpp)
     -
@@ -1329,16 +1266,6 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
     -
 
 **Batched interface:**
-
-- ***BatchedForwardAll*** — [
-  `template<size_t Batch> BatchedActivations<Batch> BatchedForwardAll(const typename PrependBatch<Batch, InputTensor>::type& X) const`](src/TrainableTensorNetwork.hpp)
-    - Inference a batch and get a `Tensor` of type: `BatchedActivations<Batch>`
-
-- ***BatchedForward*** — [
-  `template <size_t Batch> PrependBatch<Batch, OutputTensor>::type BatchedForward(const typename PrependBatch<Batch, InputTensor>::type& X)`](src/TrainableTensorNetwork.hpp)
-    - Inference the model with a batch dimension, getting in return a `Tensor` of type:
-      `PrependBatch<Batch, OutputTensor>::type`
-
 
 - ***BatchedBackwardAll*** — [
   `template<size_t Batch> void BatchedBackwardAll(const BatchedActivations<Batch>& A, const typename PrependBatch<Batch, OutputTensor>::type& grad)`](src/TrainableTensorNetwork.hpp)
@@ -1434,3 +1361,13 @@ Lightweight terminal progress bar. Construct with a total step count and optiona
 - ***RandomBatch*** — [
   `template<size_t Batch, size_t N, size_t... RestDims> Tensor<Batch, RestDims...> RandomBatch(const Tensor<N, RestDims...>& ds, std::mt19937& rng)`](src/DataIO.hpp)
     -
+
+---
+
+## [Snapshot.hpp](src/Snapshot.hpp): Activation Snapshots
+
+Runtime-typed storage for capturing named activation tensors. `SnapshotEntry` holds a shape vector and a flat `float` copy — erasing the compile-time type so snapshots can be stored in a uniform `SnapshotMap` (`unordered_map<string, SnapshotEntry>`). Used by visualization and debugging tools.
+
+- ***snap_add*** — [
+  `template<size_t... Dims> void snap_add(SnapshotMap& out, const std::string& key, const Tensor<Dims...>& t)`](src/Snapshot.hpp)
+    - #########

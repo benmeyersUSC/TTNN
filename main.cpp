@@ -173,12 +173,12 @@ void runMNISTAttnViz() {
     auto train_data = LoadCSV<20000, 785>("mnist_train.csv", true);
 
     using RowAttn = ComposeBlocks<
-        MHAttention<4, 28>,
+        MHAttention<7, 28>,
         MapDense<1, Tensor<28>, ReLU>,
         MapDense<1, Tensor<28>>
     >;
     using ColAttn = Transposed<ComposeBlocks<
-        MHAttention<4, 28>,
+        MHAttention<7, 28>,
         MapDense<1, Tensor<28>, ReLU>,
         MapDense<1, Tensor<28>>
     >>;
@@ -192,7 +192,7 @@ void runMNISTAttnViz() {
     std::cout << "    params: " << net.TotalParamCount << "\n\n";
 
     std::mt19937 rng{42};
-    constexpr size_t Batch = 32;
+    constexpr size_t Batch = 64;
 
     auto prep = [](const auto& batch, Tensor<Batch,28,28>& X, Tensor<Batch,10>& Y) {
         for (size_t b = 0; b < Batch; ++b) {
@@ -387,108 +387,211 @@ static BracketSample extractBracketSample(const Net& net,
     return { label, pred, tokens, net.snap() };
 }
 
-void runBracketsAttnViz() {
-    std::cout << "\n=== Brackets Attention Visualizer (valid/invalid classifier) ===\n";
+// ── Numeric sequence attention visualizer ─────────────────────────────────────
+//
+// Shared transformer for 4 sequence tasks (sorted / palindrome / modular / parity).
+// Token vocab: 0-6 = integer values, 7 = blank.
+// Network: Input<32,8> → embed → MHAttn(4 heads) → FFN → Dense<2> → Softmax
+// Same CSV shape as brackets (label, t0..t31); blank=7 for all tasks.
 
-    constexpr size_t TrainN = 10000, TestN = 1000, Cols = 33;
-    auto train_data = LoadCSV<TrainN, Cols>("brackets_train.csv", true);
-    auto test_data  = LoadCSV<TestN,  Cols>("brackets_test.csv",  true);
+static const RGB NUM_COLORS[8] = {
+    { 70, 130, 200},  // 0 blue
+    { 60, 179, 113},  // 1 green
+    {210,  80,  80},  // 2 red
+    {220, 180,  50},  // 3 yellow
+    {160,  60, 200},  // 4 purple
+    { 50, 200, 200},  // 5 cyan
+    {230, 140,  50},  // 6 orange
+    { 25,  25,  25},  // 7 blank (dark)
+};
 
-    typename NetworkBuilder<
-        Input<32, 7>,
+// PPM: 4 files (one per head). Token label row/col = solid color square per value.
+static void writeSeqAttnPPM(const std::string& dir,
+                             const std::vector<BracketSample>& samples,
+                             size_t scale = 16) {
+    std::filesystem::create_directories(dir);
+    const RGB dark{20, 20, 20};
+    const size_t n       = samples.size();
+    const size_t sep     = scale / 2;
+    const size_t img_w   = scale + 32 * scale;
+    const size_t block_h = scale + 32 * scale;
+    const size_t img_h   = n * block_h + (n > 1 ? (n - 1) * sep : 0);
+
+    for (size_t head = 0; head < 4; ++head) {
+        const std::string path = dir + "/head_" + std::to_string(head) + ".ppm";
+        std::ofstream f(path, std::ios::binary);
+        f << "P6\n" << img_w << " " << img_h << "\n255\n";
+        auto put = [&](RGB c) { f.put(c.r); f.put(c.g); f.put(c.b); };
+
+        for (size_t si = 0; si < n; ++si) {
+            const auto& s    = samples[si];
+            const auto& e    = s.snaps.at("block_1.attn_weights");
+            const size_t off = head * 32 * 32;
+
+            float mx = 0.f;
+            for (size_t i = 0; i < 32 * 32; ++i) mx = std::max(mx, e.data[off + i]);
+            auto val = [&](size_t q, size_t k) {
+                return mx > 1e-6f ? e.data[off + q * 32 + k] / mx : 0.f;
+            };
+
+            // top row: dark corner + key-token color squares
+            for (size_t py = 0; py < scale; ++py) {
+                for (size_t px = 0; px < scale; ++px) put(dark);
+                for (size_t k = 0; k < 32; ++k)
+                    for (size_t px = 0; px < scale; ++px) put(NUM_COLORS[s.tokens[k]]);
+            }
+            // 32 query rows: query color + heatmap
+            for (size_t q = 0; q < 32; ++q)
+                for (size_t py = 0; py < scale; ++py) {
+                    for (size_t px = 0; px < scale; ++px) put(NUM_COLORS[s.tokens[q]]);
+                    for (size_t k = 0; k < 32; ++k)
+                        for (size_t px = 0; px < scale; ++px)
+                            put(hotRGB(val(q, k)));
+                }
+
+            if (si + 1 < n)
+                for (size_t py = 0; py < sep; ++py)
+                    for (size_t px = 0; px < img_w; ++px) put(dark);
+        }
+        std::cout << "  image -> " << path << "  (" << img_w << "x" << img_h << " px)\n";
+        std::system(("open " + path).c_str());
+    }
+}
+
+void runSeqTasksViz() {
+    std::cout << "\n=== Sequence Tasks (sorted / palindrome / modular / parity) ===\n";
+
+    // One architecture for all 4 tasks — vocab size 8 (0-6 = values, 7 = blank)
+    using SeqNet = typename NetworkBuilder<
+        Input<32, 8>,
         MapDense<1, Tensor<32>>,
-        MHAttention<4, 32>,
+        MHAttention<4,32>,
         MapDense<1, Tensor<64>, ReLU>,
         MapDense<1, Tensor<32>>,
         Dense<2>,
         SoftmaxLayer<0>
-    >::type net;
-    std::cout << "    params: " << net.TotalParamCount << "\n\n";
+    >::type;
 
-    std::mt19937 rng{42};
-    constexpr size_t Batch = 32;
-    constexpr size_t EvalN = 500;
+    constexpr size_t TrainN = 10000, TestN = 1000, Cols = 33;
+    constexpr size_t Batch  = 32;
+    constexpr size_t EvalN  = 500;
+    constexpr int    Epochs = 15;
+    constexpr float  LR     = 0.0005f;
 
     auto make_input = [](const auto& ds, size_t row) {
-        Tensor<32,7> x;
+        Tensor<32, 8> x;
         for (size_t t = 0; t < 32; ++t) {
-            const auto tok = static_cast<size_t>(ds(row, t+1));
-            for (size_t c = 0; c < 7; ++c) x(t,c) = (c == tok) ? 1.f : 0.f;
+            const auto tok = static_cast<size_t>(ds(row, t + 1));
+            for (size_t c = 0; c < 8; ++c) x(t, c) = (c == tok) ? 1.f : 0.f;
         }
         return x;
     };
 
-    auto prep = [](const auto& batch, Tensor<Batch,32,7>& X, Tensor<Batch,2>& Y) {
+    auto prep = [](const auto& batch, Tensor<Batch, 32, 8>& X, Tensor<Batch, 2>& Y) {
         for (size_t b = 0; b < Batch; ++b) {
-            const auto label = static_cast<size_t>(batch(b,0));
+            const auto label = static_cast<size_t>(batch(b, 0));
             for (size_t t = 0; t < 32; ++t) {
-                const auto tok = static_cast<size_t>(batch(b, t+1));
-                for (size_t c = 0; c < 7; ++c) X(b,t,c) = (c == tok) ? 1.f : 0.f;
+                const auto tok = static_cast<size_t>(batch(b, t + 1));
+                for (size_t c = 0; c < 8; ++c) X(b, t, c) = (c == tok) ? 1.f : 0.f;
             }
-            for (size_t c = 0; c < 2; ++c) Y(b,c) = (c == label) ? 1.f : 0.f;
+            for (size_t c = 0; c < 2; ++c) Y(b, c) = (c == label) ? 1.f : 0.f;
         }
     };
 
-    auto sample_acc = [&](const auto& dataset) {
-        auto eval = RandomBatch<EvalN>(dataset, rng);
-        Tensor<EvalN,32,7> X; Tensor<EvalN,2> Y;
-        for (size_t b = 0; b < EvalN; ++b) {
-            const auto label = static_cast<size_t>(eval(b,0));
-            for (size_t t = 0; t < 32; ++t) {
-                const auto tok = static_cast<size_t>(eval(b, t+1));
-                for (size_t c = 0; c < 7; ++c) X(b,t,c) = (c == tok) ? 1.f : 0.f;
+    struct Task { std::string name, train_csv, test_csv, viz_dir; };
+    const std::array<Task, 4> tasks = {{
+        {"Sorted",      "sorted_train.csv",  "sorted_test.csv",  "viz/sorted"},
+        {"Palindrome",  "reverse_train.csv", "reverse_test.csv", "viz/reverse"},
+        {"Modular-7",   "modular_train.csv", "modular_test.csv", "viz/modular"},
+        {"Parity",      "parity_train.csv",  "parity_test.csv",  "viz/parity"},
+    }};
+
+    for (const auto& task : tasks) {
+        std::cout << "\n--- " << task.name << " ---\n";
+        auto train_data = LoadCSV<TrainN, Cols>(task.train_csv, true);
+        auto test_data  = LoadCSV<TestN,  Cols>(task.test_csv,  true);
+
+        SeqNet net;
+        std::mt19937 rng{42};
+        std::cout << "    params: " << net.TotalParamCount << "\n\n";
+
+        auto sample_acc = [&](const auto& dataset) {
+            auto eval = RandomBatch<EvalN>(dataset, rng);
+            Tensor<EvalN, 32, 8> Xe;
+            Tensor<EvalN, 2>     Ye;
+            for (size_t b = 0; b < EvalN; ++b) {
+                const auto label = static_cast<size_t>(eval(b, 0));
+                for (size_t t = 0; t < 32; ++t) {
+                    const auto tok = static_cast<size_t>(eval(b, t + 1));
+                    for (size_t c = 0; c < 8; ++c) Xe(b, t, c) = (c == tok) ? 1.f : 0.f;
+                }
+                for (size_t c = 0; c < 2; ++c) Ye(b, c) = (c == label) ? 1.f : 0.f;
             }
-            for (size_t c = 0; c < 2; ++c) Y(b,c) = (c == label) ? 1.f : 0.f;
+            const auto A = net.template BatchedForwardAll<EvalN>(Xe);
+            return BatchAccuracy(A.template get<6>(), Ye);
+        };
+
+        for (int epoch = 0; epoch < Epochs; ++epoch) {
+            const float bef  = sample_acc(train_data);
+            const float loss = RunEpoch<CEL, Batch>(net, train_data, rng, LR, prep);
+            const float aft  = sample_acc(train_data);
+            std::cout << "  epoch " << std::setw(2) << epoch
+                      << "  CEL=" << std::fixed << std::setprecision(4) << loss
+                      << "  train: " << std::setprecision(1) << bef << "% -> " << aft << "%\n";
         }
-        const auto A = net.template BatchedForwardAll<EvalN>(X);
-        return BatchAccuracy(A.template get<6>(), Y);
-    };
 
-    for (int epoch = 0; epoch < 15; ++epoch) {
-        const float bef  = sample_acc(train_data);
-        const float loss = RunEpoch<CEL, Batch>(net, train_data, rng, 0.0005f, prep);
-        const float aft  = sample_acc(train_data);
-        std::cout << "  epoch " << std::setw(2) << epoch
-                  << "  CEL=" << std::fixed << std::setprecision(4) << loss
-                  << "  train: " << std::setprecision(1) << bef << "% -> " << aft << "%\n";
-    }
-
-    {
-        auto raw = RandomBatch<1000>(test_data, rng);
-        Tensor<1000,32,7> Xt; Tensor<1000,2> Yt;
-        for (size_t b = 0; b < 1000; ++b) {
-            const auto label = static_cast<size_t>(raw(b,0));
-            for (size_t t = 0; t < 32; ++t) {
-                const auto tok = static_cast<size_t>(raw(b, t+1));
-                for (size_t c = 0; c < 7; ++c) Xt(b,t,c) = (c == tok) ? 1.f : 0.f;
+        {
+            auto raw = RandomBatch<1000>(test_data, rng);
+            Tensor<1000, 32, 8> Xt;
+            Tensor<1000, 2>     Yt;
+            for (size_t b = 0; b < 1000; ++b) {
+                const auto label = static_cast<size_t>(raw(b, 0));
+                for (size_t t = 0; t < 32; ++t) {
+                    const auto tok = static_cast<size_t>(raw(b, t + 1));
+                    for (size_t c = 0; c < 8; ++c) Xt(b, t, c) = (c == tok) ? 1.f : 0.f;
+                }
+                for (size_t c = 0; c < 2; ++c) Yt(b, c) = (c == label) ? 1.f : 0.f;
             }
-            for (size_t c = 0; c < 2; ++c) Yt(b,c) = (c == label) ? 1.f : 0.f;
+            const auto At = net.template BatchedForwardAll<1000>(Xt);
+            std::cout << "\n  test accuracy: " << std::setprecision(1)
+                      << BatchAccuracy(At.template get<6>(), Yt) << "%\n";
         }
-        const auto At = net.template BatchedForwardAll<1000>(Xt);
-        std::cout << "\n  test accuracy (1000): " << std::setprecision(1)
-                  << BatchAccuracy(At.template get<6>(), Yt) << "%\n";
+
+        // pick top-3 longest sequences per class for richer attention patterns
+        constexpr int NPick = 3;
+        struct Candidate { size_t row; int nonblank; };
+        std::vector<Candidate> cand0, cand1;
+        for (size_t i = 0; i < TrainN; ++i) {
+            const auto lbl = static_cast<size_t>(train_data(i, 0));
+            int nb = 0;
+            for (size_t t = 0; t < 32; ++t)
+                if (static_cast<int>(train_data(i, t + 1)) != 7) ++nb;
+            if (lbl == 1) cand1.push_back({i, nb});
+            else          cand0.push_back({i, nb});
+        }
+        auto by_len = [](const Candidate& a, const Candidate& b) { return a.nonblank > b.nonblank; };
+        std::sort(cand0.begin(), cand0.end(), by_len);
+        std::sort(cand1.begin(), cand1.end(), by_len);
+
+        std::vector<BracketSample> ppm_samples;
+        auto pick = [&](const std::vector<Candidate>& cands, size_t lbl) {
+            const int n = std::min(NPick, (int)cands.size());
+            for (int k = 0; k < n; ++k) {
+                const size_t i = cands[k].row;
+                std::array<int, 32> tokens;
+                for (size_t t = 0; t < 32; ++t)
+                    tokens[t] = static_cast<int>(train_data(i, t + 1));
+                const auto pred_out = net.Forward(make_input(train_data, i));
+                const size_t pred   = pred_out.flat(1) > pred_out.flat(0) ? 1u : 0u;
+                ppm_samples.push_back({lbl, pred, tokens, net.snap()});
+            }
+        };
+        pick(cand1, 1);
+        pick(cand0, 0);
+
+        std::cout << "\n  -- attention patterns --\n";
+        writeSeqAttnPPM(task.viz_dir, ppm_samples);
     }
-
-    std::cout << "\n  -- attention patterns --\n";
-    std::vector<BracketSample> ppm_samples;
-    int n_valid = 0, n_invalid = 0;
-    for (size_t i = 0; i < TrainN && (n_valid < 2 || n_invalid < 2); ++i) {
-        const auto label = static_cast<size_t>(train_data(i,0));
-        if (label == 1 && n_valid   >= 2) continue;
-        if (label == 0 && n_invalid >= 2) continue;
-
-        std::array<int,32> tokens;
-        for (size_t t = 0; t < 32; ++t) tokens[t] = static_cast<int>(train_data(i, t+1));
-
-        const auto s = extractBracketSample(net, make_input(train_data, i), label, tokens);
-        std::cout << "\n  [" << (label == 1 ? "VALID  " : "INVALID") << "]\n";
-        printBracketsViz(s);
-        ppm_samples.push_back(s);
-
-        if (label == 1) ++n_valid; else ++n_invalid;
-    }
-
-    writeBracketsAttnPPM("viz", ppm_samples);
 }
 
 // ── Generic CSV classifier ────────────────────────────────────────────────────
@@ -567,7 +670,8 @@ void RunCSVClassifier(const std::string& name,
 // ─────────────────────────────────────────────────────────────────────────────
 
 int main() {
-    // runMNISTAttnViz();
-    runBracketsAttnViz();
+    runMNISTAttnViz();
+    // runBracketsAttnViz();
+    // runSeqTasksViz();
     return 0;
 }

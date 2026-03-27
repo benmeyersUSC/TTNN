@@ -31,7 +31,7 @@ namespace TTTN {
 
 
     // @doc: template<std::invocable<size_t> F> void ParForEach(size_t n, F f)
-    /** Helper to parallel-execute `std::for_each` on a `std::views::iota(size_t{0}, n)`, calling `f` (something `std::invocable` on `size_t`) on each index */
+    /** ######### */
     template<std::invocable<size_t> F>
     void ParForEach(size_t n, F f) {
         auto range = std::ranges::views::iota(size_t{0}, n);
@@ -43,7 +43,7 @@ namespace TTTN {
     struct TensorDimsProduct;
 
     // @doc: struct TensorDimsProduct<size_t... Ds>
-    /** Template-specialization-based recursion to collapse variadic template `<size_t...Ds>` into single `size_t`, stored statically as `TensorDimsProduct<size_t...Ds>::value` */
+    /** ######### */
     template<>
     struct TensorDimsProduct<> {
         static constexpr size_t value = 1;
@@ -67,11 +67,7 @@ namespace TTTN {
     struct SizeTemplateGet<N, First, Rest...> {
         // peel off, ditch first, until N = 0
         // @doc: struct SizeTemplateGet<size_t N, size_t... Ds>
-        /**
-         * Template-specialization-based recursion grab `N`-th `size_t` from `<size_t...Ds>`
-         * Uses functional-style aggregation and pattern-matching to decrement `N` and peel off `size_t`s from variadic array until reaching basecase where `N = 0`
-         * Used for clean, compile-time syntax in [TensorOps.hpp](src/TensorOps.hpp)
-         */
+        /** ######### */
         static constexpr size_t value = SizeTemplateGet<N - 1, Rest...>::value;
     };
 
@@ -80,17 +76,7 @@ namespace TTTN {
     struct ComputeStrides;
 
     // @doc: struct ComputeStrides<size_t... Ds>
-    /**
-     * Template-specialization-based recursion to compute `Tensor::Strides` array
-     * The `Tensor::Strides` array is vital to mapping from indices into `Tensor::Shape` to flat indices for the backing array
-     * In general, for a `Tensor` with `Tensor::Shape = [A, B, ..., N]`, its `Tensor::Strides = [A * B * ... * N, B * ... * N, ..., 1]`
-     * Specialize for `<>` and `<size_t D>`
-     * `value = ` `[]` and `[1]`, respectively
-     * Specialize for `<size_t First, size_t Second, size_t... Rest>`
-     * recursively compute `tail = ComputeStrides<Second, Rest...>::value`
-     * `value[0] = TensorDimsProduct<Second, Rest...>::value`
-     * `value[i] = tail[i + 1]`
-     */
+    /** ######### */
     template<>
     struct ComputeStrides<> {
         static constexpr std::array<size_t, 0> value = {};

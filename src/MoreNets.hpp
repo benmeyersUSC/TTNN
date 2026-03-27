@@ -1,8 +1,7 @@
 #pragma once
-
-#pragma once
 #include "NetworkUtil.hpp"
 #include "TensorOps.hpp"
+#include "TensorReduce.hpp"
 
 namespace TTTN {
     // =========================================================================
@@ -142,7 +141,7 @@ namespace TTTN {
 
             auto grad_a = a_.template BatchedBackward<Batch>(delta_A, a_batch_out, a_prev);
             auto grad_b = b_.template BatchedBackward<Batch>(delta_A, b_batch_out, a_prev);
-            return grad_a.zip(grad_b, [](float x, float y) { return x + y; });
+            return grad_a + grad_b;
         }
     };
 
@@ -264,5 +263,123 @@ namespace TTTN {
 
         template<typename InputT>
         using Resolve = TransposeBlock<typename InnerRecipe::template Resolve<InputT> >;
+    };
+
+
+    // =========================================================================
+    // LayerNormBlock<SeqLen, EmbDim>
+    //
+    // Per-token layer normalization over the embedding axis (axis 1).
+    // Learnable scale gamma and shift beta, both shape Tensor<EmbDim>.
+    //
+    // Forward:
+    //   centered = BroadcastReduce<1, SubMean<D>, Add>(X)   (x - mean)
+    //   inv_sigma = 1/sqrt(ReduceApply<1,SqAdd>(centered)/D + eps)
+    //   x_hat     = BroadcastApply<1, Mul>(centered, inv_sigma)
+    //   out       = gamma * x_hat + beta   (broadcast over SeqLen)
+    //
+    // Backward: standard LayerNorm gradient.
+    // =========================================================================
+
+    template<size_t SeqLen, size_t... EmbDims>
+    class LayerNormBlock {
+        static_assert(sizeof...(EmbDims) == 1, "LayerNormBlock: only 1D embeddings supported");
+        static constexpr float   eps     = 1e-5f;
+        static constexpr size_t  EmbSize = TensorDimsProduct<EmbDims...>::value;
+
+    public:
+        using InputTensor  = Tensor<SeqLen, EmbDims...>;
+        using OutputTensor = Tensor<SeqLen, EmbDims...>;
+        using Scale_Type   = Tensor<EmbDims...>;
+        using Sigma_Type   = Tensor<SeqLen>;
+
+    private:
+        Param<Scale_Type> gamma_, beta_;
+        mutable InputTensor x_hat_{};
+        mutable Sigma_Type  inv_sigma_{};
+
+    public:
+        LayerNormBlock() { gamma_.value.apply([](float) { return 1.f; }); }
+
+        auto all_params()       { return std::tie(gamma_, beta_); }
+        auto all_params() const { return std::tie(gamma_, beta_); }
+
+        // @doc: OutputTensor LayerNormBlock::Forward(const InputTensor& X) const
+        /** Per-token layer norm: `out = gamma * (x - mean) / sigma + beta` */
+        OutputTensor Forward(const InputTensor &X) const {
+            auto centered  = BroadcastReduce<1, SubMean<EmbSize>, Add>(X);
+            auto sum_sq    = ReduceApply<1, SqAdd>(centered);
+            inv_sigma_     = sum_sq.map([](float s) {
+                return 1.f / std::sqrt(s / static_cast<float>(EmbSize) + eps);
+            });
+            x_hat_         = BroadcastApply<1, Mul>(centered, inv_sigma_);
+            return BroadcastApply<0, Add>(BroadcastApply<0, Mul>(x_hat_, gamma_.value), beta_.value);
+        }
+
+        InputTensor Backward(const OutputTensor &delta_A,
+                             const OutputTensor & /*a*/,
+                             const InputTensor & /*a_prev*/) {
+            beta_.grad  += ReduceApply<0, Add>(delta_A);
+            gamma_.grad += ReduceApply<0, Add>(delta_A * x_hat_);
+
+            auto ds       = BroadcastApply<0, Mul>(delta_A, gamma_.value);
+            auto ds_c     = BroadcastReduce<1, SubMean<EmbSize>, Add>(ds);
+            auto cov_ds   = ReduceApply<1, Add>(ds * x_hat_) * (1.f / static_cast<float>(EmbSize));
+            return BroadcastApply<1, Mul>(
+                ds_c - BroadcastApply<1, Mul>(x_hat_, cov_ds),
+                inv_sigma_);
+        }
+
+        template<size_t Batch>
+        auto BatchedForward(const typename PrependBatch<Batch, InputTensor>::type &X) const
+            -> typename PrependBatch<Batch, OutputTensor>::type {
+            typename PrependBatch<Batch, OutputTensor>::type result;
+            constexpr size_t ss = InputTensor::Size;
+            for (size_t b = 0; b < Batch; ++b) {
+                InputTensor x_b;
+                for (size_t i = 0; i < ss; ++i) x_b.flat(i) = X.flat(b * ss + i);
+                const auto out = Forward(x_b);
+                for (size_t i = 0; i < ss; ++i) result.flat(b * ss + i) = out.flat(i);
+            }
+            return result;
+        }
+
+        template<size_t Batch>
+        auto BatchedBackward(
+            const typename PrependBatch<Batch, OutputTensor>::type &delta_A,
+            const typename PrependBatch<Batch, OutputTensor>::type &a,
+            const typename PrependBatch<Batch, InputTensor>::type  &a_prev)
+            -> typename PrependBatch<Batch, InputTensor>::type {
+            typename PrependBatch<Batch, InputTensor>::type result;
+            constexpr size_t ss = InputTensor::Size;
+            for (size_t b = 0; b < Batch; ++b) {
+                InputTensor dA_b, a_b, ap_b;
+                for (size_t i = 0; i < ss; ++i) {
+                    dA_b.flat(i) = delta_A.flat(b * ss + i);
+                    a_b.flat(i)  = a.flat(b * ss + i);
+                    ap_b.flat(i) = a_prev.flat(b * ss + i);
+                }
+                const auto up = Backward(dA_b, a_b, ap_b);
+                for (size_t i = 0; i < ss; ++i) result.flat(b * ss + i) = up.flat(i);
+            }
+            const float inv_b = 1.f / static_cast<float>(Batch);
+            gamma_.grad = gamma_.grad * inv_b;
+            beta_.grad  = beta_.grad  * inv_b;
+            return result;
+        }
+    };
+
+
+    // @doc: template<size_t... EmbDims> struct LayerNorm
+    /**
+     * Recipe resolving to `LayerNormBlock<SeqLen, EmbDims...>`, inferring `SeqLen` from `InputT`.
+     * Usage: `LayerNorm<EmbDim>` inside a `NetworkBuilder` or `ComposeBlocks` chain.
+     */
+    template<size_t... EmbDims>
+    struct LayerNorm {
+        using OutputTensor = Tensor<1, EmbDims...>;
+
+        template<typename InputT>
+        using Resolve = LayerNormBlock<TensorFirstDim<InputT>::value, EmbDims...>;
     };
 }

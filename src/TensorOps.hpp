@@ -21,6 +21,30 @@ namespace TTTN {
     };
 
 
+    // ---- tensor OP= tensor (inplace, no alloc) ----
+
+    template<size_t... Dims>
+    Tensor<Dims...> &operator+=(Tensor<Dims...> &a, const Tensor<Dims...> &b) {
+        a.zip_apply(b, Add{}); return a;
+    }
+
+    template<size_t... Dims>
+    Tensor<Dims...> &operator-=(Tensor<Dims...> &a, const Tensor<Dims...> &b) {
+        a.zip_apply(b, Sub{}); return a;
+    }
+
+    template<size_t... Dims>
+    Tensor<Dims...> &operator*=(Tensor<Dims...> &a, const Tensor<Dims...> &b) {
+        a.zip_apply(b, Mul{}); return a;
+    }
+
+    template<size_t... Dims>
+    Tensor<Dims...> &operator/=(Tensor<Dims...> &a, const Tensor<Dims...> &b) {
+        a.zip_apply(b, Div{}); return a;
+    }
+
+    // ---- tensor OP tensor (copy) ----
+
     // @doc: template<size_t... Dims> Tensor<Dims...> operator+(const Tensor<Dims...>& a, const Tensor<Dims...>& b)
     /** Element-wise add, uses parallel functional `zip` */
     template<size_t... Dims>
@@ -35,24 +59,6 @@ namespace TTTN {
         return Zip<Sub>(a, b);
     }
 
-    template<size_t... Dims>
-    Tensor<Dims...> &operator+=(Tensor<Dims...> &a, const Tensor<Dims...> &b) {
-        a.zip_apply(b, Add{});
-        return a;
-    }
-
-    // @doc: template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, float s)
-    /** Scalar multiply, uses parallel functional `map` */
-    template<size_t... Dims>
-    Tensor<Dims...> operator*(const Tensor<Dims...> &a, float s) {
-        return a.map([s](const float x) { return x * s; });
-    }
-
-    // @doc: template<size_t... Dims> Tensor<Dims...> operator*(float s, const Tensor<Dims...>& a)
-    /** Scalar multiply, uses parallel functional `map` */
-    template<size_t... Dims>
-    Tensor<Dims...> operator*(float s, const Tensor<Dims...> &a) { return a * s; }
-
     // @doc: template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, const Tensor<Dims...>& b)
     /** Hadamard (element-wise) product, uses parallel functional `zip` */
     template<size_t... Dims>
@@ -65,5 +71,56 @@ namespace TTTN {
     template<size_t... Dims>
     Tensor<Dims...> operator/(const Tensor<Dims...> &a, const Tensor<Dims...> &b) {
         return Zip<Div>(a, b);
+    }
+
+    // ---- scalar OP= (inplace, no alloc) ----
+
+    template<size_t... Dims>
+    Tensor<Dims...> &operator*=(Tensor<Dims...> &a, float s) {
+        a.apply([s](float x) { return x * s; }); return a;
+    }
+
+    template<size_t... Dims>
+    Tensor<Dims...> &operator/=(Tensor<Dims...> &a, float s) {
+        a.apply([s](float x) { return x / s; }); return a;
+    }
+
+    template<size_t... Dims>
+    Tensor<Dims...> &operator+=(Tensor<Dims...> &a, float s) {
+        a.apply([s](float x) { return x + s; }); return a;
+    }
+
+    template<size_t... Dims>
+    Tensor<Dims...> &operator-=(Tensor<Dims...> &a, float s) {
+        a.apply([s](float x) { return x - s; }); return a;
+    }
+
+    // ---- scalar OP (copy) ----
+
+    // @doc: template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, float s)
+    /** Scalar multiply, uses parallel functional `map` */
+    template<size_t... Dims>
+    Tensor<Dims...> operator*(const Tensor<Dims...> &a, float s) {
+        return a.map([s](float x) { return x * s; });
+    }
+
+    // @doc: template<size_t... Dims> Tensor<Dims...> operator*(float s, const Tensor<Dims...>& a)
+    /** Scalar multiply, uses parallel functional `map` */
+    template<size_t... Dims>
+    Tensor<Dims...> operator*(float s, const Tensor<Dims...> &a) { return a * s; }
+
+    template<size_t... Dims>
+    Tensor<Dims...> operator/(const Tensor<Dims...> &a, float s) {
+        return a.map([s](float x) { return x / s; });
+    }
+
+    template<size_t... Dims>
+    Tensor<Dims...> operator+(const Tensor<Dims...> &a, float s) {
+        return a.map([s](float x) { return x + s; });
+    }
+
+    template<size_t... Dims>
+    Tensor<Dims...> operator-(const Tensor<Dims...> &a, float s) {
+        return a.map([s](float x) { return x - s; });
     }
 }

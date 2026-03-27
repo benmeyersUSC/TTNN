@@ -68,16 +68,13 @@ namespace TTTN {
         DenseMDBlock() { XavierInitMD(W_.value, InputTensor::Size, OutputTensor::Size); }
 
         // @doc: OutputTensor Forward(const InputTensor& x) const
-        /**
-         * ***Backward*** — [ `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Dense.hpp) -
-         * ***BatchedForward*** — [ `template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp) -
-         */
+        /** ######### */
         OutputTensor Forward(const InputTensor &x) const {
             return Map<Act>(ΣΠ<N_in>(W_.value, x) + b_.value);
         }
 
         // @doc: InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)
-        /** ***BatchedForward*** — [ `template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp) - */
+        /** ######### */
         InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a,
                              const InputTensor &a_prev) {
             const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
