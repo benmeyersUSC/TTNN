@@ -43,12 +43,13 @@ namespace TTTN {
         static constexpr std::array<size_t, Rank> Strides = ComputeStrides<Dims...>::value;
         static constexpr std::array<size_t, Rank> GetStrides() { return Strides; }
 
-        // raw conversion, no mapping
-        // @doc: float flat(size_t idx) const
-        /** Returns `const float&` reference to item at `idx` in underlying array */
-        // @doc: float& flat(size_t idx)
-        /** Returns `float&` reference to item at `idx` in underlying array */
-        static constexpr std::array<size_t, Rank> flat_to_multi(const size_t flat) {
+
+        // @doc: static constexpr std::array<size_t, Rank> FlatToMulti(const size_t flat)
+        /**
+         * Inverse of `MultiToFlat`; map a flat index `[0, Size)` to its `Rank`-term index
+         * Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (= `[0, ..., Rank]`) and unpacks into an array: `[(flat / Strides[0]) % Shape[0], ..., (flat / Strides[Rank]) % Shape[Rank]]`
+         */
+        static constexpr std::array<size_t, Rank> FlatToMulti(const size_t flat) {
             std::array<size_t, Rank> multi{};
             size_t remainder = flat;
             for (size_t i = 0; i < Rank; ++i) {
@@ -58,30 +59,16 @@ namespace TTTN {
             return multi;
         }
 
-        // @doc: static constexpr std::array<size_t, Rank> FlatToMulti(size_t flat)
-        /**
-         * Inverse of `MultiToFlat`; map a flat index `[0, Size)` to its `Rank`-term index
-         * Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (= `[0, ..., Rank]`) and unpacks into an array: `[(flat / Strides[0]) % Shape[0], ..., (flat / Strides[Rank]) % Shape[Rank]]`
-         */
-        constexpr std::array<size_t, Rank> FlatToMulti(const size_t flat) const {
-            return flat_to_multi(flat);
-        }
-
-
-        static constexpr size_t multi_to_flat(const std::array<size_t, Rank> &multi) {
-            return [&]<size_t... Is>(std::index_sequence<Is...>) {
-                return (... + (multi[Is] * Strides[Is]));
-            }(std::make_index_sequence<Rank>{});
-        }
-
-        // @doc: static constexpr size_t MultiToFlat(const std::array<size_t, Rank>& multi)
+        // @doc: static constexpr size_t MultiToFlat(const std::array<size_t, Rank> &multi)
         /**
          * Inverse of `FlatToMulti`; map a `Rank`-term index to its flat index `[0, Size)`
          * Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (= `[0, ..., Rank]`) and `+`-folds terms `multi[0] * Strides[0] + ... + multi[Rank] * Strides[Rank]`
          * Dot product of given `multi` index and `Strides`
          */
-        constexpr size_t MultiToFlat(const std::array<size_t, Rank> &multi) const {
-            return multi_to_flat(multi);
+        static constexpr size_t MultiToFlat(const std::array<size_t, Rank> &multi) {
+            return [&]<size_t... Is>(std::index_sequence<Is...>) {
+                return (... + (multi[Is] * Strides[Is]));
+            }(std::make_index_sequence<Rank>{});
         }
 
     private:
@@ -243,8 +230,6 @@ namespace TTTN {
             std::transform(std::execution::par_unseq,
                            storage_.ptr(), storage_.ptr() + Size, other.storage_.ptr(), storage_.ptr(), f);
         }
-
-
     };
 
     // @doc: struct is_tensor<T>

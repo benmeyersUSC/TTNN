@@ -55,21 +55,6 @@ namespace TTTN {
         constexpr float operator()(float x) const { return 1.f - x; }
     };
 
-    // SubMean<D>: BroadcastReduce ApplyOp — a - b/D  (mean-subtract when b = sum over D elements)
-    // Use: BroadcastReduce<Axis, SubMean<D>, Add>(src) → src[i] - mean_of_slice(src, i)
-    template<size_t D>
-    struct SubMean {
-        constexpr float operator()(float a, float b) const {
-            return a - b / static_cast<float>(D);
-        }
-    };
-
-    // SqAdd: ReduceOp accumulating sum of squares. Use with ReduceApply<Axis, SqAdd>.
-    struct SqAdd {
-        constexpr float operator()(float acc, float x) const { return acc + x * x; }
-        static constexpr float identity = 0.f;
-    };
-
     // Clamp<Lo, Hi>: clamp x to [Lo, Hi]. Omit Hi for one-sided ClampMin.
     template<float Lo, float Hi = std::numeric_limits<float>::infinity()>
     struct Clamp {
@@ -160,7 +145,7 @@ namespace TTTN {
         });
         return dst;
     }
-
+    
     // Transpose — reverse all axes.
     // Transpose(Tensor<A,B,C>) → Tensor<C,B,A>
     template<size_t... Dims>

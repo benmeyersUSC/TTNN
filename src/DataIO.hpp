@@ -73,7 +73,9 @@ namespace TTTN {
     /** Parses a CSV into a `Tensor<Rows, Cols>`. On first call shows a progress bar, then writes a binary cache at `<path>.<Rows>x<Cols>.bin`; subsequent calls load that file directly (pure binary read, no CSV parsing). Delete the `.bin` file if the underlying CSV changes. */
     template<size_t Rows, size_t Cols>
     Tensor<Rows, Cols> LoadCSV(const std::string& path, bool skip_header = false) {
-        const std::string cache_path = path + ".bin";
+        // bin cache lives in bin_data/ next to the data/ dir, named after the file basename
+        const std::string basename = path.substr(path.find_last_of("/\\") + 1);
+        const std::string cache_path = "bin_data/" + basename + ".bin";
 
         // fast path: cache exists and covers the request
         {

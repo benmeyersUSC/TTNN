@@ -214,16 +214,23 @@ higher-level code does not need to change because the `Tensor` API stays the sam
 Concepts, compile-time dimension arithmetic, stride computation, and the parallel loop helper. Everything `Tensor.hpp` needs before it can define the `Tensor` class itself.
 
 - ***TensorDimsProduct*** — [`struct TensorDimsProduct<size_t... Ds>`](src/TensorPrereqs.hpp)
-    - #########
+    - Template recursion to store product of `size_t...` variadic in `static constexpr size_t value` 
 
 - ***SizeTemplateGet*** — [`struct SizeTemplateGet<size_t N, size_t... Ds>`](src/TensorPrereqs.hpp)
-    - #########
+    - Template recursion to store `N`-th element of `size_t...` variadic in `static constexpr size_t value`
 
 - ***ComputeStrides*** — [`struct ComputeStrides<size_t... Ds>`](src/TensorPrereqs.hpp)
-    - #########
+    - Template recursion to store `Tensor<Ds...>` stride array in `static constexpr std::array<size_t, sizeof...(Ds)> value`
 
 - ***ParForEach*** — [`template<std::invocable<size_t> F> void ParForEach(size_t n, F f)`](src/TensorPrereqs.hpp)
-    - #########
+    - Helper function used throughout library to run `std::invocable<size_t> F` `n` times using `std::execution::par_unseq` policy
+
+- ***FloatUnaryOp*** — [`template<typename F> concept FloatUnaryOp`](src/TensorPrereqs.hpp)
+    - Concept to enforce `F :: float -> float` operations on `Tensor`s
+
+- ***FloatBinaryOp*** — [`template<typename F> concept FloatBinaryOp`](src/TensorPrereqs.hpp)
+    - Concept to enforce `F :: float -> float -> float` operations on two `Tensor`s
+
 
 ---
 
@@ -231,8 +238,23 @@ Concepts, compile-time dimension arithmetic, stride computation, and the paralle
 
 Two specializations of `TensorStorage<S, bool Small>` selected at compile time: inline `alignas(64) float[S]` for small tensors (≤ 16 elements) and 64-byte aligned heap allocation for large ones. `Tensor` owns one instance as `storage_`.
 
-- ***TensorStorage*** — [`struct TensorStorage<size_t S, bool Small>`](src/TensorStorage.hpp)
-    - #########
+We 64-byte-align here so `Tensor`s' data (when grabbed to cache from RAM) starts at beginning of cache. Also makes vectorization optimizations and specialized `cblas_sgemm` call in `TensorContract.hpp` as fast as possible. 
+
+- ***TensorStorage*** — [`template<size_t S, bool Small = (S <= 16)> struct TensorStorage`](src/TensorStorage.hpp)
+    - Struct wrapper for storage of `Tensor`'s `float[]`
+    - `Tensor` owns one instance as `storage_`
+    - Specialized for `bool Small = true` (inline 64-byte-aligned stack `float[]`) and `bool Small = false` (64-byte-aligned heap `float[]`)
+
+- ***TensorStorage (STO)*** — [`template<size_t S> struct TensorStorage<S, true>`](src/TensorStorage.hpp)
+    - Specialization for *small `Tensor` optimization* (**STO**)
+    - Member array is defined as: `alignas(64) float data[S]{}`
+
+- ***TensorStorage (heap)*** — [`template<size_t S> struct TensorStorage<S, false>`](src/TensorStorage.hpp)
+    - Specialization for larger `Tensor` to be allocated on the heap at a 64-byte aligned address
+    - Member array is defined as: `std::unique_ptr<float[], AlignedDeleter> heap_`
+
+
+
 
 ---
 
@@ -267,12 +289,6 @@ vector (row-major) for the type at compile-time which compose in a dot-product w
         - `value[0] = TensorDimsProduct<Second, Rest...>::value`
         - `value[i] = tail[i + 1]`
 
----
-
-### Storage Policy
-
----
-
 ### `class Tensor<size_t... Dims>`
 
 The primary data structure. `Dims...` encodes the full shape at compile time, informs statics `Shape`, `Rank`, `Size`,
@@ -295,13 +311,13 @@ The primary data structure. `Dims...` encodes the full shape at compile time, in
 
 **Static methods:**
 
-- ***FlatToMulti*** — [`static constexpr std::array<size_t, Rank> FlatToMulti(size_t flat)`](src/Tensor.hpp)
+- ***FlatToMulti*** — [`static constexpr std::array<size_t, Rank> FlatToMulti(const size_t flat)`](src/Tensor.hpp)
     - Inverse of `MultiToFlat`; map a flat index `[0, Size)` to its `Rank`-term index
     - Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (=
       `[0, ..., Rank]`) and unpacks into an array:
       `[(flat / Strides[0]) % Shape[0], ..., (flat / Strides[Rank]) % Shape[Rank]]`
 
-- ***MultiToFlat*** — [`static constexpr size_t MultiToFlat(const std::array<size_t, Rank>& multi)`](src/Tensor.hpp)
+- ***MultiToFlat*** — [`static constexpr size_t MultiToFlat(const std::array<size_t, Rank> &multi)`](src/Tensor.hpp)
     - Inverse of `FlatToMulti`; map a `Rank`-term index to its flat index `[0, Size)`
     - Pattern matches a `std::index_sequence` parameterized by `<size_t... Rank>` (= `[0, ..., Rank]`) and
       `+`-folds terms `multi[0] * Strides[0] + ... + multi[Rank] * Strides[Rank]`

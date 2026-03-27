@@ -170,7 +170,7 @@ static AttnSample extractAttnSample(const Net& net, const Tensor<28,28>& img, si
 void runMNISTAttnViz() {
     std::cout << "\n=== MNIST Attention Visualizer (checkerboard row+col) ===\n";
 
-    auto train_data = LoadCSV<20000, 785>("mnist_train.csv", true);
+    auto train_data = LoadCSV<20000, 785>("data/mnist_train.csv", true);
 
     using RowAttn = ComposeBlocks<
         MHAttention<7, 28>,
@@ -500,10 +500,10 @@ void runSeqTasksViz() {
 
     struct Task { std::string name, train_csv, test_csv, viz_dir; };
     const std::array<Task, 4> tasks = {{
-        {"Sorted",      "sorted_train.csv",  "sorted_test.csv",  "viz/sorted"},
-        {"Palindrome",  "reverse_train.csv", "reverse_test.csv", "viz/reverse"},
-        {"Modular-7",   "modular_train.csv", "modular_test.csv", "viz/modular"},
-        {"Parity",      "parity_train.csv",  "parity_test.csv",  "viz/parity"},
+        {"Sorted",      "data/sorted_train.csv",  "data/sorted_test.csv",  "viz/sorted"},
+        {"Palindrome",  "data/reverse_train.csv", "data/reverse_test.csv", "viz/reverse"},
+        {"Modular-7",   "data/modular_train.csv", "data/modular_test.csv", "viz/modular"},
+        {"Parity",      "data/parity_train.csv",  "data/parity_test.csv",  "viz/parity"},
     }};
 
     for (const auto& task : tasks) {

@@ -167,18 +167,18 @@ namespace TTTN {
      * Permutes `A` and `B` to align the selected axes, then delegates to `InnerContract<N>`
      * **Tag-param overload**: `Contract<AAxes, BAxes, Map, Reduce>(A, B)` — `Reduce::identity` used as init
      */
-    template<size_t M_Mapped, size_t N_Contracted, size_t... A_Dims, size_t... B_Dims>
-    struct BatchedContractionKernel<M_Mapped, N_Contracted, Tensor<A_Dims...>, Tensor<B_Dims...> > {
+    template<size_t M_Batched, size_t N_Contracted, size_t... A_Dims, size_t... B_Dims>
+    struct BatchedContractionKernel<M_Batched, N_Contracted, Tensor<A_Dims...>, Tensor<B_Dims...> > {
         static constexpr size_t Rank_A = sizeof...(A_Dims);
         static constexpr size_t Rank_B = sizeof...(B_Dims);
 
-        static_assert(M_Mapped + N_Contracted <= Rank_A, "M + N must not exceed rank of A");
-        static_assert(M_Mapped + N_Contracted <= Rank_B, "M + N must not exceed rank of B");
+        static_assert(M_Batched + N_Contracted <= Rank_A, "M + N must not exceed rank of A");
+        static_assert(M_Batched + N_Contracted <= Rank_B, "M + N must not exceed rank of B");
 
         static_assert([] {
             constexpr std::array<size_t, Rank_A> a = {A_Dims...};
             constexpr std::array<size_t, Rank_B> b = {B_Dims...};
-            for (size_t i = 0; i < M_Mapped; ++i) {
+            for (size_t i = 0; i < M_Batched; ++i) {
                 if (a[i] != b[i]) {
                     return false;
                 }
@@ -189,7 +189,7 @@ namespace TTTN {
             constexpr std::array<size_t, Rank_A> a = {A_Dims...};
             constexpr std::array<size_t, Rank_B> b = {B_Dims...};
             for (size_t i = 0; i < N_Contracted; ++i)
-                if (a[Rank_A - N_Contracted + i] != b[M_Mapped + i]) return false;
+                if (a[Rank_A - N_Contracted + i] != b[M_Batched + i]) return false;
             return true;
         }(), "AXES [M+RANK_A-N, RANK_A) OF A MUST HAVE SAME SHAPE AS AXES [M+N, RANK_B) OF B");
 
@@ -198,22 +198,22 @@ namespace TTTN {
         //  B: [ MapDims(M) | ContractedDims(N)      | B_FreeDims(RankB-M-N) ]
 
         // FIRST M AXES WILL BE MAPPED AXES (SAME IN A AND B)
-        using Mapped = TensorSlice<0, M_Mapped, A_Dims...>::type;
+        using Batched = TensorSlice<0, M_Batched, A_Dims...>::type;
         // CONTRACTED AXES ARE N LAST AXES OF A_DIMS
         using Contracted = TensorSlice<Rank_A - N_Contracted, N_Contracted, A_Dims...>::type;
 
         // A_FREE AXES START AT M, TAKE NEXT (RANK_A - M - N) AXES, FROM A_DIMS
-        using A_Free = TensorSlice<M_Mapped, Rank_A - M_Mapped - N_Contracted, A_Dims...>::type;
+        using A_Free = TensorSlice<M_Batched, Rank_A - M_Batched - N_Contracted, A_Dims...>::type;
         // B_FREE AXES START AT (M+N), TAKE NEXT (RANK_B - M - N) AXES, FROM B_DIMS
-        using B_Free = TensorSlice<M_Mapped + N_Contracted, Rank_B - M_Mapped - N_Contracted, B_Dims...>::type;
+        using B_Free = TensorSlice<M_Batched + N_Contracted, Rank_B - M_Batched - N_Contracted, B_Dims...>::type;
 
         // RESULT SHAPE:
         // [ MapDims(M) | A_Free | B_Free ]
         using AB_Free = TensorConcat<A_Free, B_Free>::type;
-        using ResultType = TensorConcat<Mapped, AB_Free>::type;
+        using ResultType = TensorConcat<Batched, AB_Free>::type;
 
         // SUBTENSOR SIZES
-        static constexpr size_t Map_Size = Mapped::Size;
+        static constexpr size_t Batch_Size = Batched::Size;
         static constexpr size_t A_Free_Size = A_Free::Size;
         static constexpr size_t B_Free_Size = B_Free::Size;
         static constexpr size_t Contracted_Size = Contracted::Size;
@@ -236,24 +236,6 @@ namespace TTTN {
                 * B_Offset = (Contracted_Multi_Index[I] * B_Contracted_Strides[I] + ...); I...N_Contracted
          */
         static constexpr auto Offsets = [] {
-            // @doc: template<size_t N, typename TA, typename TB> struct ContractionKernel
-            /**
-             * Unified compile-time index kernel. Specialized for `<N, Tensor<ADims...>, Tensor<BDims...>>`.
-             * Compile-time `static constexpr`:
-             * `RankA`, `RankB` — ranks of `A` and `B`
-             * Asserts `N <= RankA && N <= RankB` and last `N` dims of `A` match first `N` dims of `B`
-             * `A_Free = TensorSlice<0, RankA-N, ADims...>::type`
-             * `B_Free = TensorSlice<N, RankB-N, BDims...>::type`
-             * `Contracted = TensorSlice<RankA-N, N, ADims...>::type`
-             * `ResultType = TensorConcat<A_Free, B_Free>::type`
-             * `struct { std::array<size_t, Contracted::Size> a, b; } offsets` — flat-index offset into `A` and `B` for every contracted position; precomputed once per `(N, ADims, BDims)` and shared across all `(Map, Reduce)` variants
-             * `b_free_size`, `contracted_size` — compile-time constants used by `InnerContract` to compute per-output base offsets as `O(1)` arithmetic ( `base_a = (o / b_free_size) * contracted_size`, `base_b = o % b_free_size`) rather than a precomputed table — the compiler strength-reduces these to multiply-shift at `-O2`
-             * **These pay real dividends for [TrainableTensorNetwork](./src/TrainableTensorNetwork.hpp) training schedules. Any weight `Tensor`'s `Dot`s, `Matmul`s, and `Outer`s (*in forward and backward passes*) are saved structs, and the runtime computations are parallelized and vectorized, following known, saved paths**
-             */
-            // @doc: struct MoveToFirstPerm<size_t Src, size_t Rank>
-            /** Compile-time helper to rearrange `Tensor`'s shape such that `Src` is at index `[0]` and all others are kept in order */
-            // @doc: struct MoveToLastPerm<size_t Src, size_t Rank>
-            /** Compile-time helper to rearrange `Tensor`'s shape such that `Src` is at index `[Rank - 1]` and all others are kept in order */
             struct {
                 std::array<size_t, Contracted::Size> a{}, b{};
             } t;
@@ -261,8 +243,8 @@ namespace TTTN {
                 const auto Contracted_Multi_Index = Contracted::flat_to_multi(c);
                 size_t A_Offset = 0, B_Offset = 0;
                 for (size_t i = 0; i < N_Contracted; ++i) {
-                    A_Offset += Contracted_Multi_Index[i] * Tensor<A_Dims...>::Strides[M_Mapped + A_Free_Rank + i];
-                    B_Offset += Contracted_Multi_Index[i] * Tensor<B_Dims...>::Strides[M_Mapped + i];
+                    A_Offset += Contracted_Multi_Index[i] * Tensor<A_Dims...>::Strides[M_Batched + A_Free_Rank + i];
+                    B_Offset += Contracted_Multi_Index[i] * Tensor<B_Dims...>::Strides[M_Batched + i];
                 }
                 t.a[c] = A_Offset;
                 t.b[c] = B_Offset;
@@ -327,20 +309,40 @@ namespace TTTN {
     auto BatchInnerContract(const Tensor<ADims...> &A,
                             const Tensor<BDims...> &B,
                             float /*init*/, Mul, Add) {
-        using K = BatchedContractionKernel<M, N, Tensor<ADims...>, Tensor<BDims...>>;
+        using K = BatchedContractionKernel<M, N, Tensor<ADims...>, Tensor<BDims...> >;
         typename K::ResultType result;
         const float *a_ptr = A.data();
         const float *b_ptr = B.data();
-        float       *c_ptr = result.data();
-        for (size_t m = 0; m < K::Map_Size; ++m) {
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+        float *c_ptr = result.data();
+        // for each batch
+        for (size_t m = 0; m < K::Batch_Size; ++m) {
+            cblas_sgemm(
+                // we have row major flat vectors, we do not want either Tensor transposed
+                CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                // Free sizes (we ignore batch because we're in one) and contracted size
                 static_cast<int>(K::A_Free_Size),
                 static_cast<int>(K::B_Free_Size),
                 static_cast<int>(K::Contracted_Size),
-                1.f,
+                1.f, // (A x B) is scaled by 1.f
+                // [Data Pointer, Loading Dimensions (num cols for a row-major matrix)]
+                // Data pointer:
+                //      start of A.data() + batch_num * A_Inner_Size
+                //      each increment of the batch (m) brings us to the front of a whole new copy of an unbatched A
+                // Loading dimensions:
+                //      we are working with Tensors, so to imagine this simply as a matmul
+                //      we say that each row of A[m..., free..., contracted...] contains K::Contracted_Size 'columns'
+                //      the row index is which free element we're on, the col is which contracted element
                 a_ptr + m * K::A_Inner_Size, static_cast<int>(K::Contracted_Size),
+                // data pointer for B is also straightforward
+                // B loading dimensions:
+                //      for B[m..., contracted..., free...], this inner (m-th) virtual matrix is contracted x free
+                //      so the row indexes the contracted elements, the column indexes the free elements
                 b_ptr + m * K::B_Inner_Size, static_cast<int>(K::B_Free_Size),
-                0.f,
+                0.f, // C is scaled by 0.f to start
+                // data pointer: each increment of batch (m) means a whole copy of AB_Free in the result
+                // C loading dimensions:
+                //      for C[m..., A_free..., B_free...], the m-th virtual matrix is A_free x B_free
+                //      row indexes A_free elements, column indexes B_free elements
                 c_ptr + m * K::AB_Free_Size, static_cast<int>(K::B_Free_Size));
         }
         return result;
