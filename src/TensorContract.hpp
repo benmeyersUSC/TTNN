@@ -240,7 +240,7 @@ namespace TTTN {
                 std::array<size_t, Contracted::Size> a{}, b{};
             } t;
             for (size_t c = 0; c < Contracted::Size; ++c) {
-                const auto Contracted_Multi_Index = Contracted::flat_to_multi(c);
+                const auto Contracted_Multi_Index = Contracted::FlatToMulti(c);
                 size_t A_Offset = 0, B_Offset = 0;
                 for (size_t i = 0; i < N_Contracted; ++i) {
                     A_Offset += Contracted_Multi_Index[i] * Tensor<A_Dims...>::Strides[M_Batched + A_Free_Rank + i];

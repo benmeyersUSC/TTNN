@@ -256,10 +256,10 @@ namespace TTTN {
     template<typename T>
     struct TensorFirstDim;
 
-    template<size_t D0, size_t... Rest>
-    struct TensorFirstDim<Tensor<D0, Rest...> > {
-        static constexpr size_t value = D0;
-    };
+    // template<size_t D0, size_t... Rest>
+    // struct TensorFirstDim<Tensor<D0, Rest...> > {
+    //     static constexpr size_t value = D0;
+    // };
 
 
     // MHAttention<Heads, EmbDims...>: recipe for MultiHeadAttentionBlock.

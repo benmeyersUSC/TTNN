@@ -21,12 +21,12 @@ namespace TTTN {
         static constexpr auto bases = [] {
             std::array<size_t, Result::Size> t{};
             for (size_t out_i = 0; out_i < Result::Size; ++out_i) {
-                const auto dm = Result::flat_to_multi(out_i);
+                const auto dm = Result::FlatToMulti(out_i);
                 std::array<size_t, Source::Rank> sm{};
                 size_t d = 0;
                 for (size_t sd = 0; sd < Source::Rank; ++sd)
                     sm[sd] = (sd == Axis) ? 0 : dm[d++];
-                t[out_i] = Source::multi_to_flat(sm);
+                t[out_i] = Source::MultiToFlat(sm);
             }
             return t;
         }();

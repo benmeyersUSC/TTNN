@@ -14,21 +14,20 @@ Used in my [AlphaToe](https://github.com/benmeyersUSC/AlphaToe) library.
 
 - This library treats
   `Tensor` as a statically-shaped, dimension-typed functor over scalar values, paired with deeply generalized `Zip`,
-  `Map`, and `Reduce` operations. Leveraging **C++
-  ** templates and the type system, we enforce shape correctness at compile time while enabling aggressive precomputation of traversal structure. Runtime execution becomes a planned walk over constant topologies—fully fused, vectorizable, and allocation-free.
+  `Map`, and `Reduce` operations. Leveraging **C++** templates and the type system, we enforce shape correctness at compile time while enabling aggressive precomputation of traversal structure. Runtime execution becomes a planned walk over constant topologies - fully fused, vectorizable, and allocation-free.
 
 - The dimension-typed `Tensor` unlocks a unified
   `Contraction` abstraction, parameterized by three orthogonal components:
     - `Align`: how two `Tensor`s are brought into correspondence (which elements meet)
     - `Map`: how aligned elements interact (`Map :: (T, T) -> T`)
-    - `Reduce`: how mapped results are aggregated along contracted axes
+    - `Reduce`: how mapped results are aggregated along contracted axes (`Reduce :: (T, T) -> T`)
 
 - Under this formulation, a contraction is:
     - `Contraction = Reduce ∘ zipWith(Map) ∘ Align`
 
 - Classical tensor operations such as `Einsum`, `ΣΠ` (generalized *sum of products*), `Matmul`, and
   `Dot` arise as specializations of this pattern. By choosing different `Align`, `Map`, and
-  `Reduce` components, one can express and efficiently execute a wide range of computations—from linear algebra to activation functions, loss functions, and full training pipelines—within a single fused kernel.
+  `Reduce` components, one can express and efficiently execute a wide range of computations (from linear algebra to activation functions, loss functions, and full training pipelines) within a single fused kernel.
 
 - This decomposition mirrors the algebraic structure of `Functor` (`Map`), `Applicative` (`zipWith`), and `Foldable` (
   `Reduce`), ensuring that fusion is not an optimization trick, but a consequence of the underlying laws.
@@ -54,19 +53,17 @@ Used in my [AlphaToe](https://github.com/benmeyersUSC/AlphaToe) library.
         - `C[i, j] = Σ_k (A[i, k] * B[k, j])`
 - In [`TTTN`](src/TTTN.hpp), we have:
   ```cpp
-    auto C = InnerContract<N, Mul, Add>(A, B);  // tag form: Map=Mul, Reduce=Add, init=Add::identity
-    // or with explicit init and lambdas:
-    auto C = InnerContract<1>(A, B, 0.f, Mul{}, Add{});
+    auto C = InnerContract<N, Mul, Add>(A, B);  // Map=Mul, Reduce=Add
     ```
 
     - Different contractions on the same type:
         - **Dot product / Frobenius inner product**
           ```cpp
-          float sim = Collapse<Mul, Add>(A, B);
+          float sim = Collapse<Mul, Add>(A, B); // Collapse helper: contract all axes
           ```
         - **L1 Distance**
           ```cpp
-          float dist = Collapse<AbsDiff, Add>(A, B);
+          float dist = Collapse<AbsDiff, Add>(A, B); // Collapse with AbsDiff -> Add for L1
           ```
         - **Max product** (no identity for Max over products — use lambda form)
           ```cpp
@@ -156,10 +153,6 @@ operations trivially safe to express:
   in run B.  With shape-as-type, the per-head slices are well-typed objects and can be
   passed directly into alignment routines.
 
-- **Ablation studies** — zero out a layer or head in one network, compare its
-  `BrainSaladSurgery` snapshot against the intact network on the same input.  Because
-  both variants share a type, the diff is structurally clean.
-
 The common thread: **the type system is doing the bookkeeping** that in most frameworks
 requires careful string-matching on layer names or fragile index arithmetic.
 
@@ -181,8 +174,8 @@ blob to a heat-map view.
 ### GPU Backend
 
 Replace the parallel CPU dispatch (`std::execution::par_unseq`) with CUDA or Metal
-kernels.  The contraction and elementwise op layers are the natural insertion point;
-higher-level code does not need to change because the `Tensor` API stays the same.
+kernels. The contraction and elementwise op layers are the natural insertion point;
+higher-level code does not need to change because the `Tensor` API stays the same. **Apple AMX** is currently used for a specialization of `Contract` where `Map=Mul` and `Reduce=Add`, but other operations could still benefit further from GPUs. 
 
 ---
 
@@ -226,10 +219,10 @@ Concepts, compile-time dimension arithmetic, stride computation, and the paralle
     - Helper function used throughout library to run `std::invocable<size_t> F` `n` times using `std::execution::par_unseq` policy
 
 - ***FloatUnaryOp*** — [`template<typename F> concept FloatUnaryOp`](src/TensorPrereqs.hpp)
-    - Concept to enforce `F :: float -> float` operations on `Tensor`s
+    - `concept` to enforce `F :: float -> float` operations on `Tensor`s
 
 - ***FloatBinaryOp*** — [`template<typename F> concept FloatBinaryOp`](src/TensorPrereqs.hpp)
-    - Concept to enforce `F :: float -> float -> float` operations on two `Tensor`s
+    - `concept` to enforce `F :: float -> float -> float` operations on two `Tensor`s
 
 
 ---
@@ -370,9 +363,9 @@ The primary data structure. `Dims...` encodes the full shape at compile time, in
 - ***flat*** — [`float flat(size_t idx) const`](src/Tensor.hpp)
     - Returns `const float&` reference to item at `idx` in underlying array
 
-**Functional transforms:**
+**Functional transform primitives:**
 
-- ***zip*** — [`template<FloatBinaryOp F> Tensor zip(const Tensor& other, F f) const`](src/Tensor.hpp)
+- ***zip*** — [`template<FloatBinaryOp F> Tensor zip(const Tensor &other, F f) const`](src/Tensor.hpp)
     - Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data by `float -> float -> float`
       map `f`, returning a new `Tensor`
 
@@ -380,7 +373,10 @@ The primary data structure. `Dims...` encodes the full shape at compile time, in
     - Use `std::execution::par_unseq` + `std::for_each` to apply `float -> float` map `f` to
       `Tensor`'s underlying data in-place
 
-- ***zip_apply*** — [`template<FloatBinaryOp F> void zip_apply(const Tensor& other, F f)`](src/Tensor.hpp)
+- ***map*** - [`template<FloatUnaryOp F> Tensor map(F f) const`](src/Tensor.hpp)
+    - Copy-constructs `Tensor result` from `*this`, calls `apply`, returns copy 
+
+- ***zip_apply*** — [`template<FloatBinaryOp F> void zip_apply(const Tensor &other, F f)`](src/Tensor.hpp)
     - In-place binary transform: `self[i] = f(self[i], other[i])` for all `i`. Mutating counterpart to `zip`. Accepts any `FloatBinaryOp` including op tags: `zip_apply(b, Add{})`
 
 **Indexing operators:**

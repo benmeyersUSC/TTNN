@@ -90,7 +90,7 @@ namespace TTTN {
         template<typename... Indices>
         float &operator()(Indices... idxs) {
             static_assert(sizeof...(idxs) == Rank, "Number of indices must match tensor rank");
-            return storage_.ptr()[multi_to_flat({static_cast<size_t>(idxs)...})];
+            return storage_.ptr()[MultiToFlat({static_cast<size_t>(idxs)...})];
         }
 
         // @doc: float operator()(Indices... idxs) const
@@ -101,7 +101,7 @@ namespace TTTN {
         template<typename... Indices>
         float operator()(Indices... idxs) const {
             static_assert(sizeof...(idxs) == Rank, "Number of indices must match tensor rank");
-            return storage_.ptr()[multi_to_flat({static_cast<size_t>(idxs)...})];
+            return storage_.ptr()[MultiToFlat({static_cast<size_t>(idxs)...})];
         }
 
         // @doc: float& operator()(const std::array<size_t, Rank>& multi)
@@ -110,7 +110,7 @@ namespace TTTN {
          * Uses compile-time-templated `MultiToFlat` for efficient access
          */
         float &operator()(const std::array<size_t, Rank> &multi) {
-            return storage_.ptr()[multi_to_flat(multi)];
+            return storage_.ptr()[MultiToFlat(multi)];
         }
 
         // @doc: float operator()(const std::array<size_t, Rank>& multi) const
@@ -119,7 +119,7 @@ namespace TTTN {
          * Uses compile-time-templated `MultiToFlat` for efficient access
          */
         float operator()(const std::array<size_t, Rank> &multi) const {
-            return storage_.ptr()[multi_to_flat(multi)];
+            return storage_.ptr()[MultiToFlat(multi)];
         }
 
         // @doc: ~Tensor() = default
@@ -166,10 +166,7 @@ namespace TTTN {
          */
         Tensor &operator=(Tensor &&) noexcept = default;
 
-        // @doc: const float* data() const
-        /** Returns `const` pointer to `Tensor`'s underlying array */
-        // @doc: float* data()
-        /** Returns pointer to `Tensor`'s underlying array */
+
         float *data() { return storage_.ptr(); }
         [[nodiscard]] const float *data() const { return storage_.ptr(); }
 
@@ -207,6 +204,8 @@ namespace TTTN {
                            storage_.ptr(), storage_.ptr() + Size, storage_.ptr(), f);
         }
 
+        // @doc: template<FloatUnaryOp F> Tensor map(F f) const
+        /** Copy-constructs `Tensor result` from `*this`, calls `apply`, returns copy */
         template<FloatUnaryOp F>
         [[nodiscard]] Tensor map(F f) const {
             Tensor result(*this);
@@ -214,6 +213,8 @@ namespace TTTN {
             return result;
         }
 
+        // @doc: template<FloatBinaryOp F> Tensor zip(const Tensor &other, F f) const
+        /** Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data by `float -> float -> float` map `f`, returning a new `Tensor` */
         template<FloatBinaryOp F>
         [[nodiscard]] Tensor zip(const Tensor &other, F f) const {
             Tensor result(*this);
@@ -221,10 +222,8 @@ namespace TTTN {
             return result;
         }
 
-        // @doc: template<FloatBinaryOp F> void zip_apply(const Tensor& other, F f)
+        // @doc: template<FloatBinaryOp F> void zip_apply(const Tensor &other, F f)
         /** In-place binary transform: `self[i] = f(self[i], other[i])` for all `i`. Mutating counterpart to `zip`. Accepts any `FloatBinaryOp` including op tags: `zip_apply(b, Add{})` */
-        // @doc: template<FloatBinaryOp F> Tensor zip(const Tensor& other, F f) const
-        /** Use `std::execution::par_unseq` to `std::transform` two `Tensor`s' underlying data by `float -> float -> float` map `f`, returning a new `Tensor` */
         template<FloatBinaryOp F>
         void zip_apply(const Tensor &other, F f) {
             std::transform(std::execution::par_unseq,

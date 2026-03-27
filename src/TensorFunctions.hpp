@@ -30,6 +30,20 @@ namespace TTTN {
         constexpr float operator()(float a, float b) const { return std::abs(a - b); }
     };
 
+    // SqAdd: reduce op — accumulates sum of squares: acc + x*x.
+    // Used with ReduceApply<Axis, SqAdd> to compute variance numerators.
+    struct SqAdd {
+        constexpr float operator()(float acc, float x) const { return acc + x * x; }
+        static constexpr float identity = 0.f;
+    };
+
+    // SubMean<D>: apply op — subtracts mean given element and axis sum: x - sum/D.
+    // Used with BroadcastReduce<Axis, SubMean<D>, Add> to center a tensor.
+    template<size_t D>
+    struct SubMean {
+        constexpr float operator()(float x, float sum) const { return x - sum / static_cast<float>(D); }
+    };
+
     // Unary tags — satisfy FloatUnaryOp; used with Map<Op> and Tensor::map()
     struct Log {
         constexpr float operator()(float x) const { return std::log(x); }
@@ -66,6 +80,8 @@ namespace TTTN {
     struct Step {
         constexpr float operator()(float x) const { return x < T ? 1.f : 0.f; }
     };
+
+    
 
 
     // ======================== MAP ========================
@@ -111,13 +127,13 @@ namespace TTTN {
         using Dest = Tensor<Dims...>;
         using Slice = RemoveAxis<Axis, Dims...>::type;
         ParForEach(Slice::Size, [&](const size_t i) {
-            auto src_multi = Slice::flat_to_multi(i);
+            auto src_multi = Slice::FlatToMulti(i);
             std::array<size_t, Dest::Rank> dst_multi{};
             size_t src_d = 0;
             for (size_t d = 0; d < Dest::Rank; ++d) {
                 dst_multi[d] = d == Axis ? idx : src_multi[src_d++];
             }
-            const size_t flat = Dest::multi_to_flat(dst_multi);
+            const size_t flat = Dest::MultiToFlat(dst_multi);
             dst.flat(flat) = f(dst.flat(flat), src.flat(i));
         });
         for (size_t i = 0; i < Slice::Size; ++i) {
@@ -137,11 +153,11 @@ namespace TTTN {
         constexpr std::array<size_t, sizeof...(Dims)> perm = {Perm...};
         Result dst;
         ParForEach(Result::Size, [&](size_t i) {
-            auto dst_multi = Result::flat_to_multi(i);
+            auto dst_multi = Result::FlatToMulti(i);
             std::array<size_t, sizeof...(Dims)> src_multi{};
             for (size_t j = 0; j < sizeof...(Dims); ++j)
                 src_multi[perm[j]] = dst_multi[j];
-            dst.flat(i) = src.flat(Source::multi_to_flat(src_multi));
+            dst.flat(i) = src.flat(Source::MultiToFlat(src_multi));
         });
         return dst;
     }
@@ -165,13 +181,13 @@ namespace TTTN {
 
         Result dst;
         ParForEach(Result::Size, [&](const size_t i) {
-            auto dst_multi = Result::flat_to_multi(i);
+            auto dst_multi = Result::FlatToMulti(i);
             std::array<size_t, Source::Rank> src_multi{};
             size_t dst_d = 0;
             for (size_t d = 0; d < Source::Rank; ++d) {
                 src_multi[d] = d == Axis ? idx : dst_multi[dst_d++];
             }
-            dst.flat(i) = src.flat(Source::multi_to_flat(src_multi));
+            dst.flat(i) = src.flat(Source::MultiToFlat(src_multi));
         });
         return dst;
     }

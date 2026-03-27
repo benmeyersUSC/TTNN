@@ -22,12 +22,12 @@
 
 namespace TTTN {
     // @doc: template<typename F> concept FloatUnaryOp
-    /** Concept to enforce `F :: float -> float` operations on `Tensor`s */
+    /** `concept` to enforce `F :: float -> float` operations on `Tensor`s */
     template<typename F>
     concept FloatUnaryOp = std::regular_invocable<F, float> &&
                            std::same_as<std::invoke_result_t<F, float>, float>;
     // @doc: template<typename F> concept FloatBinaryOp
-    /** Concept to enforce `F :: float -> float -> float` operations on two `Tensor`s */
+    /** `concept` to enforce `F :: float -> float -> float` operations on two `Tensor`s */
     template<typename F>
     concept FloatBinaryOp = std::regular_invocable<F, float, float> &&
                             std::same_as<std::invoke_result_t<F, float, float>, float>;
