@@ -5,40 +5,6 @@
 #include "Params.hpp"
 
 namespace TTTN {
-    // MULTI-HEAD SELF-ATTENTION BLOCK (generalized embedding rank)
-    //
-    // Template parameters:
-    //   SeqLen  — sequence length (tokens)
-    //   Heads   — number of attention heads
-    //   HeadDim — dimension per head
-    //   EmbDims — embedding shape (variadic; Tensor<EmbDim> for standard LLM, any rank supported)
-    //
-    // Constraint: Heads * HeadDim == TensorDimsProduct<EmbDims...>::value  (= EmbSize)
-    //
-    // Types:
-    //   InputTensor  = OutputTensor = Tensor<SeqLen, EmbDims...>  (shape-preserving)
-    //   W_Q, W_K, W_V : Tensor<Heads, HeadDim, EmbDims...>   project EmbDims → (Heads, HeadDim)
-    //   W_O            : Tensor<EmbDims..., Heads, HeadDim>   project (Heads, HeadDim) → EmbDims
-    //
-    // Forward:
-    //   For each token s:
-    //       x_s = TensorIndex<0>(X, s)                                 → Tensor<EmbDims...>
-    //       q_s = ΣΠ<N_emb>(W_Q, x_s)                                 → Tensor<Heads, HeadDim>
-    //       (same for K, V)
-    //   For each head h:
-    //       scores_h  = ΣΠ<1>(Q_h, Permute<1,0>(K_h)) / √HeadDim      → Tensor<SeqLen, SeqLen>
-    //       weights_h = Softmax<1>(scores_h)                            → Tensor<SeqLen, SeqLen>
-    //       attended_h = ΣΠ<1>(weights_h, V_h)                         → Tensor<SeqLen, HeadDim>
-    //   For each token s:
-    //       out_s = ΣΠ<2>(W_O, attended_s)                             → Tensor<EmbDims...>
-    //
-    // Backward (chain rule through all of the above):
-    //   Caches X, Q, K, V, attn_weights, attended from the forward pass.
-    //   W_Q_T = WTBlockSwapPerm<2, N_emb>(W_Q) → Tensor<EmbDims..., Heads, HeadDim>
-    //   W_O_T = WTBlockSwapPerm<N_emb, 2>(W_O) → Tensor<Heads, HeadDim, EmbDims...>
-    //   upstream dX: ΣΠ<2>(W_Q_T, dq_s) + ΣΠ<2>(W_K_T, dk_s) + ΣΠ<2>(W_V_T, dv_s)
-
-
     template<size_t SeqLen, size_t Heads, size_t... EmbDims>
     class MultiHeadAttentionBlock {
     public:
@@ -51,10 +17,19 @@ namespace TTTN {
         static_assert(EmbSize % Heads == 0,
                       "Heads must be a factor of EmbSize (the product of all EmbDims)");
 
-        using W_QKV_Type = Tensor<Heads, HeadDim, EmbDims...>; // shape of W_Q, W_K, W_V
-        using W_O_Type = Tensor<EmbDims..., Heads, HeadDim>; // shape of W_O
-        using QKV_Type = Tensor<SeqLen, Heads, HeadDim>; // projected Q, K, V
-        using Scores_Type = Tensor<Heads, SeqLen, SeqLen>; // attention weight matrix
+        // shape of W_Q, W_K, W_V
+        // [Heads, HeadDim, EmbDims...]
+        //      for each head, contract EmbDims from Input to get QKV_Type
+        //      [Heads, HeadDim, EmbDims...] x [SeqLen, EmbDims...]
+        using W_QKV_Type = Tensor<Heads, HeadDim, EmbDims...>;
+        // shape of W_O
+        // [EmbDims..., Heads, HeadDim]
+        using W_O_Type = Tensor<EmbDims..., Heads, HeadDim>; // projected Q, K, V
+        // [SeqLen, Heads, HeadDim]
+        using QKV_Type = Tensor<SeqLen, Heads, HeadDim>;
+        // attention weight matrix
+        // [Heads, SeqLen, SeqLen]
+        using Scores_Type = Tensor<Heads, SeqLen, SeqLen>;
 
     private:
         Param<W_QKV_Type> WQ_, WK_, WV_;
