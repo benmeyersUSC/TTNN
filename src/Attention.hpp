@@ -36,6 +36,10 @@ namespace TTTN {
         // [Heads, SeqLen, SeqLen]
         using Scores_Type = Tensor<Heads, SeqLen, SeqLen>;
 
+        // attended values after softmax-weighted sum
+        // [Heads, SeqLen, HeadDim]
+        using Attended_Type = Tensor<Heads, SeqLen, HeadDim>;
+
     private:
         Param<W_QKV_Type> WQ_, WK_, WV_;
         Param<W_O_Type> WO_;
@@ -44,7 +48,21 @@ namespace TTTN {
         mutable InputTensor X_cache_{};
         mutable QKV_Type Q_{}, K_{}, V_{};
         mutable Scores_Type attn_weights_{};
-        mutable QKV_Type attended_{};
+        mutable Attended_Type attended_{};
+
+        // batched forward-pass cache — float vectors because Batch is a template param, not a class param
+        mutable std::vector<float> bX_buf_, bQ_buf_, bK_buf_, bV_buf_, battn_buf_, battended_buf_;
+
+        template<typename T>
+        static void bcache_store(const T& t, std::vector<float>& buf) {
+            buf.assign(t.data(), t.data() + T::Size);
+        }
+        template<typename T>
+        static T bcache_load(const std::vector<float>& buf) {
+            T t;
+            std::copy(buf.begin(), buf.begin() + T::Size, t.data());
+            return t;
+        }
 
     public:
         // @doc: auto all_params()
@@ -69,6 +87,11 @@ namespace TTTN {
             XavierInitMD(WO_.value, EmbSize, EmbSize);
         }
 
+        template <size_t... Is>
+        static constexpr auto QKV_Contract(const InputTensor& X, const W_QKV_Type& wm, std::index_sequence<Is...>) {
+            return Contract<AxisList<(1+Is)...>{}, AxisList<(2+Is)...>{}, Mul, Add>(X, wm);
+        };
+
 
         // @doc: OutputTensor Forward(const InputTensor& X) const
         /** ######### */
@@ -76,35 +99,23 @@ namespace TTTN {
             const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
             X_cache_ = X;
 
-            const auto WQ_T = PermuteFromHolder<WTBlockSwapPerm<2, N_emb> >(
-                WQ_.value, std::make_index_sequence<2 + N_emb>{});
-            const auto WK_T = PermuteFromHolder<WTBlockSwapPerm<2, N_emb> >(
-                WK_.value, std::make_index_sequence<2 + N_emb>{});
-            const auto WV_T = PermuteFromHolder<WTBlockSwapPerm<2, N_emb> >(
-                WV_.value, std::make_index_sequence<2 + N_emb>{});
+            // [SeqLen, EmbDims...] x [Heads, HeadDim, EmbDims...] -> [SeqLen, Heads, HeadDim]
+            Q_ = QKV_Contract(X, WQ_.value, std::make_index_sequence<N_emb>{});
+            K_ = QKV_Contract(X, WK_.value, std::make_index_sequence<N_emb>{});
+            V_ = QKV_Contract(X, WV_.value, std::make_index_sequence<N_emb>{});
 
-            // Project: Tensor<SeqLen, Heads, HeadDim>
-            Q_ = ΣΠ<N_emb>(X, WQ_T);
-            K_ = ΣΠ<N_emb>(X, WK_T);
-            V_ = ΣΠ<N_emb>(X, WV_T);
+            // scores[h,s_q,s_k] = Σ_d Q[s_q,h,d] * K[s_k,h,d]
+            // Batch H(1,1)  Contract D(2,2)  Free S_q(0) S_k(0)  -> [H,S_q,S_k]
+            attn_weights_ = Softmax<2>(
+                BatchContract<AxisList<1>{}, AxisList<1>{}, AxisList<2>{}, AxisList<2>{}, Mul, Add>(Q_, K_) * inv_sqrt);
 
-            // Permute to heads-first: Tensor<Heads, SeqLen, HeadDim>
-            auto Qp = Permute<1, 0, 2>(Q_);
-            auto Kp = Permute<1, 0, 2>(K_);
-            auto Vp = Permute<1, 0, 2>(V_);
+            // attended[h,s_q,d] = Σ_{s_k} attn[h,s_q,s_k] * V[s_k,h,d]
+            // Batch H(0,1)  Contract S_k(2,0)  Free S_q(1) D(2)  -> [H,S,D]
+            attended_ = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<2>{}, AxisList<0>{}, Mul, Add>(attn_weights_, V_);
 
-            // Batched over Heads: scores[h,q,k] = Σ_d Q[h,q,d] * K[h,k,d]
-            auto scores = BatchΣΠ<1, 1>(Qp, Permute<0, 2, 1>(Kp)) * inv_sqrt;
-
-            attn_weights_ = Softmax<2>(scores);
-
-            // In Forward, after the BatchΣΠ:
-            auto attended_hp = BatchΣΠ<1, 1>(attn_weights_, Vp); // Tensor<Heads, SeqLen, HeadDim>
-            attended_ = Permute<1, 0, 2>(attended_hp); // back to Tensor<SeqLen, Heads, HeadDim>
-            const auto WO_T = PermuteFromHolder<WTBlockSwapPerm<N_emb, 2> >(
-                WO_.value, std::make_index_sequence<N_emb + 2>{});
-            // Then att_seq IS attended_ — no second permute needed:
-            return ΣΠ<2>(attended_, WO_T);
+            // out[s,e...] = Σ_{h,d} attended[h,s,d] * WO[e...,h,d]
+            // Contract H(0,N_emb) D(2,N_emb+1)  Free S(1) and E...  -> [S,E...]
+            return Contract<AxisList<0,2>{}, AxisList<N_emb, N_emb+1>{}, Mul, Add>(attended_, WO_.value);
         }
 
 
@@ -115,117 +126,157 @@ namespace TTTN {
                              const InputTensor & /*a_prev*/) {
             const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
 
-            // --- Output projection backward ---
-            WO_.grad += Einsum<0, 0>(delta_A, attended_);
+            // --- WO_ grad ---
+            // dWO[e...,h,d] = Σ_s delta_A[s,e...] * attended[h,s,d]
+            // Contract S: axis 0 in delta_A, axis 1 in attended  -> [E...,H,D]
+            WO_.grad += Einsum<0, 1>(delta_A, attended_);
 
-            auto d_attended = ΣΠ<N_emb>(delta_A, WO_.value);
+            // d_att[s,h,d] = Σ_{e...} delta_A[s,e...] * WO[e...,h,d]   -> [S,H,D]
+            // Contracts last N_emb of delta_A against first N_emb of WO_
+            const auto d_att = ΣΠ<N_emb>(delta_A, WO_.value);
 
-            // --- Heads-first layouts ---
-            auto d_att_hp = Permute<1, 0, 2>(d_attended); // Tensor<Heads, SeqLen, HeadDim>
-            auto Qp = Permute<1, 0, 2>(Q_); // Tensor<Heads, SeqLen, HeadDim>
-            auto Kp = Permute<1, 0, 2>(K_);
-            auto Vp = Permute<1, 0, 2>(V_);
+            // --- Attended backward ---
+            // d_attn[h,s_q,s_k] = Σ_d d_att[s_q,h,d] * V[s_k,h,d]
+            // Batch H(1,1)  Contract D(2,2)  Free S_q(0) S_k(0)  -> [H,S_q,S_k]
+            const auto d_attn = BatchContract<AxisList<1>{}, AxisList<1>{}, AxisList<2>{}, AxisList<2>{}, Mul, Add>(d_att, V_);
 
-            // --- Weighted V backward (batched over Heads) ---
-            // forward: attended = BatchΣΠ<1,1>(weights, Vp)
-            //
-            // d_weights = BatchΣΠ<1,1>(d_att_hp, Vp^T)
-            //   Tensor<Heads, SeqLen, HeadDim> × Tensor<Heads, HeadDim, SeqLen>
-            //   → Tensor<Heads, SeqLen, SeqLen>
-            auto d_weights = BatchΣΠ<1, 1>(d_att_hp, Permute<0, 2, 1>(Vp));
+            // d_V[h,s_k,d] = Σ_{s_q} attn[h,s_q,s_k] * d_att[s_q,h,d]
+            // Batch H(0,1)  Contract S_q(1,0)  Free S_k(2) D(2)  -> [H,S_k,D]
+            const auto d_V = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<1>{}, AxisList<0>{}, Mul, Add>(attn_weights_, d_att);
 
-            // d_Vp = BatchΣΠ<1,1>(weights^T, d_att_hp)
-            //   Tensor<Heads, SeqLen, SeqLen> × Tensor<Heads, SeqLen, HeadDim>
-            //   → Tensor<Heads, SeqLen, HeadDim>
-            auto d_Vp = BatchΣΠ<1, 1>(Permute<0, 2, 1>(attn_weights_), d_att_hp);
+            // --- Softmax backward ---
+            const auto d_scores = SoftmaxPrime<2>(d_attn, attn_weights_) * inv_sqrt;
 
-            // --- Softmax backward (operates on full Tensor<Heads, SeqLen, SeqLen>) ---
-            auto d_scores = SoftmaxPrime<2>(d_weights, attn_weights_) * inv_sqrt;
+            // --- Scores backward ---
+            // d_Q[h,s_q,d] = Σ_{s_k} d_scores[h,s_q,s_k] * K[s_k,h,d]
+            // Batch H(0,1)  Contract S_k(2,0)  Free S_q(1) D(2)  -> [H,S_q,D]
+            const auto d_Q = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<2>{}, AxisList<0>{}, Mul, Add>(d_scores, K_);
 
-            // --- Scores backward (batched over Heads) ---
-            // forward: scores = BatchΣΠ<1,1>(Qp, Kp^T)
-            //
-            // d_Qp = BatchΣΠ<1,1>(d_scores, Kp)
-            //   Tensor<Heads, SeqLen, SeqLen> × Tensor<Heads, SeqLen, HeadDim>
-            //   → Tensor<Heads, SeqLen, HeadDim>
-            auto d_Qp = BatchΣΠ<1, 1>(d_scores, Kp);
+            // d_K[h,s_k,d] = Σ_{s_q} d_scores[h,s_q,s_k] * Q[s_q,h,d]
+            // Batch H(0,1)  Contract S_q(1,0)  Free S_k(2) D(2)  -> [H,S_k,D]
+            const auto d_K = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<1>{}, AxisList<0>{}, Mul, Add>(d_scores, Q_);
 
-            // d_Kp = BatchΣΠ<1,1>(d_scores^T, Qp)
-            //   Tensor<Heads, SeqLen, SeqLen> × Tensor<Heads, SeqLen, HeadDim>
-            //   → Tensor<Heads, SeqLen, HeadDim>
-            auto d_Kp = BatchΣΠ<1, 1>(Permute<0, 2, 1>(d_scores), Qp);
+            // --- W grads: d_[H,S,D] × X[S,E...] -> [H,D,E...]
+            // Contract S: axis 1 in d_, axis 0 in X
+            WQ_.grad += Einsum<1, 0>(d_Q, X_cache_);
+            WK_.grad += Einsum<1, 0>(d_K, X_cache_);
+            WV_.grad += Einsum<1, 0>(d_V, X_cache_);
 
-            // --- Permute gradients back to Tensor<SeqLen, Heads, HeadDim> ---
-            auto d_Q = Permute<1, 0, 2>(d_Qp);
-            auto d_K = Permute<1, 0, 2>(d_Kp);
-            auto d_V = Permute<1, 0, 2>(d_Vp);
-
-            // --- Q/K/V projection backward (no loops) ---
-            // dW = ΣΠ<1>(dGrad_swap, X_cache_)
-            //   Tensor<Heads, HeadDim, SeqLen> × Tensor<SeqLen, EmbDims...>
-            //   contracts SeqLen → Tensor<Heads, HeadDim, EmbDims...>
-            // auto dQ_swap = Permute<1, 2, 0>(d_Q);
-            // auto dK_swap = Permute<1, 2, 0>(d_K);
-            // auto dV_swap = Permute<1, 2, 0>(d_V);
-
-            // WQ_.grad += ΣΠ<1>(dQ_swap, X_cache_);
-            // WK_.grad += ΣΠ<1>(dK_swap, X_cache_);
-            // WV_.grad += ΣΠ<1>(dV_swap, X_cache_);
-
-            WQ_.grad += Einsum<0, 0>(d_Q, X_cache_);
-            WK_.grad += Einsum<0, 0>(d_K, X_cache_);
-            WV_.grad += Einsum<0, 0>(d_V, X_cache_);
-
-            // dX = ΣΠ<2>(d_Q, WQ) + ΣΠ<2>(d_K, WK) + ΣΠ<2>(d_V, WV)
-            //   Tensor<SeqLen, Heads, HeadDim> × Tensor<Heads, HeadDim, EmbDims...>
-            //   contracts (Heads, HeadDim) → Tensor<SeqLen, EmbDims...>
-            return ΣΠ<2>(d_Q, WQ_.value) + ΣΠ<2>(d_K, WK_.value) + ΣΠ<2>(d_V, WV_.value);
+            // --- dX: d_[H,S,D] × W[H,D,E...] -> [S,E...]
+            // Contract (H,D): axes {0,2} in d_, axes {0,1} in W
+            return Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_Q, WQ_.value)
+                 + Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_K, WK_.value)
+                 + Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_V, WV_.value);
         }
 
-        // ─── BATCHED (loop over leading Batch dimension) ─────────────────────────
+        // ─── BATCHED (no loop — fully batched tensor ops via BatchContract/Contract) ──
+
+        // Helper: project [B,S,E...] through [H,D,E...] → [B,S,H,D]
+        // Contracts E... at axes (2+Is) in X against axes (2+Is) in W.
+        template<size_t Batch, size_t... Is>
+        static auto BatchedQKV_Contract(const Tensor<Batch, SeqLen, EmbDims...>& X, const W_QKV_Type& W, std::index_sequence<Is...>) {
+            return Contract<AxisList<(2+Is)...>{}, AxisList<(2+Is)...>{}, Mul, Add>(X, W);
+        }
+
+        // Helper: backward through WO_ — contracts E... at axes (2+Is) in dA against axes (Is) in WO_.
+        // [B,S,E...] × [E...,H,D] → [B,S,H,D]
+        template<size_t Batch, size_t... Is>
+        static auto BatchedDAttended(const Tensor<Batch, SeqLen, EmbDims...>& dA, const W_O_Type& WO, std::index_sequence<Is...>) {
+            return Contract<AxisList<(2+Is)...>{}, AxisList<Is...>{}, Mul, Add>(dA, WO);
+        }
 
         // @doc: template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(...)
         /** ######### */
         template<size_t Batch>
         Tensor<Batch, SeqLen, EmbDims...> BatchedForward(const Tensor<Batch, SeqLen, EmbDims...> &X) const {
-            Tensor<Batch, SeqLen, EmbDims...> result;
-            constexpr size_t sample_size = InputTensor::Size;
-            for (size_t b = 0; b < Batch; ++b) {
-                InputTensor x_b;
-                for (size_t i = 0; i < sample_size; ++i)
-                    x_b.flat(i) = X.flat(b * sample_size + i);
-                const auto out = Forward(x_b);
-                for (size_t i = 0; i < sample_size; ++i)
-                    result.flat(b * sample_size + i) = out.flat(i);
-            }
-            return result;
+            const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
+            bcache_store(X, bX_buf_);
+
+            // [B,S,E...] × [H,D,E...] → [B,S,H,D]
+            const auto bQ = BatchedQKV_Contract<Batch>(X, WQ_.value, std::make_index_sequence<N_emb>{});
+            const auto bK = BatchedQKV_Contract<Batch>(X, WK_.value, std::make_index_sequence<N_emb>{});
+            const auto bV = BatchedQKV_Contract<Batch>(X, WV_.value, std::make_index_sequence<N_emb>{});
+            bcache_store(bQ, bQ_buf_);
+            bcache_store(bK, bK_buf_);
+            bcache_store(bV, bV_buf_);
+
+            // scores[b,h,s_q,s_k] = Σ_d Q[b,s_q,h,d] * K[b,s_k,h,d]
+            // Batch: B(0,0) H(2,2)  Contract: D(3,3)  Free: S_q(1) S_k(1)
+            // → [B,H,S_q,S_k]
+            const auto scores = BatchContract<AxisList<0,2>{}, AxisList<0,2>{}, AxisList<3>{}, AxisList<3>{}, Mul, Add>(bQ, bK) * inv_sqrt;
+
+            const auto battn = Softmax<3>(scores);
+            bcache_store(battn, battn_buf_);
+            attn_weights_ = TensorIndex<0>(battn, 0); // snap() support: expose first-sample head weights
+
+            // attended[b,h,s_q,d] = Σ_{s_k} attn[b,h,s_q,s_k] * V[b,s_k,h,d]
+            // Batch: B(0,0) H(1,2)  Contract: S_k(3,1)  Free: S_q(2) D(3)
+            // → [B,H,S_q,D]
+            const auto battended = BatchContract<AxisList<0,1>{}, AxisList<0,2>{}, AxisList<3>{}, AxisList<1>{}, Mul, Add>(battn, bV);
+            bcache_store(battended, battended_buf_);
+
+            // out[b,s,e...] = Σ_{h,d} attended[b,h,s,d] * WO[e...,h,d]
+            // Contract: H(1,N_emb) D(3,N_emb+1)  Free: (B,S) and E...
+            // → [B,S,E...]
+            return Contract<AxisList<1,3>{}, AxisList<N_emb, N_emb+1>{}, Mul, Add>(battended, WO_.value);
         }
 
         template<size_t Batch>
         Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(
             const Tensor<Batch, SeqLen, EmbDims...> &delta_A,
-            const Tensor<Batch, SeqLen, EmbDims...> &a,
-            const Tensor<Batch, SeqLen, EmbDims...> &a_prev) {
-            Tensor<Batch, SeqLen, EmbDims...> result;
-            constexpr size_t sample_size = InputTensor::Size;
-            for (size_t b = 0; b < Batch; ++b) {
-                InputTensor dA_b, a_b, ap_b;
-                for (size_t i = 0; i < sample_size; ++i) {
-                    dA_b.flat(i) = delta_A.flat(b * sample_size + i);
-                    a_b.flat(i) = a.flat(b * sample_size + i);
-                    ap_b.flat(i) = a_prev.flat(b * sample_size + i);
-                }
-                const auto upstream = Backward(dA_b, a_b, ap_b);
-                for (size_t i = 0; i < sample_size; ++i)
-                    result.flat(b * sample_size + i) = upstream.flat(i);
-            }
-            // scale weight gradients by 1/Batch ONCE after all samples accumulate
-            const float batch_adj = 1.f / static_cast<float>(Batch);
-            WQ_.grad = WQ_.grad * batch_adj;
-            WK_.grad = WK_.grad * batch_adj;
-            WV_.grad = WV_.grad * batch_adj;
-            WO_.grad = WO_.grad * batch_adj;
-            return result;
+            const Tensor<Batch, SeqLen, EmbDims...> & /*a*/,
+            const Tensor<Batch, SeqLen, EmbDims...> & /*a_prev*/) {
+
+            const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
+            const float inv_batch = 1.f / static_cast<float>(Batch);
+
+            const auto bQ        = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim>>(bQ_buf_);
+            const auto bK        = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim>>(bK_buf_);
+            const auto bV        = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim>>(bV_buf_);
+            const auto battn     = bcache_load<Tensor<Batch, Heads, SeqLen, SeqLen>>(battn_buf_);
+            const auto battended = bcache_load<Tensor<Batch, Heads, SeqLen, HeadDim>>(battended_buf_);
+            const auto bX        = bcache_load<Tensor<Batch, SeqLen, EmbDims...>>(bX_buf_);
+
+            // --- WO_ grad ---
+            // dWO[e...,h,d] = Σ_{b,s} dA[b,s,e...] * attended[b,h,s,d]
+            // Contract (B,S): axes {0,1} in dA, axes {0,2} in attended
+            WO_.grad += Contract<AxisList<0,1>{}, AxisList<0,2>{}, Mul, Add>(delta_A, battended) * inv_batch;
+
+            // d_attended[b,s,h,d] = Σ_{e...} dA[b,s,e...] * WO[e...,h,d]   → [B,S,H,D]
+            const auto d_attended = BatchedDAttended<Batch>(delta_A, WO_.value, std::make_index_sequence<N_emb>{});
+
+            // --- Attended backward ---
+            // d_attn[b,h,s_q,s_k] = Σ_d d_att[b,s_q,h,d] * V[b,s_k,h,d]
+            // Batch: B(0,0) H(2,2)  Contract: D(3,3)  Free: S_q(1) S_k(1)  → [B,H,S_q,S_k]
+            const auto d_attn = BatchContract<AxisList<0,2>{}, AxisList<0,2>{}, AxisList<3>{}, AxisList<3>{}, Mul, Add>(d_attended, bV);
+
+            // d_V[b,h,s_k,d] = Σ_{s_q} attn[b,h,s_q,s_k] * d_att[b,s_q,h,d]
+            // Batch: B(0,0) H(1,2)  Contract: S_q(2,1)  Free: S_k(3) D(3)  → [B,H,S_k,D]
+            const auto d_V = BatchContract<AxisList<0,1>{}, AxisList<0,2>{}, AxisList<2>{}, AxisList<1>{}, Mul, Add>(battn, d_attended);
+
+            // --- Softmax backward (over axis 3) ---
+            const auto d_scores = SoftmaxPrime<3>(d_attn, battn) * inv_sqrt;
+
+            // --- Scores backward ---
+            // d_Q[b,h,s_q,d] = Σ_{s_k} d_scores[b,h,s_q,s_k] * K[b,s_k,h,d]
+            // Batch: B(0,0) H(1,2)  Contract: S_k(3,1)  Free: S_q(2) D(3)  → [B,H,S_q,D]
+            const auto d_Q = BatchContract<AxisList<0,1>{}, AxisList<0,2>{}, AxisList<3>{}, AxisList<1>{}, Mul, Add>(d_scores, bK);
+
+            // d_K[b,h,s_k,d] = Σ_{s_q} d_scores[b,h,s_q,s_k] * Q[b,s_q,h,d]
+            // Batch: B(0,0) H(1,2)  Contract: S_q(2,1)  Free: S_k(3) D(3)  → [B,H,S_k,D]
+            const auto d_K = BatchContract<AxisList<0,1>{}, AxisList<0,2>{}, AxisList<2>{}, AxisList<1>{}, Mul, Add>(d_scores, bQ);
+
+            // --- W grads: d_[B,H,S,D] × bX[B,S,E...] → [H,D,E...]
+            // Contract (B,S): axes {0,2} in d_, axes {0,1} in bX
+            WQ_.grad += Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_Q, bX) * inv_batch;
+            WK_.grad += Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_K, bX) * inv_batch;
+            WV_.grad += Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_V, bX) * inv_batch;
+
+            // --- dX: d_[B,H,S,D] × W[H,D,E...] → [B,S,E...]
+            // Contract (H,D): axes {1,3} in d_, axes {0,1} in W
+            return Contract<AxisList<1,3>{}, AxisList<0,1>{}, Mul, Add>(d_Q, WQ_.value)
+                 + Contract<AxisList<1,3>{}, AxisList<0,1>{}, Mul, Add>(d_K, WK_.value)
+                 + Contract<AxisList<1,3>{}, AxisList<0,1>{}, Mul, Add>(d_V, WV_.value);
         }
 
         // ─── ADAM UPDATE ────────────────────────────────────────────────────────
