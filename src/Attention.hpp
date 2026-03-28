@@ -20,13 +20,18 @@ namespace TTTN {
         // shape of W_Q, W_K, W_V
         // [Heads, HeadDim, EmbDims...]
         //      for each head, contract EmbDims from Input to get QKV_Type
-        //      [Heads, HeadDim, EmbDims...] x [SeqLen, EmbDims...]
+        //      [Heads, HeadDim, EmbDims...] x [SeqLen, EmbDims...] -> [SeqLen, Heads, HeadDim]
         using W_QKV_Type = Tensor<Heads, HeadDim, EmbDims...>;
+
         // shape of W_O
-        // [EmbDims..., Heads, HeadDim]
-        using W_O_Type = Tensor<EmbDims..., Heads, HeadDim>; // projected Q, K, V
-        // [SeqLen, Heads, HeadDim]
+        // scores is [Heads, SeqLen, SeqLen]...need to go to [SeqLen, EmbDims...] for output
+        // so W_O is [EmbDims..., Heads, HeadDim]...[EmbDims...
+        using W_O_Type = Tensor<EmbDims..., Heads, HeadDim>;
+
+        // shape of Q, K, V
+        // [SeqLen, Heads, HeadDim] (right now, at each head, each element of the sequence is represented in HeadDims)
         using QKV_Type = Tensor<SeqLen, Heads, HeadDim>;
+
         // attention weight matrix
         // [Heads, SeqLen, SeqLen]
         using Scores_Type = Tensor<Heads, SeqLen, SeqLen>;
