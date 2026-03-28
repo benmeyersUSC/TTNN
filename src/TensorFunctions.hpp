@@ -81,8 +81,6 @@ namespace TTTN {
         constexpr float operator()(float x) const { return x < T ? 1.f : 0.f; }
     };
 
-    
-
 
     // ======================== MAP ========================
 
@@ -161,7 +159,7 @@ namespace TTTN {
         });
         return dst;
     }
-    
+
     // Transpose — reverse all axes.
     // Transpose(Tensor<A,B,C>) → Tensor<C,B,A>
     template<size_t... Dims>
@@ -191,4 +189,33 @@ namespace TTTN {
         });
         return dst;
     }
+
+
+    // Permutation that moves axis Src to the last position, shifting others left.
+    // e.g. MoveToLastPerm<0, 3>::value = {1, 2, 0}
+    template<size_t Src, size_t Rank>
+    struct MoveToLastPerm {
+        static constexpr auto value = [] {
+            std::array<size_t, Rank> p{};
+            size_t j = 0;
+            for (size_t i = 0; i < Rank; ++i)
+                if (i != Src) p[j++] = i;
+            p[Rank - 1] = Src;
+            return p;
+        }();
+    };
+
+    // Permutation that moves axis Src to position 0, shifting others right.
+    // e.g. MoveToFirstPerm<2, 3>::value = {2, 0, 1}
+    template<size_t Src, size_t Rank>
+    struct MoveToFirstPerm {
+        static constexpr auto value = [] {
+            std::array<size_t, Rank> p{};
+            p[0] = Src;
+            size_t j = 1;
+            for (size_t i = 0; i < Rank; ++i)
+                if (i != Src) p[j++] = i;
+            return p;
+        }();
+    };
 }

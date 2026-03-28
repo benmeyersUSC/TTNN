@@ -18,18 +18,11 @@ namespace TTTN {
         static constexpr size_t axis_dim = SizeTemplateGet<Axis, Dims...>::value;
         static constexpr size_t axis_stride = Source::Strides[Axis];
 
-        static constexpr auto bases = [] {
-            std::array<size_t, Result::Size> t{};
-            for (size_t out_i = 0; out_i < Result::Size; ++out_i) {
-                const auto dm = Result::FlatToMulti(out_i);
-                std::array<size_t, Source::Rank> sm{};
-                size_t d = 0;
-                for (size_t sd = 0; sd < Source::Rank; ++sd)
-                    sm[sd] = (sd == Axis) ? 0 : dm[d++];
-                t[out_i] = Source::MultiToFlat(sm);
-            }
-            return t;
-        }();
+        // base(out_i) = flat index in Source with axis set to 0
+        // closed form: axis_dim * (out_i rounded down to axis_stride boundary) + remainder
+        static constexpr size_t base(size_t out_i) {
+            return axis_dim * (out_i - out_i % axis_stride) + out_i % axis_stride;
+        }
 
         static constexpr size_t project(size_t i) {
             const size_t after = i % axis_stride;
@@ -51,7 +44,7 @@ namespace TTTN {
                 std::execution::unseq,
                 k_range.begin(), k_range.end(),
                 Op::identity, Op{},
-                [&](size_t k) { return src.flat(K::bases[out_i] + k * K::axis_stride); });
+                [&](size_t k) { return src.flat(K::base(out_i) + k * K::axis_stride); });
         });
         return dst;
     }

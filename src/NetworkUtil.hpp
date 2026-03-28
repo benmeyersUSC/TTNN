@@ -1,6 +1,6 @@
 #pragma once
 #include <concepts>
-#include <Tensor.hpp>
+#include "Tensor.hpp"
 #include "Params.hpp"
 #include "Snapshot.hpp"
 
