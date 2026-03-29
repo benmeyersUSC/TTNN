@@ -5,11 +5,7 @@ namespace TTTN {
     // @doc: template<size_t Axis, size_t... Dims> struct ReduceKernel
     /**
      * Shared kernel for all axis-reduction and broadcast operations
-     * Compile-time `static constexpr`:
-     * `axis_dim = SizeTemplateGet<Axis, Dims...>::value`
-     * `axis_stride = Source::Strides[Axis]`
-     * `std::array<size_t, Result::Size> bases` — flat index in `Source` for each output index with axis set to 0
-     * `static constexpr size_t project(size_t i)` — flat index in `Result` for source flat index `i` (axis contribution stripped); closed-form `i - ((i / axis_stride) % axis_dim) * axis_stride`; no table, `axis_stride` compile-time so division compiles to multiply-shift
+     * Compile-time computes convenient types/shapes, values, and `constexpr` functions for `offset` and `base` flat indexing required in `Broadcast` or `Reduce` functions
      */
     template<size_t Axis, size_t... Dims>
     struct ReduceKernel {
@@ -32,10 +28,14 @@ namespace TTTN {
         }
     };
 
-    template<size_t Axis, typename Op, size_t... Dims>
-        requires FloatBinaryOp<Op> && std::default_initializable<Op> &&
-                 requires { { Op::identity } -> std::convertible_to<float>; }
-    typename RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...> &src) {
+    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> && requires { { Op::identity } -> std::convertible_to<float>; } RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...> &src)
+    /** `Reduce` a `Tensor` along some `Axis` using a `FloatBinaryOp` */
+    template<size_t Axis, typename Op, size_t... Dims> requires
+        FloatBinaryOp<Op> && std::default_initializable<Op> && requires
+        {
+            { Op::identity } -> std::convertible_to<float>;
+        }
+    RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...> &src) {
         using K = ReduceKernel<Axis, Dims...>;
         auto k_range = std::views::iota(size_t{0}, K::axis_dim);
         typename K::Result dst;
@@ -49,13 +49,13 @@ namespace TTTN {
         return dst;
     }
 
-    // @doc: template<size_t Axis, size_t N, size_t... Dims> InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...>& src)
+    // @doc: template<size_t Axis, size_t N, size_t... Dims> InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...> &src)
     /**
-     * Broadcasts a reduced tensor back up by repeating it `N` times along `Axis`
-     * `Expand<0, 5>(Tensor<3>)` → `Tensor<5, 3>` — 5 copies stacked along axis 0
+     * `Expand` a `Tensor`, copying `N` times over the `Axis` passed as a template argument
+     * Identity `Broadcast`
      */
     template<size_t Axis, size_t N, size_t... Dims>
-    typename InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...> &src) {
+    InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...> &src) {
         using Full = typename InsertAxis<Axis, N, Dims...>::type;
         return [&]<size_t... FullDims>(std::type_identity<Tensor<FullDims...> >) {
             using K = ReduceKernel<Axis, FullDims...>;
@@ -66,9 +66,6 @@ namespace TTTN {
             return result;
         }(std::type_identity<Full>{});
     }
-
-    // All tag-only. Op is default-constructed; no runtime-lambda overloads.
-    // Shape is preserved — these are the only broadcast ops that justify Move/Inplace variants.
 
     // Copy: result[i] = Op{}(A[i], b_broadcast[i])
     template<size_t Axis, typename Op, size_t... Dims>
@@ -95,13 +92,7 @@ namespace TTTN {
         return std::move(A);
     }
 
-    // Inplace: void, modifies A directly — no alloc
-    // @doc: template<size_t Axis, FloatBinaryOp F, size_t... Dims> Tensor<Dims...> BroadcastApply(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b, F f)
-    /**
-     * Apply binary `f(a_elem, b_elem)` element-wise between `A` and `b` broadcast along `Axis`
-     * **Tag-param overload**: `BroadcastApply<Axis, F>(A, b)` — default-constructs `F`
-     * `BroadcastApply<0, Add>(Z, bias)` adds bias to every row
-     */
+
     template<size_t Axis, typename Op, size_t... Dims>
         requires FloatBinaryOp<Op> && std::default_initializable<Op>
     void BroadcastApplyInplace(Tensor<Dims...> &A,
@@ -112,20 +103,13 @@ namespace TTTN {
         });
     }
 
-    // Reduce along Axis, then broadcast result back with ApplyOp.
-    // Powers Softmax: BroadcastReduce<Axis, Compose<Exp,Sub>, Max> then BroadcastReduceMove<Axis, Div, Add>.
 
     // Copy
     template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims>
         requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> &&
                  std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> &&
                  requires { { ReduceOp::identity } -> std::convertible_to<float>; }
-    // @doc: template<size_t Axis, FloatBinaryOp ApplyFn, FloatBinaryOp ReduceFn, size_t... Dims> Tensor<Dims...> BroadcastReduce(const Tensor<Dims...>& src, float init, ApplyFn afn, ReduceFn rfn)
-    /**
-     * Reduce along `Axis` then broadcast the result back with a second op — `BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn)`
-     * **Tag-param overload**: `BroadcastReduce<Axis, ApplyOp, ReduceOp>(src)` — `ReduceOp::identity` as init; requires monoid `ReduceOp`
-     * Powers `Softmax`: `BroadcastReduce<Axis, Compose<Exp,Sub>, Max>(x)` then `BroadcastReduce<Axis, Div, Add>(exps)`
-     */
+
     Tensor<Dims...> BroadcastReduce(const Tensor<Dims...> &src) {
         return BroadcastApply<Axis, ApplyOp>(src, ReduceApply<Axis, ReduceOp>(src));
     }

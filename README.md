@@ -14,7 +14,8 @@ Used in my [AlphaToe](https://github.com/benmeyersUSC/AlphaToe) library.
 
 - This library treats
   `Tensor` as a statically-shaped, dimension-typed functor over scalar values, paired with deeply generalized `Zip`,
-  `Map`, and `Reduce` operations. Leveraging **C++** templates and the type system, we enforce shape correctness at compile time while enabling aggressive precomputation of traversal structure. Runtime execution becomes a planned walk over constant topologies - fully fused, vectorizable, and allocation-free.
+  `Map`, and `Reduce` operations. Leveraging **C++
+  ** templates and the type system, we enforce shape correctness at compile time while enabling aggressive precomputation of traversal structure. Runtime execution becomes a planned walk over constant topologies - fully fused, vectorizable, and allocation-free.
 
 - The dimension-typed `Tensor` unlocks a unified
   `Contraction` abstraction, parameterized by three orthogonal components:
@@ -115,51 +116,39 @@ We align the shared axis `K`, then map + reduce:
 
 This is where shape-as-type pays its most interesting dividends.
 
-The goal is a general **`BrainSaladSurgery`** protocol: any block or network that opts in
-returns a structured snapshot of its internal activations, formatted and labeled for
-downstream exploration.  Think of it as a typed, self-describing introspection packet —
-not a raw dump, but something with enough compile-time shape information baked in that a
-visualization tool can consume it without guessing layout.
+The goal is a general **`BrainSaladSurgery`
+** protocol: any block or network that opts in returns a structured snapshot of its internal activations, formatted and labeled for downstream exploration. Think of it as a typed, self-describing introspection packet — not a raw dump, but something with enough compile-time shape information baked in that a visualization tool can consume it without guessing layout.
 
-The attention pattern work already in `main` is the proof of concept.  The head-weight
-matrices, the pre-softmax scores, the value-weighted outputs — all of those are already
-`Tensor<...>` objects with shapes fully known at compile time.  The step is to make that
-exposure **formal and uniform**: define a concept (`BrainSaladProvider` or similar) and
-require that conforming blocks expose a `peek()` method returning a `BrainSaladSurgery`
-struct whose members are themselves typed tensors.  No shape ambiguity, no runtime
-reinterpretation — the graphical tool on the other end knows exactly what it is receiving
-because the type says so.
+The attention pattern work already in
+`main` is the proof of concept. The head-weight matrices, the pre-softmax scores, the value-weighted outputs — all of those are already
+`Tensor<...>` objects with shapes fully known at compile time. The step is to make that exposure **formal and uniform
+**: define a concept (`BrainSaladProvider` or similar) and require that conforming blocks expose a
+`peek()` method returning a `BrainSaladSurgery`
+struct whose members are themselves typed tensors. No shape ambiguity, no runtime reinterpretation — the graphical tool on the other end knows exactly what it is receiving because the type says so.
 
 #### Cross-Network Comparison
 
-The shape-as-type model opens another powerful avenue: **comparing networks of the same
-type**.  Because topology is encoded in the C++ type, the compiler enforces that two
-networks being compared are actually structurally identical.  This makes the following
-operations trivially safe to express:
+The shape-as-type model opens another powerful avenue: **comparing networks of the same type
+**. Because topology is encoded in the C++ type, the compiler enforces that two networks being compared are actually structurally identical. This makes the following operations trivially safe to express:
 
-- **Same random seed, different data direction** — train the same architecture on
-  transposed or permuted data, then compare learned representations layer by layer.
-  Because both networks are `SomeNet<...>` with identical template parameters, a
-  `compare(net_a, net_b)` function can zip their weight tensors together without any
-  runtime shape checking.
+- **Same random seed, different data direction
+  ** — train the same architecture on transposed or permuted data, then compare learned representations layer by layer. Because both networks are
+  `SomeNet<...>` with identical template parameters, a
+  `compare(net_a, net_b)` function can zip their weight tensors together without any runtime shape checking.
 
-- **Checkpoint-to-checkpoint drift** — save a typed snapshot at each epoch; compare
-  corresponding weight tensors across training time using Frobenius cosine similarity or
-  any other metric.  The type guarantees you are comparing the same layer in the same
-  position, not accidentally swapping heads or layers.
+- **Checkpoint-to-checkpoint drift
+  ** — save a typed snapshot at each epoch; compare corresponding weight tensors across training time using Frobenius cosine similarity or any other metric. The type guarantees you are comparing the same layer in the same position, not accidentally swapping heads or layers.
 
-- **Head alignment across runs** — for attention-based networks, identify which heads in
-  run A correspond most closely (by value similarity or by what they attend to) to heads
-  in run B.  With shape-as-type, the per-head slices are well-typed objects and can be
-  passed directly into alignment routines.
+- **Head alignment across runs
+  ** — for attention-based networks, identify which heads in run A correspond most closely (by value similarity or by what they attend to) to heads in run B. With shape-as-type, the per-head slices are well-typed objects and can be passed directly into alignment routines.
 
-The common thread: **the type system is doing the bookkeeping** that in most frameworks
-requires careful string-matching on layer names or fragile index arithmetic.
+The common thread: **the type system is doing the bookkeeping
+** that in most frameworks requires careful string-matching on layer names or fragile index arithmetic.
 
 ### SDL Visualization Plugin
 
-A companion C++ graphics library (in progress) will consume `BrainSaladSurgery` packets
-and render them live.  Planned views:
+A companion C++ graphics library (in progress) will consume
+`BrainSaladSurgery` packets and render them live. Planned views:
 
 - Rank-1 tensors as bar charts or histograms
 - Rank-2 tensors as heat maps (weight matrices, attention score grids)
@@ -167,15 +156,14 @@ and render them live.  Planned views:
 - Network topology graphs with live activation overlays during a forward pass
 
 Because the visualization library will also be typed against the same `Tensor<...>`
-template, it can validate at compile time that the tensors it receives are within its
-renderable rank range — no runtime surprises when you accidentally pass a rank-5 weight
-blob to a heat-map view.
+template, it can validate at compile time that the tensors it receives are within its renderable rank range — no runtime surprises when you accidentally pass a rank-5 weight blob to a heat-map view.
 
 ### GPU Backend
 
-Replace the parallel CPU dispatch (`std::execution::par_unseq`) with CUDA or Metal
-kernels. The contraction and elementwise op layers are the natural insertion point;
-higher-level code does not need to change because the `Tensor` API stays the same. **Apple AMX** is currently used for a specialization of `Contract` where `Map=Mul` and `Reduce=Add`, but other operations could still benefit further from GPUs. 
+Replace the parallel CPU dispatch (
+`std::execution::par_unseq`) with CUDA or Metal kernels. The contraction and elementwise op layers are the natural insertion point; higher-level code does not need to change because the
+`Tensor` API stays the same. **Apple AMX** is currently used for a specialization of `Contract` where `Map=Mul` and
+`Reduce=Add`, but other operations could still benefit further from GPUs.
 
 ---
 
@@ -204,19 +192,22 @@ higher-level code does not need to change because the `Tensor` API stays the sam
 
 ## [TensorPrereqs.hpp](src/TensorPrereqs.hpp): Compile-Time Fundamentals
 
-Concepts, compile-time dimension arithmetic, stride computation, and the parallel loop helper. Everything `Tensor.hpp` needs before it can define the `Tensor` class itself.
+Concepts, compile-time dimension arithmetic, stride computation, and the parallel loop helper. Everything
+`Tensor.hpp` needs before it can define the `Tensor` class itself.
 
 - ***TensorDimsProduct*** — [`struct TensorDimsProduct<size_t... Ds>`](src/TensorPrereqs.hpp)
-    - Template recursion to store product of `size_t...` variadic in `static constexpr size_t value` 
+    - Template recursion to store product of `size_t...` variadic in `static constexpr size_t value`
 
 - ***SizeTemplateGet*** — [`struct SizeTemplateGet<size_t N, size_t... Ds>`](src/TensorPrereqs.hpp)
     - Template recursion to store `N`-th element of `size_t...` variadic in `static constexpr size_t value`
 
 - ***ComputeStrides*** — [`struct ComputeStrides<size_t... Ds>`](src/TensorPrereqs.hpp)
-    - Template recursion to store `Tensor<Ds...>` stride array in `static constexpr std::array<size_t, sizeof...(Ds)> value`
+    - Template recursion to store `Tensor<Ds...>` stride array in
+      `static constexpr std::array<size_t, sizeof...(Ds)> value`
 
 - ***ParForEach*** — [`template<std::invocable<size_t> F> void ParForEach(size_t n, F f)`](src/TensorPrereqs.hpp)
-    - Helper function used throughout library to run `std::invocable<size_t> F` `n` times using `std::execution::par_unseq` policy
+    - Helper function used throughout library to run `std::invocable<size_t> F` `n` times using
+      `std::execution::par_unseq` policy
 
 - ***FloatUnaryOp*** — [`template<typename F> concept FloatUnaryOp`](src/TensorPrereqs.hpp)
     - `concept` to enforce `F :: float -> float` operations on `Tensor`s
@@ -224,19 +215,23 @@ Concepts, compile-time dimension arithmetic, stride computation, and the paralle
 - ***FloatBinaryOp*** — [`template<typename F> concept FloatBinaryOp`](src/TensorPrereqs.hpp)
     - `concept` to enforce `F :: float -> float -> float` operations on two `Tensor`s
 
-
 ---
 
 ## [TensorStorage.hpp](src/TensorStorage.hpp): Storage Policy
 
-Two specializations of `TensorStorage<S, bool Small>` selected at compile time: inline `alignas(64) float[S]` for small tensors (≤ 16 elements) and 64-byte aligned heap allocation for large ones. `Tensor` owns one instance as `storage_`.
+Two specializations of `TensorStorage<S, bool Small>` selected at compile time: inline
+`alignas(64) float[S]` for small tensors (≤ 16 elements) and 64-byte aligned heap allocation for large ones.
+`Tensor` owns one instance as `storage_`.
 
-We 64-byte-align here so `Tensor`s' data (when grabbed to cache from RAM) starts at beginning of cache. Also makes vectorization optimizations and specialized `cblas_sgemm` call in `TensorContract.hpp` as fast as possible. 
+We 64-byte-align here so
+`Tensor`s' data (when grabbed to cache from RAM) starts at beginning of cache. Also makes vectorization optimizations and specialized
+`cblas_sgemm` call in `TensorContract.hpp` as fast as possible.
 
 - ***TensorStorage*** — [`template<size_t S, bool Small = (S <= 16)> struct TensorStorage`](src/TensorStorage.hpp)
     - Struct wrapper for storage of `Tensor`'s `float[]`
     - `Tensor` owns one instance as `storage_`
-    - Specialized for `bool Small = true` (inline 64-byte-aligned stack `float[]`) and `bool Small = false` (64-byte-aligned heap `float[]`)
+    - Specialized for `bool Small = true` (inline 64-byte-aligned stack `float[]`) and
+      `bool Small = false` (64-byte-aligned heap `float[]`)
 
 - ***TensorStorage (STO)*** — [`template<size_t S> struct TensorStorage<S, true>`](src/TensorStorage.hpp)
     - Specialization for *small `Tensor` optimization* (**STO**)
@@ -245,9 +240,6 @@ We 64-byte-align here so `Tensor`s' data (when grabbed to cache from RAM) starts
 - ***TensorStorage (heap)*** — [`template<size_t S> struct TensorStorage<S, false>`](src/TensorStorage.hpp)
     - Specialization for larger `Tensor` to be allocated on the heap at a 64-byte aligned address
     - Member array is defined as: `std::unique_ptr<float[], AlignedDeleter> heap_`
-
-
-
 
 ---
 
@@ -374,10 +366,11 @@ The primary data structure. `Dims...` encodes the full shape at compile time, in
       `Tensor`'s underlying data in-place
 
 - ***map*** - [`template<FloatUnaryOp F> Tensor map(F f) const`](src/Tensor.hpp)
-    - Copy-constructs `Tensor result` from `*this`, calls `apply`, returns copy 
+    - Copy-constructs `Tensor result` from `*this`, calls `apply`, returns copy
 
 - ***zip_apply*** — [`template<FloatBinaryOp F> void zip_apply(const Tensor &other, F f)`](src/Tensor.hpp)
-    - In-place binary transform: `self[i] = f(self[i], other[i])` for all `i`. Mutating counterpart to `zip`. Accepts any `FloatBinaryOp` including op tags: `zip_apply(b, Add{})`
+    - In-place binary transform: `self[i] = f(self[i], other[i])` for all `i`. Mutating counterpart to
+      `zip`. Accepts any `FloatBinaryOp` including op tags: `zip_apply(b, Add{})`
 
 **Indexing operators:**
 
@@ -431,7 +424,6 @@ The primary data structure. `Dims...` encodes the full shape at compile time, in
 Shape-only metaprogramming. No data, no runtime — purely compile-time type-level operations on
 `Tensor` dimension packs. Available to any code that includes `Tensor.hpp`.
 
-
 ### Tensor Demonstration
 
 ```cpp
@@ -467,7 +459,8 @@ vec.apply([](float x){ return -x; });              // in-place
 
 ## [TensorShapeOps.hpp](src/TensorShapeOps.hpp): Tensor Type Algebra
 
-Shape-only metaprogramming — no data, no runtime. Purely compile-time type-level operations on `Tensor` dimension packs: concatenation, axis removal/insertion, slicing, and permutation type computation.
+Shape-only metaprogramming — no data, no runtime. Purely compile-time type-level operations on
+`Tensor` dimension packs: concatenation, axis removal/insertion, slicing, and permutation type computation.
 
 - ***TensorConcat*** — [`struct TensorConcat<typename T1, typename T2>`](src/TensorShapeOps.hpp)
     - #########
@@ -485,7 +478,8 @@ Shape-only metaprogramming — no data, no runtime. Purely compile-time type-lev
 
 ## [TensorOps.hpp](src/TensorOps.hpp): Op Tags and Element-wise Primitives
 
-Operation tags, element-wise operations, arithmetic operators, and `Permute`. Base layer included by `TensorContract.hpp` and `TensorReduce.hpp`.
+Operation tags, element-wise operations, arithmetic operators, and `Permute`. Base layer included by
+`TensorContract.hpp` and `TensorReduce.hpp`.
 
 ### Operation Tags
 
@@ -607,7 +601,10 @@ static_assert(std::is_same_v<decltype(Wt), Tensor<4, 3>>);
 
 ## [TensorFunctions.hpp](src/TensorFunctions.hpp): Functional Helpers
 
-Free-function wrappers for the core tensor transforms: `Map`, `MapMove`, `Zip`, `ZipMove`, `Permute`, `Transpose`, `TensorIndex`, and `TensorIndexApply`. Also the canonical home of all op-tag structs (`Add`, `Mul`, `Max`, `Exp`, `Compose`, etc.) — these are the types you pass as template arguments to `BroadcastReduce`, `ReduceApply`, `Map`, and friends.
+Free-function wrappers for the core tensor transforms: `Map`, `MapMove`, `Zip`, `ZipMove`, `Permute`, `Transpose`,
+`TensorIndex`, and `TensorIndexApply`. Also the canonical home of all op-tag structs (`Add`, `Mul`, `Max`, `Exp`,
+`Compose`, etc.) — these are the types you pass as template arguments to `BroadcastReduce`, `ReduceApply`,
+`Map`, and friends.
 
 - ***TensorIndex*** — [
   `template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...>& src, size_t idx)`](src/TensorFunctions.hpp)
@@ -615,80 +612,150 @@ Free-function wrappers for the core tensor transforms: `Map`, `MapMove`, `Zip`, 
 
 ---
 
-## [TensorContract.hpp](src/TensorContract.hpp): Contraction
+## [TensorContract.hpp](src/TensorContract.hpp): Generalized Tensor Contraction
 
-Contraction, named specializations (`ΣΠ`, `Dot`, `Matmul`, `Outer`, `Einsum`), axis-permutation helpers, generalized `Contract`, and `Collapse`. Includes `TensorOps.hpp`.
+Tensor contraction is the unified `Reduce ∘ zipWith(Map) ∘ Align` operation on `Tensor`s. Sum of products (
+`ΣΠ`) is the common use-case (and is specialized here to utilize `Apple Accelerate`'s highly optimized
+`cblas_sgemm` function for matrix multiplication) but any `FloatBinaryOp` can be used for `Map` and any
+`FloatBinaryOp` can be used for `Reduce`.
 
-### Tensor Contraction
+`Alignment` (choosing which axes to `Batch` or `Contract` is determined by which contraction function is chosen. NOTE:
+`Batch` dimensions must be identical in two source `Tensor`s.
 
-Tensor contraction is the unified `Reduce ∘ zipWith(Map) ∘ Align` operation on `Tensor`s. Every named operation —
-`ΣΠ`, `Dot`, `Matmul`, `Outer`, `Einsum`, `Collapse` — is a specialization.
+All contractions eventually become a `BatchInnerContraction`, which takes in four arrays of axes: `A`'s `Batch` and
+`Contract` axes and `B`'s `Batch` and `Contract` axes. Non-batched `Contract` calls become
+`Batch=0` calls to the former. `Dot`, `Matmul`, `ΣΠ`, `Outer`, and other variants all have
+`Batch` versions, but, again are all wrappers around `BatchInnerContraction`.
 
-- ***ContractionKernel*** — [`template<size_t N, typename TA, typename TB> struct ContractionKernel`](src/TensorContract.hpp)
-    - Unified compile-time index kernel. Specialized for `<N, Tensor<ADims...>, Tensor<BDims...>>`.
-    - Compile-time `static constexpr`:
-        - `RankA`, `RankB` — ranks of `A` and `B`
-        - Asserts `N <= RankA && N <= RankB` and last `N` dims of `A` match first `N` dims of `B`
-        - `A_Free = TensorSlice<0, RankA-N, ADims...>::type`
-        - `B_Free = TensorSlice<N, RankB-N, BDims...>::type`
-        - `Contracted = TensorSlice<RankA-N, N, ADims...>::type`
-        - `ResultType = TensorConcat<A_Free, B_Free>::type`
-        - `struct { std::array<size_t, Contracted::Size> a, b; } offsets` — flat-index offset into `A` and
-          `B` for every contracted position; precomputed once per `(N, ADims, BDims)` and shared across all
-          `(Map, Reduce)` variants
-        - `b_free_size`, `contracted_size` — compile-time constants used by
-          `InnerContract` to compute per-output base offsets as `O(1)` arithmetic (
-          `base_a = (o / b_free_size) * contracted_size`, `base_b = o % b_free_size`)
-          rather than a precomputed table — the compiler strength-reduces these to multiply-shift at `-O2`
-    - **These pay real dividends for [TrainableTensorNetwork](./src/TrainableTensorNetwork.hpp) training schedules. Any
-      weight `Tensor`'s `Dot`s, `Matmul`s, and `Outer`s (*in forward and backward passes*) are saved structs, and the
-      runtime computations are parallelized and vectorized, following known, saved paths**
+- ***AxisList*** - [`template<size_t... Axes> struct AxisList`](src/TensorContract.hpp)
+    - Necessary wrapper around variadic `size_t` axis packs used in `Contract` and `BatchContract` to specify specific
+      `Batch` and/or `Contract` axis indices, rather than passing the *count* of left (for `Batch`) or right (for
+      `Contract`) axes
+    - `static_assert`s no duplicate axis indices
 
-- ***InnerContract*** — [
-  `template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)`](src/TensorContract.hpp)
-    - N-inner-axis contraction with custom `Map` and `Reduce` (lambda form)
-    - Aligns the last `N` axes of `A` with the first `N` axes of `B`
-    - `result.flat(o) = Reduce_c map(A[A_Free(o), c], B[c, B_Free(o)])`, for `o ∈ [0, ResultType::Size)`
-    - **Tag-param overload**: `InnerContract<N, Map, Reduce>(A, B)` — `Reduce::identity` used as init; requires monoid
-      `Reduce`
+- ***BC_Permute*** - [
+  `template<size_t Rank, AxisList BatchAxes, AxisList ContractAxes> struct BC_Permute`](src/TensorContract.hpp)
+    - Compile-time helper to generate permutation indices for a `Tensor`'s axes in `BatchInnerContract` form:
+      `[Batch..., Free..., Contract...]`
+    - `static_assert`s that:
+        - `Batch` and `Contract` axes are `disjoint`
+        - no indices in `Batch` or `Contract` lists are greater than `Rank`
+        - `Batch` and `Contract` axes have no duplicates
+    - Intended to allow for `Permute`-`Contract` fusion, obviating many calls (in [
+      `TrainableTensorNetwork`](src/TrainableTensorNetwork.hpp) blocks, for example) which allocate temporary `Tensor`s
+    - `BatchInnerContract` form is part conventional and part performance-informed:
+        - `Batch` being left-aligned adopts common convention for `Tensor` shapes in ML
+        - `Inner` being right-aligned departs from the original conventional configuration in which `Inner` means
+          `A`'s rightmost and `B`'s leftmost axes. The reason for right-alignment of contracted axes is that
+          `Tensor`s in `TTTN` are backed by ***row-major***
+          `float` arrays. This means that in the backing array, the only sets of values which are stored contiguously are those in the right-most axes. To maximize vectorization optimizations for
+          `Reduce ∘ zipWith(Map)` operations, we want the loops over contracted indices to be traversing contiguous memory. Detailed comments on this subject are resident in the code.
 
-- ***ΣΠ*** / ***SigmaPi*** — [
-  `template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorContract.hpp)
-    - `InnerContract<N, Mul, Add>` — classical sum-of-products
-    - `result.flat(o) = Σ_c A[A_Free(o), c] * B[c, B_Free(o)]`
-    - `SigmaPi<N>(A, B)` is an ASCII alias for `ΣΠ<N>(A, B)`
+- ***PermuteFromArray*** - [
+  `template<auto Perm, size_t... I, size_t... Dims> auto PermuteFromArray(const Tensor<Dims...> &t, std::index_sequence<I...>)`](src/TensorContract.hpp)
+    - Takes a `std::array<size_t, Rank>` representing requested permutation ordering and unpacks them with a
+      `std::index_sequence` into a call to `Permute`
+    - Returns a `Tensor` of new permuted shape
 
-- ***Einsum*** — [
-  `template<size_t I, size_t J, size_t... ADims, size_t... BDims> auto Einsum(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorContract.hpp)
-    - `ΣΠ`-contracts over single selected indices `I` and `J` from `A` and `B`, respectively
-    - Permutes `A` to move axis `I` last, `B` to move axis `J` first, then calls `ΣΠ<1>`
+- ***BatchedContractionKernel*** — [
+  `template<size_t M_Batched, size_t N_Contracted, size_t... A_Dims, size_t... B_Dims> struct BatchedContractionKernel<M_Batched, N_Contracted, Tensor<A_Dims...>, Tensor<B_Dims...> >`](src/TensorContract.hpp)
+    - Unified contraction bookkeeping kernel, used compile-time compute convenient shapes and values used in two versions of
+      `BatchInnerContract` (the functions through which every contraction operation are routed)
 
-- ***Dot*** — [`template<size_t N> auto Dot(const Tensor<N>& A, const Tensor<N>& B)`](src/TensorContract.hpp)
-    - `ΣΠ<1>` on two `Tensor<N>`s — returns `Tensor<>` (rank-0 scalar)
+- ***BatchInnerContract*** - [
+  `template<size_t M, size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, const float init, Map map, Reduce reduce)`](src/TensorContract.hpp)'s core primitive; all contraction routes through here
+    - Core primitive: all contractions become ***BatchInnerContract***
+    - See ***BatchContractionKernel*** for more details on implementation
 
-- ***Matmul*** — [
-  `template<size_t M, size_t K, size_t N> auto Matmul(const Tensor<M,K>& A, const Tensor<K,N>& B)`](src/TensorContract.hpp)
-    - `ΣΠ<1>` on rank-2 tensors — returns `Tensor<M,N>`
+- ***BatchInnerContract*** - [
+  `template<size_t M, size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - Tag-parameter specialization of ***BatchInnerContract***; calls ***BatchInnerContract***
 
-- ***Outer*** — [
-  `template<size_t... ADims, size_t... BDims> auto Outer(const Tensor<ADims...>& A, const Tensor<BDims...>& B)`](src/TensorContract.hpp)
-    - `ΣΠ<0>`: contract nothing — returns `Tensor<ADims..., BDims...>`
+- ***BatchInnerContract*** - [
+  `template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float /*init*/, Mul, Add)`](src/TensorContract.hpp)
+    - Specialized version of generalized ***BatchInnerContract*** for `Map=Mul` and `Reduce=Add` (most common use-case)
+    - Uses `Apple Accelerate`'s
+      `cblas_sgemm` function to unlock aggressive vectorization optimization for matrix multiplication
+    - Extensive commenting in code
 
-- ***Contract*** — [
-  `template<AxisList AAxes, AxisList BAxes, ..., FloatBinaryOp Map, FloatBinaryOp Reduce> auto Contract(const Tensor<ADims...>& A, const Tensor<BDims...>& B, float init, Map map, Reduce reduce)`](src/TensorContract.hpp)
-    - Grand-generalized contraction over arbitrary axis sets (lambda form)
-    - Permutes `A` and `B` to align the selected axes, then delegates to `InnerContract<N>`
-    - **Tag-param overload**: `Contract<AAxes, BAxes, Map, Reduce>(A, B)` — `Reduce::identity` used as init
+- ***BatchΣΠ*** - [
+  `template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - Convenience wrapper for sum of product specialization of ***BatchInnerContract***
 
-- ***Collapse*** — [
-  `template<size_t... Dims, FloatBinaryOp M, FloatBinaryOp R> float Collapse(const Tensor<Dims...>& A, const Tensor<Dims...>& B, float init, M m, R r)`](src/TensorContract.hpp)
-    - Full-rank same-shape scalar reduction: `Reduce_i map(A[i], B[i])`
-    - Direct `std::transform_reduce` over flat data — no index tables needed
-    - **Tag-param overload**: `Collapse<M, R>(A, B)` — `R::identity` used as init
-    - `Collapse<Mul, Add>(A, B)` == Frobenius inner product; `Collapse<AbsDiff, Add>(A, B)` == L1 distance
+- ***BatchSigmaPi*** - [
+  `template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchSigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - ASCII overload of ***BatchΣΠ***
 
-`InnerContract<N>` is the core primitive. `N` controls how many trailing dims of `A` contract with leading dims of
-`B`. Every named operation is a specialization — and every result shape is resolved at compile time from the input shapes.
+- ***InnerContract*** - [
+  `template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)`](src/TensorContract.hpp)
+    - Convenience wrapper for non-batched calls to generalized ***BatchInnerContract***
+
+- ***InnerContract*** - [
+  `template<size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - tag-param specialization of ***InnerContract***
+
+- ***ΣΠ*** - [
+  `template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - Convenience wrapper for non-batched sum of products contraction
+
+- ***SigmaPi*** - [
+  `template<size_t N, size_t... ADims, size_t... BDims> auto SigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - ASCII convenience wrapper for ***ΣΠ***
+
+- ***Contract*** - [
+  `template<AxisList AAxes, AxisList BAxes, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto Contract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)`](src/TensorContract.hpp)
+    - Convenience wrapper for ***BatchContract*** (and
+      ***BatchInnerContract***) for non-Batched, arbitrary-axes contractions
+    - Second-most general function in [TensorContract.hpp](src/TensorContract.hpp)
+
+- ***Contract*** - [
+  `template<AxisList AAxes, AxisList BAxes, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto Contract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - tag-param specialization of ***Contract***
+
+- ***Einsum*** [
+  `template<size_t I, size_t J, size_t... ADims, size_t... BDims> auto Einsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - Variant of ***ΣΠ*** for single-axis sum of product contractions (specified by `I` and `J` for `A` and
+      `B`, respectively)
+
+- ***BatchEinsum*** - [
+  `template<AxisList ABatchAxes, AxisList BBatchAxes, size_t I, size_t J, size_t... ADims, size_t... BDims> auto BatchEinsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - Batch version of ***Einsum***
+
+- ***Dot*** - [`template<size_t N> auto Dot(const Tensor<N> &A, const Tensor<N> &B)`](src/TensorContract.hpp)
+    - Convenience wrapper for sum of product full-rank contraction (dot product) of two Rank-1 `Tensor`s
+
+- ***Matmul*** - [
+  `template<size_t M, size_t K, size_t N> auto Matmul(const Tensor<M, K> &A, const Tensor<K, N> &B)`](src/TensorContract.hpp)
+    - Convenience wrapper for sum of product contraction (matrix multiplication) of two Rank-2 `Tensor`s
+    - NOTE: expects Axis 1 of `A` to be contracted with Axis 0 of `B`, per ***Matmul*** convention
+
+- ***Outer*** - [
+  `template<size_t... ADims, size_t... BDims> auto Outer(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - Convenience wrapper for sum of product no-rank contraction (outer product) of two Rank-1 `Tensor`s
+
+- ***BatchContract*** - [
+  `template<AxisList ABatchAxes, AxisList BBatchAxes, AxisList AContractAxes, AxisList BContractAxes, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto BatchContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)`](src/TensorContract.hpp)
+    - Most general function in [TensorContract.hpp](src/TensorContract.hpp)
+    - Arbitrary `Align` (specified by `Batch` and `Contract` axes), arbitrary `Map` (to zip aligned elements of `A` and
+      `B`), arbitrary `Reduce` (to fold down `Map` results along contracted axes)
+    - Utilizes right-alignment convention of contracted axes (explained more in [
+      ***BC_Permute***](src/TensorContract.hpp) docs and code) and
+      ***tiling*** to utilize vectorization of contiguous reads and computations
+
+- ***BatchContract*** - [
+  `template<AxisList ABatchAxes, AxisList BBatchAxes, AxisList AContractAxes, AxisList BContractAxes, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto BatchContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - Tag-param specialization of ***BatchContract***
+
+
+- ***Collapse*** - [
+  `template<size_t... Dims, FloatBinaryOp M, FloatBinaryOp R> float Collapse(const Tensor<Dims...> &A, const Tensor<Dims...> &B, float init, M map, R reduce)`](src/TensorContract.hpp)
+    - Specialization for contraction over *all* axes
+    - Known as ***Frobenius Inner Product***, it is a generalization of `Dot` or inner product for arbitrarily-shaped
+      `Tensor`s
+
+- ***Collapse*** - [
+  `template<typename M, typename R, size_t... Dims> requires FloatBinaryOp<M> && FloatBinaryOp<R> && std::default_initializable<M> && std::default_initializable<R> && requires { { R::identity } -> std::convertible_to<float>; } float Collapse(const Tensor<Dims...> &A, const Tensor<Dims...> &B)`](src/TensorContract.hpp)
+    - Tag-param specialization of ***Collapse***
 
 ```cpp
 Tensor<3> u, v;
@@ -740,39 +807,24 @@ float frob = Collapse<Mul, Add>(W, W);              // Frobenius inner product �
 
 ## [TensorReduce.hpp](src/TensorReduce.hpp): Reduction and Broadcast
 
-Axis-reduction kernel, `ReduceApply`, `Expand`, `BroadcastApply`, `BroadcastReduce`, and indexed slice access. Includes `TensorOps.hpp`.
+Axis-reduction kernel, `ReduceApply`, `Expand`, `BroadcastApply`, `BroadcastReduce`, and indexed slice access. Includes
+`TensorOps.hpp`.
 
 ### Reduction and Broadcast
 
 - ***ReduceKernel*** — [`template<size_t Axis, size_t... Dims> struct ReduceKernel`](src/TensorReduce.hpp)
     - Shared kernel for all axis-reduction and broadcast operations
-    - Compile-time `static constexpr`:
-        - `axis_dim = SizeTemplateGet<Axis, Dims...>::value`
-        - `axis_stride = Source::Strides[Axis]`
-        - `std::array<size_t, Result::Size> bases` — flat index in `Source` for each output index with axis set to 0
-        - `static constexpr size_t project(size_t i)` — flat index in `Result` for source flat index
-          `i` (axis contribution stripped); closed-form `i - ((i / axis_stride) % axis_dim) * axis_stride`; no table,
-          `axis_stride` compile-time so division compiles to multiply-shift
+    - Compile-time computes convenient types/shapes, values, and `constexpr` functions for `offset` and
+      `base` flat indexing required in `Broadcast` or `Reduce` functions
 
+- ***ReduceApply*** - [
+  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> && requires { { Op::identity } -> std::convertible_to<float>; } RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...> &src)`](src/TensorReduce.hpp)
+    - `Reduce` a `Tensor` along some `Axis` using a `FloatBinaryOp`
 
-- ***Expand*** — [
-  `template<size_t Axis, size_t N, size_t... Dims> InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...>& src)`](src/TensorReduce.hpp)
-    - Broadcasts a reduced tensor back up by repeating it `N` times along `Axis`
-    - `Expand<0, 5>(Tensor<3>)` → `Tensor<5, 3>` — 5 copies stacked along axis 0
-
-- ***BroadcastApply*** — [
-  `template<size_t Axis, FloatBinaryOp F, size_t... Dims> Tensor<Dims...> BroadcastApply(const Tensor<Dims...>& A, const typename RemoveAxis<Axis, Dims...>::type& b, F f)`](src/TensorReduce.hpp)
-    - Apply binary `f(a_elem, b_elem)` element-wise between `A` and `b` broadcast along `Axis`
-    - **Tag-param overload**: `BroadcastApply<Axis, F>(A, b)` — default-constructs `F`
-    - `BroadcastApply<0, Add>(Z, bias)` adds bias to every row
-
-- ***BroadcastReduce*** — [
-  `template<size_t Axis, FloatBinaryOp ApplyFn, FloatBinaryOp ReduceFn, size_t... Dims> Tensor<Dims...> BroadcastReduce(const Tensor<Dims...>& src, float init, ApplyFn afn, ReduceFn rfn)`](src/TensorReduce.hpp)
-    - Reduce along `Axis` then broadcast the result back with a second op —
-      `BroadcastApply<Axis>(src, ReduceApply<Axis>(src, init, rfn), afn)`
-    - **Tag-param overload**: `BroadcastReduce<Axis, ApplyOp, ReduceOp>(src)` —
-      `ReduceOp::identity` as init; requires monoid `ReduceOp`
-    - Powers `Softmax`: `BroadcastReduce<Axis, Compose<Exp,Sub>, Max>(x)` then `BroadcastReduce<Axis, Div, Add>(exps)`
+- ***Expand*** - [
+  `template<size_t Axis, size_t N, size_t... Dims> InsertAxis<Axis, N, Dims...>::type Expand(const Tensor<Dims...> &src)`](src/TensorReduce.hpp)
+    - `Expand` a `Tensor`, copying `N` times over the `Axis` passed as a template argument
+    - Identity `Broadcast`
 
 Every operation takes
 `Axis` as a compile-time argument. Output shape, stride arithmetic, and projection are all resolved at compile time — the runtime loop is a flat parallel sweep with zero shape logic.
@@ -815,7 +867,8 @@ static_assert(std::is_same_v<decltype(restored),  Tensor<8, 16, 64>>);
 
 ### Indexed Slice Access
 
-`TensorIndex` and `TensorIndexApply` are the gather/scatter primitives. The axis is compile-time — the compiler knows the slice shape and stride layout. Only the index into that axis is runtime.
+`TensorIndex` and
+`TensorIndexApply` are the gather/scatter primitives. The axis is compile-time — the compiler knows the slice shape and stride layout. Only the index into that axis is runtime.
 
 ```cpp
 Tensor<16, 64> seq;                                 // 16 tokens, 64-dim embeddings
@@ -899,13 +952,16 @@ b1 += dz1 * lr;   b2 += dz2 * lr;
 
 ## [TensorUtil.hpp](src/TensorUtil.hpp): Tensor Layer Umbrella
 
-Thin include-only header that pulls in `TensorContract.hpp` and `TensorReduce.hpp` together. This is the last of the `Tensor___` headers; `TTTN.hpp` includes `TensorUtil.hpp` transitively via `TrainableTensorNetwork.hpp`. No public declarations — nothing to sentinel here.
+Thin include-only header that pulls in `TensorContract.hpp` and `TensorReduce.hpp` together. This is the last of the
+`Tensor___` headers; `TTTN.hpp` includes `TensorUtil.hpp` transitively via
+`TrainableTensorNetwork.hpp`. No public declarations — nothing to sentinel here.
 
 ---
 
 ## [TTTN_ML.hpp](src/TTTN_ML.hpp): ML Primitives
 
-Activation functions, their derivatives, loss functions, and the `SoftmaxBlock` layer. Depends on `TensorContract.hpp` and `TensorReduce.hpp`.
+Activation functions, their derivatives, loss functions, and the `SoftmaxBlock` layer. Depends on
+`TensorContract.hpp` and `TensorReduce.hpp`.
 
 **Constants:**
 
@@ -1115,7 +1171,10 @@ Implements scaled dot-product multi-head self-attention over sequences of arbitr
 
 ## [ChainBlock.hpp](src/ChainBlock.hpp): Sequential Block Composition
 
-`ChainBlock<Blocks...>` composes an arbitrary sequence of `ConcreteBlock`s into a single block satisfying the `ConcreteBlock` concept. `InputTensor` is the first block's input; `OutputTensor` is the last block's output. Forward and backward threads through the chain in order; `all_params()` aggregates all sub-block parameters into one tuple.
+`ChainBlock<Blocks...>` composes an arbitrary sequence of `ConcreteBlock`s into a single block satisfying the
+`ConcreteBlock` concept. `InputTensor` is the first block's input;
+`OutputTensor` is the last block's output. Forward and backward threads through the chain in order;
+`all_params()` aggregates all sub-block parameters into one tuple.
 
 - ***Forward*** — [`OutputTensor Forward(const InputTensor& x) const`](src/ChainBlock.hpp)
     - #########
@@ -1378,7 +1437,9 @@ Lightweight terminal progress bar. Construct with a total step count and optiona
 
 ## [Snapshot.hpp](src/Snapshot.hpp): Activation Snapshots
 
-Runtime-typed storage for capturing named activation tensors. `SnapshotEntry` holds a shape vector and a flat `float` copy — erasing the compile-time type so snapshots can be stored in a uniform `SnapshotMap` (`unordered_map<string, SnapshotEntry>`). Used by visualization and debugging tools.
+Runtime-typed storage for capturing named activation tensors. `SnapshotEntry` holds a shape vector and a flat
+`float` copy — erasing the compile-time type so snapshots can be stored in a uniform `SnapshotMap` (
+`unordered_map<string, SnapshotEntry>`). Used by visualization and debugging tools.
 
 - ***snap_add*** — [
   `template<size_t... Dims> void snap_add(SnapshotMap& out, const std::string& key, const Tensor<Dims...>& t)`](src/Snapshot.hpp)
