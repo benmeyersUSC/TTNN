@@ -67,11 +67,13 @@ namespace TTTN {
         }(std::type_identity<Full>{});
     }
 
-    // Copy: result[i] = Op{}(A[i], b_broadcast[i])
-    template<size_t Axis, typename Op, size_t... Dims>
-        requires FloatBinaryOp<Op> && std::default_initializable<Op>
-    Tensor<Dims...> BroadcastApply(const Tensor<Dims...> &A,
-                                   const typename RemoveAxis<Axis, Dims...>::type &b) {
+    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastApply(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)
+    /**
+     * `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of `Tensor<Dims...> A` using specified `FloatBinaryOp`
+     * Copies `A` and returns copy
+     */
+    template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op>
+    Tensor<Dims...> BroadcastApply(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
         using K = ReduceKernel<Axis, Dims...>;
         Tensor<Dims...> result;
         ParForEach(Tensor<Dims...>::Size, [&](size_t i) {
@@ -80,11 +82,14 @@ namespace TTTN {
         return result;
     }
 
-    // Move: overwrites A's storage in-place, returns it — no alloc
-    template<size_t Axis, typename Op, size_t... Dims>
-        requires FloatBinaryOp<Op> && std::default_initializable<Op>
-    Tensor<Dims...> BroadcastApplyMove(Tensor<Dims...> &&A,
-                                       const typename RemoveAxis<Axis, Dims...>::type &b) {
+
+    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastApplyMove(Tensor<Dims...> &&A, const typename RemoveAxis<Axis, Dims...>::type &b)
+    /**
+     * `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of `Tensor<Dims...> A` using specified `FloatBinaryOp`
+     * Moves `A`, overwrites its data, returns moved/overwritten `A`
+     */
+    template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op>
+    Tensor<Dims...> BroadcastApplyMove(Tensor<Dims...> &&A, const typename RemoveAxis<Axis, Dims...>::type &b) {
         using K = ReduceKernel<Axis, Dims...>;
         ParForEach(Tensor<Dims...>::Size, [&](size_t i) {
             A.flat(i) = Op{}(A.flat(i), b.flat(K::project(i)));
@@ -92,11 +97,13 @@ namespace TTTN {
         return std::move(A);
     }
 
-
-    template<size_t Axis, typename Op, size_t... Dims>
-        requires FloatBinaryOp<Op> && std::default_initializable<Op>
-    void BroadcastApplyInplace(Tensor<Dims...> &A,
-                               const typename RemoveAxis<Axis, Dims...>::type &b) {
+    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> void BroadcastApplyInplace(Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)
+    /**
+     * `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of `Tensor<Dims...> A` using specified `FloatBinaryOp`
+     * Overwrites `A` inplace, no return
+     */
+    template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op>
+    void BroadcastApplyInplace(Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
         using K = ReduceKernel<Axis, Dims...>;
         ParForEach(Tensor<Dims...>::Size, [&](size_t i) {
             A.flat(i) = Op{}(A.flat(i), b.flat(K::project(i)));
@@ -104,31 +111,42 @@ namespace TTTN {
     }
 
 
-    // Copy
-    template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims>
-        requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> &&
-                 std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> &&
-                 requires { { ReduceOp::identity } -> std::convertible_to<float>; }
-
+    // @doc: template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims> requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; } Tensor<Dims...> BroadcastReduce(const Tensor<Dims...> &src)
+    /**
+     * Fused composition of `Broadcast` and `Reduce`; "`Broadcast` after `Reduce`"
+     * `Reduce` with `ReduceOp`, then `Broadcast` that result back onto `Tensor<Dims...> src`
+     * Copies `Tensor<Dims...> src` and returns copy
+     */
+    template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims> requires
+        FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> &&
+        std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; }
     Tensor<Dims...> BroadcastReduce(const Tensor<Dims...> &src) {
         return BroadcastApply<Axis, ApplyOp>(src, ReduceApply<Axis, ReduceOp>(src));
     }
 
-    // Move: one small temp alloc for reduced, then steals src storage
-    template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims>
-        requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> &&
-                 std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> &&
-                 requires { { ReduceOp::identity } -> std::convertible_to<float>; }
+    // @doc: template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims> requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; } Tensor<Dims...> BroadcastReduceMove(Tensor<Dims...> &&src)
+    /**
+     * Fused composition of `Broadcast` and `Reduce`; "`Broadcast` after `Reduce`"
+     * `Reduce` with `ReduceOp`, then `Broadcast` that result back onto `Tensor<Dims...> src`
+     * Calls `Reduce` on `Tensor<Dims...> src`, moves and overwrites `Tensor<Dims...> src`, returns moved version
+     */
+    template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims> requires
+        FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> &&
+        std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; }
     Tensor<Dims...> BroadcastReduceMove(Tensor<Dims...> &&src) {
         auto reduced = ReduceApply<Axis, ReduceOp>(src);
         return BroadcastApplyMove<Axis, ApplyOp>(std::move(src), reduced);
     }
 
-    // Inplace: void
-    template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims>
-        requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> &&
-                 std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> &&
-                 requires { { ReduceOp::identity } -> std::convertible_to<float>; }
+    // @doc: template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims> requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; } void BroadcastReduceInplace(Tensor<Dims...> &src)
+    /**
+     * Fused composition of `Broadcast` and `Reduce`; "`Broadcast` after `Reduce`"
+     * `Reduce` with `ReduceOp`, then `Broadcast` that result back onto `Tensor<Dims...> src`
+     * Calls `Reduce` on `Tensor<Dims...> src`, overwrites `Tensor<Dims...> src` inplace, no return
+     */
+    template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims> requires
+        FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> &&
+        std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; }
     void BroadcastReduceInplace(Tensor<Dims...> &src) {
         auto reduced = ReduceApply<Axis, ReduceOp>(src);
         BroadcastApplyInplace<Axis, ApplyOp>(src, reduced);

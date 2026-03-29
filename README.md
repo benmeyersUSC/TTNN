@@ -826,6 +826,42 @@ Axis-reduction kernel, `ReduceApply`, `Expand`, `BroadcastApply`, `BroadcastRedu
     - `Expand` a `Tensor`, copying `N` times over the `Axis` passed as a template argument
     - Identity `Broadcast`
 
+- ***BroadcastApply*** - [
+  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastApply(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)`](src/TensorReduce.hpp)
+    - `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of
+      `Tensor<Dims...> A` using specified `FloatBinaryOp`
+    - Copies `A` and returns copy
+
+- ***BroadcastApplyMove*** - [
+  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastApplyMove(Tensor<Dims...> &&A, const typename RemoveAxis<Axis, Dims...>::type &b)`](src/TensorReduce.hpp)
+    - `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of
+      `Tensor<Dims...> A` using specified `FloatBinaryOp`
+    - Moves `A`, overwrites its data, returns moved/overwritten `A`
+
+- **BroadcastApplyInplace*** - [
+  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> void BroadcastApplyInplace(Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)`](src/TensorReduce.hpp)
+    - `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of
+      `Tensor<Dims...> A` using specified `FloatBinaryOp`
+    - Overwrites `A` inplace, no return
+
+- ***BroadcastReduce*** - [
+  `template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims> requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; } Tensor<Dims...> BroadcastReduce(const Tensor<Dims...> &src)`](src/TensorReduce.hpp)
+    - Fused composition of `Broadcast` and `Reduce`; "`Broadcast` after `Reduce`"
+    - `Reduce` with `ReduceOp`, then `Broadcast` that result back onto `Tensor<Dims...> src`
+    - Copies `Tensor<Dims...> src` and returns copy
+
+- ***BroadcastReduce*** - [
+  `template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims> requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; } Tensor<Dims...> BroadcastReduceMove(Tensor<Dims...> &&src)`](src/TensorReduce.hpp)
+    - Fused composition of `Broadcast` and `Reduce`; "`Broadcast` after `Reduce`"
+    - `Reduce` with `ReduceOp`, then `Broadcast` that result back onto `Tensor<Dims...> src`
+    - Calls `Reduce` on `Tensor<Dims...> src`, moves and overwrites `Tensor<Dims...> src`, returns moved version
+
+- ***BroadcastReduceInplace*** - [
+  `template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims> requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; } void BroadcastReduceInplace(Tensor<Dims...> &src)`](src/TensorReduce.hpp)
+    - Fused composition of `Broadcast` and `Reduce`; "`Broadcast` after `Reduce`"
+    - `Reduce` with `ReduceOp`, then `Broadcast` that result back onto `Tensor<Dims...> src`
+    - Calls `Reduce` on `Tensor<Dims...> src`, overwrites `Tensor<Dims...> src` inplace, no return
+
 Every operation takes
 `Axis` as a compile-time argument. Output shape, stride arithmetic, and projection are all resolved at compile time — the runtime loop is a flat parallel sweep with zero shape logic.
 
