@@ -28,14 +28,14 @@ namespace TTTN {
         }
     };
 
-    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> && requires { { Op::identity } -> std::convertible_to<float>; } RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...> &src)
+    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> && requires { { Op::identity } -> std::convertible_to<float>; } RemoveAxis<Axis, Dims...>::type Reduce(const Tensor<Dims...> &src)
     /** `Reduce` a `Tensor` along some `Axis` using a `FloatBinaryOp` */
     template<size_t Axis, typename Op, size_t... Dims> requires
         FloatBinaryOp<Op> && std::default_initializable<Op> && requires
         {
             { Op::identity } -> std::convertible_to<float>;
         }
-    RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...> &src) {
+    RemoveAxis<Axis, Dims...>::type Reduce(const Tensor<Dims...> &src) {
         using K = ReduceKernel<Axis, Dims...>;
         auto k_range = std::views::iota(size_t{0}, K::axis_dim);
         typename K::Result dst;
@@ -67,13 +67,13 @@ namespace TTTN {
         }(std::type_identity<Full>{});
     }
 
-    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastApply(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)
+    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastMap(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)
     /**
      * `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of `Tensor<Dims...> A` using specified `FloatBinaryOp`
      * Copies `A` and returns copy
      */
     template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op>
-    Tensor<Dims...> BroadcastApply(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
+    Tensor<Dims...> BroadcastMap(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
         using K = ReduceKernel<Axis, Dims...>;
         Tensor<Dims...> result;
         ParForEach(Tensor<Dims...>::Size, [&](size_t i) {
@@ -83,13 +83,13 @@ namespace TTTN {
     }
 
 
-    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastApplyMove(Tensor<Dims...> &&A, const typename RemoveAxis<Axis, Dims...>::type &b)
+    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastMapMove(Tensor<Dims...> &&A, const typename RemoveAxis<Axis, Dims...>::type &b)
     /**
      * `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of `Tensor<Dims...> A` using specified `FloatBinaryOp`
      * Moves `A`, overwrites its data, returns moved/overwritten `A`
      */
     template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op>
-    Tensor<Dims...> BroadcastApplyMove(Tensor<Dims...> &&A, const typename RemoveAxis<Axis, Dims...>::type &b) {
+    Tensor<Dims...> BroadcastMapMove(Tensor<Dims...> &&A, const typename RemoveAxis<Axis, Dims...>::type &b) {
         using K = ReduceKernel<Axis, Dims...>;
         ParForEach(Tensor<Dims...>::Size, [&](size_t i) {
             A.flat(i) = Op{}(A.flat(i), b.flat(K::project(i)));
@@ -97,13 +97,13 @@ namespace TTTN {
         return std::move(A);
     }
 
-    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> void BroadcastApplyInplace(Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)
+    // @doc: template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> void BroadcastApply(Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)
     /**
      * `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of `Tensor<Dims...> A` using specified `FloatBinaryOp`
      * Overwrites `A` inplace, no return
      */
     template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op>
-    void BroadcastApplyInplace(Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
+    void BroadcastApply(Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b) {
         using K = ReduceKernel<Axis, Dims...>;
         ParForEach(Tensor<Dims...>::Size, [&](size_t i) {
             A.flat(i) = Op{}(A.flat(i), b.flat(K::project(i)));

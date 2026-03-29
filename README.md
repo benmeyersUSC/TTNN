@@ -817,8 +817,8 @@ Axis-reduction kernel, `ReduceApply`, `Expand`, `BroadcastApply`, `BroadcastRedu
     - Compile-time computes convenient types/shapes, values, and `constexpr` functions for `offset` and
       `base` flat indexing required in `Broadcast` or `Reduce` functions
 
-- ***ReduceApply*** - [
-  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> && requires { { Op::identity } -> std::convertible_to<float>; } RemoveAxis<Axis, Dims...>::type ReduceApply(const Tensor<Dims...> &src)`](src/TensorReduce.hpp)
+- ***Reduce*** - [
+  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> && requires { { Op::identity } -> std::convertible_to<float>; } RemoveAxis<Axis, Dims...>::type Reduce(const Tensor<Dims...> &src)`](src/TensorReduce.hpp)
     - `Reduce` a `Tensor` along some `Axis` using a `FloatBinaryOp`
 
 - ***Expand*** - [
@@ -826,20 +826,20 @@ Axis-reduction kernel, `ReduceApply`, `Expand`, `BroadcastApply`, `BroadcastRedu
     - `Expand` a `Tensor`, copying `N` times over the `Axis` passed as a template argument
     - Identity `Broadcast`
 
-- ***BroadcastApply*** - [
-  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastApply(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)`](src/TensorReduce.hpp)
+- ***BroadcastMap*** - [
+  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastMap(const Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)`](src/TensorReduce.hpp)
     - `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of
       `Tensor<Dims...> A` using specified `FloatBinaryOp`
     - Copies `A` and returns copy
 
-- ***BroadcastApplyMove*** - [
-  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastApplyMove(Tensor<Dims...> &&A, const typename RemoveAxis<Axis, Dims...>::type &b)`](src/TensorReduce.hpp)
+- ***BroadcastMapMove*** - [
+  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> BroadcastMapMove(Tensor<Dims...> &&A, const typename RemoveAxis<Axis, Dims...>::type &b)`](src/TensorReduce.hpp)
     - `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of
       `Tensor<Dims...> A` using specified `FloatBinaryOp`
     - Moves `A`, overwrites its data, returns moved/overwritten `A`
 
-- **BroadcastApplyInplace*** - [
-  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> void BroadcastApplyInplace(Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)`](src/TensorReduce.hpp)
+- **BroadcastApply*** - [
+  `template<size_t Axis, typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> void BroadcastApply(Tensor<Dims...> &A, const typename RemoveAxis<Axis, Dims...>::type &b)`](src/TensorReduce.hpp)
     - `Broadcast` a `Tensor` of type `RemoveAxis<Axis, Dims...>` across a specified `Axis` of
       `Tensor<Dims...> A` using specified `FloatBinaryOp`
     - Overwrites `A` inplace, no return
