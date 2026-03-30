@@ -65,11 +65,11 @@ namespace TTTN {
 
 template<size_t Axis, size_t... Dims>
 Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a) {
-    auto dot = ReduceApply<Axis, Add>(a * grad);
+    auto dot = Reduce<Axis, Add>(a * grad);
 
     auto g = grad;
 
-    BroadcastApplyInplace<Axis, Sub>(g, dot);  // no move needed
+    BroadcastApply<Axis, Sub>(g, dot);  // no move needed
     g *= a;
 
     return g;
@@ -203,9 +203,9 @@ Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> 
     /** Returns the percentage of correctly classified samples in a batch. `labels` must be one-hot. Correct iff `argmax(pred[b]) == argmax(labels[b])`, computed via `ReduceApply<1, Add>(pred ⊙ labels)` (probability assigned to the true class) vs `ReduceApply<1, Max>(pred)` (highest predicted probability) — no explicit argmax loop required. */
     template<size_t Batch, size_t N>
     float BatchAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels) {
-        const auto p_correct = ReduceApply<1, Add>(pred * labels); // Tensor<Batch>
-        const auto p_max     = ReduceApply<1, Max>(pred);          // Tensor<Batch>
-        const float n = ReduceApply<0, Add>(Map<Step<1e-5f>>(p_max - p_correct)).flat(0);
+        const auto p_correct = Reduce<1, Add>(pred * labels); // Tensor<Batch>
+        const auto p_max     = Reduce<1, Max>(pred);          // Tensor<Batch>
+        const float n = Reduce<0, Add>(Map<Step<1e-5f>>(p_max - p_correct)).flat(0);
         return 100.f * n / static_cast<float>(Batch);
     }
 };

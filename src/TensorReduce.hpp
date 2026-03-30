@@ -121,7 +121,7 @@ namespace TTTN {
         FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> &&
         std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; }
     Tensor<Dims...> BroadcastReduce(const Tensor<Dims...> &src) {
-        return BroadcastApply<Axis, ApplyOp>(src, ReduceApply<Axis, ReduceOp>(src));
+        return BroadcastMap<Axis, ApplyOp>(src, Reduce<Axis, ReduceOp>(src));
     }
 
     // @doc: template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims> requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; } Tensor<Dims...> BroadcastReduceMove(Tensor<Dims...> &&src)
@@ -134,8 +134,8 @@ namespace TTTN {
         FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> &&
         std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; }
     Tensor<Dims...> BroadcastReduceMove(Tensor<Dims...> &&src) {
-        auto reduced = ReduceApply<Axis, ReduceOp>(src);
-        return BroadcastApplyMove<Axis, ApplyOp>(std::move(src), reduced);
+        auto reduced = Reduce<Axis, ReduceOp>(src);
+        return BroadcastMapMove<Axis, ApplyOp>(std::move(src), reduced);
     }
 
     // @doc: template<size_t Axis, typename ApplyOp, typename ReduceOp, size_t... Dims> requires FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> && std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; } void BroadcastReduceInplace(Tensor<Dims...> &src)
@@ -148,7 +148,7 @@ namespace TTTN {
         FloatBinaryOp<ApplyOp> && FloatBinaryOp<ReduceOp> && std::default_initializable<ApplyOp> &&
         std::default_initializable<ReduceOp> && requires { { ReduceOp::identity } -> std::convertible_to<float>; }
     void BroadcastReduceInplace(Tensor<Dims...> &src) {
-        auto reduced = ReduceApply<Axis, ReduceOp>(src);
-        BroadcastApplyInplace<Axis, ApplyOp>(src, reduced);
+        auto reduced = Reduce<Axis, ReduceOp>(src);
+        BroadcastApply<Axis, ApplyOp>(src, reduced);
     }
 }

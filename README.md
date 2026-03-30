@@ -173,8 +173,8 @@ Replace the parallel CPU dispatch (
 2. [TensorStorage.hpp: Storage Policy](#tensorstoragehpp--storage-policy)
 3. [Tensor.hpp: The Foundational Object](#tensorhpp--the-foundational-object)
 4. [TensorShapeOps.hpp: Tensor Type Algebra](#tensorshapeopshpp--tensor-type-algebra)
-5. [TensorOps.hpp: Op Tags and Element-wise Primitives](#tensoropshpp--op-tags-and-element-wise-primitives)
-6. [TensorFunctions.hpp: Functional Helpers](#tensorfunctionshpp--functional-helpers)
+5. [TensorFunctions.hpp: Functional Helpers](#tensorfunctionshpp--functional-helpers)
+6. [TensorOps.hpp: Op Tags and Element-wise Primitives](#tensoropshpp--op-tags-and-element-wise-primitives)
 7. [TensorContract.hpp: Contraction](#tensorcontracthpp--contraction)
 8. [TensorReduce.hpp: Reduction and Broadcast](#tensorreducehpp--reduction-and-broadcast)
 9. [TensorUtil.hpp: Tensor Layer Umbrella](#tensorutilhpp--tensor-layer-umbrella)
@@ -462,24 +462,60 @@ vec.apply([](float x){ return -x; });              // in-place
 Shape-only metaprogramming — no data, no runtime. Purely compile-time type-level operations on
 `Tensor` dimension packs: concatenation, axis removal/insertion, slicing, and permutation type computation.
 
-- ***TensorConcat*** — [`struct TensorConcat<typename T1, typename T2>`](src/TensorShapeOps.hpp)
-    - #########
+- ***TensorConcat*** — [
+  `template<size_t... Ds1, size_t... Ds2> struct TensorConcat<Tensor<Ds1...>, Tensor<Ds2...> >`](src/TensorShapeOps.hpp)
+    - One layer unpacking of two `Tensor`s' dimensions
+    - Two variadic lists as template parameters match with the shape arrays of the two input `Tensor`s
 
-- ***ArrayToTensor*** — [`struct ArrayToTensor<typename KeptIdxs, typename Iota>`](src/TensorShapeOps.hpp)
-    - #########
+- ***KeptDimsHolder*** - [`template<size_t Skip, size_t... Dims> struct KeptDimsHolder`](src/TensorShapeOps.hpp)
+    - Helper for `RemoveAxis`
+    - Takes a dimension/axis to skip and variadic `size_t...` for existing dims and defines
+      `std::array<size_t, sizeof...(Dims)> value` filled with `Dims...` sans `Skip`
+
+- ***ArrayToTensor*** — [
+  `template<typename KeptIdxs, size_t... Iota> requires requires { KeptIdxs::value; } struct ArrayToTensor<KeptIdxs, std::index_sequence<Iota...>`](src/TensorShapeOps.hpp)
+    - Take in a holder of a `size_t...` dimensions pack (which must have static `value`) and a
+      `std::index_sequence` of the `Rank` of the `Tensor`-to-be and unpack dimensions into new `Tensor` type
 
 - ***RemoveAxis*** — [`struct RemoveAxis<size_t Skip, size_t... Dims>`](src/TensorShapeOps.hpp)
-    - #########
+    - Helper to create new `Tensor` type from given `size_t...Dims` and an axis to `Skip`
+    - Calls `ArrayToTensor<KeptDimsHolder<...>>`
 
-- ***PermutedTensorType*** — [`struct PermutedTensorType<typename T, size_t... Perm>`](src/TensorShapeOps.hpp)
-    - #########
+- ***PermutedTensorType*** — [
+  `template<size_t... Dims, size_t... Perm> struct PermutedTensorType<Tensor<Dims...>, Perm...>`](src/TensorShapeOps.hpp)
+    - Helper to define a `Tensor` type, whose shape is `size_t...Dims` reorganized according to the indices specified by
+      `size_t...Perm`
+
+- ***InsertAxisHolder*** - [
+  `template<size_t Axis, size_t N, size_t... Dims> struct InsertAxisHolder`](src/TensorShapeOps.hpp)
+    - Like `KeptDimsHolder`, a helper holder of an array of `size_t` dimensions to be used to construct a new
+      `Tensor` type
+    - Used in `InsertAxis`
+
+- ***InsertAxis*** - [`template<size_t Axis, size_t N, size_t... Dims> struct InsertAxis`](src/TensorShapeOps.hpp)
+    - Like `RemoveAxis`, insert a dimension at a specified `size_t Axis`, with a specified magnitude `size_t N`
+    - Calls `ArrayToTensor<InsertAxisHolder<...>>`
+
+
+- ***SliceDimsHolder*** - [
+  `template<size_t Start, size_t Len, size_t... Dims> struct SliceDimsHolder`](src/TensorShapeOps.hpp)
+    - Like `InsertAxisHolder` and `KeptDimsHolder`, helper class to define an array of `size_t`, of length
+      `Len`, containing the axes from `size_t...Dims` that start at `size_t Start`
+    - Used in `TensorSlice`
+
+- ***TensorSlice*** - [`template<size_t Start, size_t Len, size_t... Dims> struct TensorSlice`](src/TensorShapeOps.hpp)
+    - Specify `size_t Start`, `size_t Len`, and a starting set of `size_t...Dims` and construct a
+      `Tensor` whose shape only contains the `Len` dimensions starting at `Start`
+    - Calls `ArrayToTensor<SliceDimsHolder<...>>`
 
 ---
 
-## [TensorOps.hpp](src/TensorOps.hpp): Op Tags and Element-wise Primitives
+## [TensorFunctions.hpp](src/TensorFunctions.hpp): Functional Helpers
 
-Operation tags, element-wise operations, arithmetic operators, and `Permute`. Base layer included by
-`TensorContract.hpp` and `TensorReduce.hpp`.
+Free-function wrappers for the core tensor transforms: `Map`, `MapMove`, `Zip`, `ZipMove`, `Permute`, `Transpose`,
+`TensorIndex`, and `TensorIndexApply`. Also, the canonical home of all op-tag structs (`Add`, `Mul`, `Max`, `Exp`,
+`Compose`, etc.) — these are the types you pass as template arguments to `BroadcastReduce`, `ReduceApply`,
+`Map`, and friends.
 
 ### Operation Tags
 
@@ -512,39 +548,143 @@ Default-constructible callable structs satisfying `FloatBinaryOp` or
 | `Clamp<Lo, Hi>` | `std::min(std::max(x, Lo), Hi)` — float NTTPs; `Hi` defaults to `+∞` for one-sided use |
 | `Step<T>` | `x < T ? 1.f : 0.f` — float NTTP threshold; useful for counting elements below a threshold |
 
-- ***Compose*** - [`template<typename F, typename G> struct Compose`](src/TensorOps.hpp)
-    - Chain application of `FloatUnaryOp` with either another `FloatUnaryOp` or a `FloatBinaryOp`
-    - Struct has two specialized overloads of `operator()` for the two following cases:
-        - Unary ∘ Unary → Unary:  `Compose<Log, Abs>{}(x) == log(|x|)`
-        - Unary ∘ Binary → Binary: `Compose<Exp, Sub>{}(a, b) == exp(a - b)`
+--- 
+
+### Functions
+
+- ***Compose*** - [`template<typename F, typename G> struct Compose`](src/TensorFunctions.hpp)
+    - Compose a `FloatUnaryOp` with either another `FloatUnaryOp` or a
+      `FloatBinaryOp`, creating a new operation that can be passed as a template tag
+
+- ***TensorIndex*** — [
+  `template<size_t Axis, size_t Index, size_t... Dims> RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...> &src)`](src/TensorFunctions.hpp)
+    - Get a `Tensor` slice from `Tensor<Dims...> src` by specifying a `size_t Axis` and a `size_t Index`
+      *from* that axis
+    - If we have a `Tensor<3, 2, 4>` and call `TensorIndex<0, 1>()`, we will get the `1-th` (second)
+      `Tensor<2, 4>` that lives on the first axis
+
+- ***TensorIndexApply*** - [
+  `template<size_t Axis, FloatBinaryOp F, size_t... Dims> void TensorIndexApply(Tensor<Dims...> &dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type &src, F f)`](src/TensorFunctions.hpp)
+    - Using indexing conventions described in `TensorIndex`, apply a `FloatBinaryOp` on a sub-`Tensor`, combining
+      `src` elements with those of `dst`, a sub-`Tensor` of the same type as the slice
+
+- ***Map*** - [
+  `template<typename Op, size_t... Dims> requires FloatUnaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> Map(const Tensor<Dims...> &src)`](src/TensorFunctions.hpp)
+    - Apply a `FloatUnaryOp` to every element of `Tensor<Dims...>& src` and return a copy
+
+- ***Apply*** - [
+  `template<typename Op, size_t... Dims> requires FloatUnaryOp<Op> && std::default_initializable<Op> void Apply(Tensor<Dims...> &&src)`](src/TensorFunctions.hpp)
+    - Apply a `FloatUnaryOp` inplace
+
+- ***MapMove*** - [
+  `template<typename Op, size_t... Dims> requires FloatUnaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> MapMove(Tensor<Dims...> &&src)`](src/TensorFunctions.hpp)
+    - `Apply` a `FloatUnaryOp` inplace on `src`, return moved version
+    - Memory efficient way to call `Apply` on a `Tensor` that is part of a composition or nested call
+
+- ***Zip*** - [
+  `template<typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> Zip(const Tensor<Dims...> &A, const Tensor<Dims...> &B)`](src/TensorFunctions.hpp)
+    - Create copy of `A`, call `FloatBinaryOp` taking in elements from `A` and `B`, return new copy
+
+- ***ZipMove*** - [
+  `template<typename Op, size_t... Dims> requires FloatBinaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> ZipMove(Tensor<Dims...> &&A, const Tensor<Dims...> &B)`](src/TensorFunctions.hpp)
+    - Call `zip_apply` inplace on `A`, taking in `B` values, return moved-from version
+
+- ***Permute*** - [
+  `template<size_t... Perm, size_t... Dims> Tensor<SizeTemplateGet<Perm, Dims...>::value...> Permute(const Tensor<Dims...> &src)`](src/TensorFunctions.hpp)
+    - Given a `size_t...Perm`, the same length as `Dims...`, representing a new ordering of
+      `Tensor<Dims...> src`'s axes, perform a permutation and return a copy
+    - `Permute<1, 2, 0>(Tensor<8, 4, 7>)` returns a `Tensor<4, 7, 8>`
+
+- ***Transpose*** - [`template<size_t... Dims> auto Transpose(const Tensor<Dims...> &src)`](src/TensorFunctions.hpp)
+    - Call `Permute` on `Tensor<Dims...>` with permutation indices:
+      `<Tensor<Dims...>::Rank - 1, ..., 0>` (reverse all axes of `Tensor<Dims...>`)
+    - `Transpose(Tensor<8, 4, 7>)` returns a `Tensor<7, 4, 8>`
+
+- ***MoveToLastPerm*** - [`template<size_t Src, size_t Rank> struct MoveToLastPerm`](src/TensorFunctions.hpp)
+    - Create member `std::array<size_t, Rank> value`, representing `Rank` dimensions, permuted such that `src` is the
+      *last* index
+    - (Pass to `PermuteFromArray`)
+
+- ***MoveToFirstPerm*** - [`template<size_t Src, size_t Rank> struct MoveToFirstPerm`](src/TensorFunctions.hpp)
+    - Create member `std::array<size_t, Rank> value`, representing `Rank` dimensions, permuted such that `src` is the
+      *first* index
+    - (Pass to `PermuteFromArray`)
 
 ---
 
+## [TensorOps.hpp](src/TensorOps.hpp): Element-wise Primitives
+
+Operation tags, element-wise operations, arithmetic operators, and `Permute`. Base layer included by
+`TensorContract.hpp` and `TensorReduce.hpp`.
+
 ### Arithmetic Operators
 
-- ***operator+*** — [
-  `template<size_t... Dims> Tensor<Dims...> operator+(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
-    - Element-wise add, uses parallel functional `zip`
+- ***operator+=*** - [
+  `template<size_t... Dims> Tensor<Dims...> &operator+=(Tensor<Dims...> &a, const Tensor<Dims...> &b)`](src/TensorOps.hpp)
+    - `A += B` (inplace)
 
-- ***operator-*** — [
-  `template<size_t... Dims> Tensor<Dims...> operator-(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
-    - Element-wise subtract, uses parallel functional `zip`
+- ***operator-=*** - [
+  `template<size_t... Dims> Tensor<Dims...> &operator-=(Tensor<Dims...> &a, const Tensor<Dims...> &b)`](src/TensorOps.hpp)
+    - `A -= B` (inplace)
 
-- **operator*** — [
-  `template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, float s)`](src/TensorOps.hpp)
-    - Scalar multiply, uses parallel functional `map`
+- ***operatorx=*** - [
+  `template<size_t... Dims> Tensor<Dims...> &operator*=(Tensor<Dims...> &a, const Tensor<Dims...> &b)`](src/TensorOps.hpp)
+    - `A *= B` (inplace)
 
-- **operator*** — [
-  `template<size_t... Dims> Tensor<Dims...> operator*(float s, const Tensor<Dims...>& a)`](src/TensorOps.hpp)
-    - Scalar multiply, uses parallel functional `map`
+- ***operator/=*** - [
+  `template<size_t... Dims> Tensor<Dims...> &operator/=(Tensor<Dims...> &a, const Tensor<Dims...> &b)`](src/TensorOps.hpp)
+    - `A /= B` (inplace)
 
-- **operator*** — [
-  `template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
-    - Hadamard (element-wise) product, uses parallel functional `zip`
 
-- ***operator/*** — [
-  `template<size_t... Dims> Tensor<Dims...> operator/(const Tensor<Dims...>& a, const Tensor<Dims...>& b)`](src/TensorOps.hpp)
-    - Element-wise) division, uses parallel functional `zip`
+- ***operator+*** - [
+  `template<size_t... Dims> Tensor<Dims...> operator+(const Tensor<Dims...> &a, const Tensor<Dims...> &b)`](src/TensorOps.hpp)
+    - `A + B` (returns copy)
+
+- ***operator-*** - [
+  `template<size_t... Dims> Tensor<Dims...> operator-(const Tensor<Dims...> &a, const Tensor<Dims...> &b)`](src/TensorOps.hpp)
+    - `A - B` (returns copy)
+
+- ***operatorx*** - [
+  `template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...> &a, const Tensor<Dims...> &b)`](src/TensorOps.hpp)
+    - `A * B` (returns copy)
+
+- ***operator/*** - [
+  `template<size_t... Dims> Tensor<Dims...> operator/(const Tensor<Dims...> &a, const Tensor<Dims...> &b)`](src/TensorOps.hpp)
+    - `A / B` (returns copy)
+
+
+- ***operator+=*** - [
+  `template<size_t... Dims> Tensor<Dims...> &operator+=(Tensor<Dims...> &a, float s)`](src/TensorOps.hpp)
+    - `A += b` (inplace, `b` is scalar)
+
+- ***operator-=*** - [
+  `template<size_t... Dims> Tensor<Dims...> &operator-=(Tensor<Dims...> &a, float s)`](src/TensorOps.hpp)
+    - `A -= b` (inplace, `b` is scalar)
+
+- ***operatorx=*** - [
+  `template<size_t... Dims> Tensor<Dims...> &operator*=(Tensor<Dims...> &a, float s)`](src/TensorOps.hpp)
+    - `A *= b` (inplace, `b` is scalar)
+
+- ***operator/=*** - [
+  `template<size_t... Dims> Tensor<Dims...> &operator/=(Tensor<Dims...> &a, float s)`](src/TensorOps.hpp)
+    - `A /= b` (inplace, `b` is scalar)
+
+
+- ***operator+*** - [
+  `template<size_t... Dims> Tensor<Dims...> operator+(const Tensor<Dims...> &a, float s)`](src/TensorOps.hpp)
+    - `A + b` (returns copy, `b` is scalar)
+
+- ***operator-*** - [
+  `template<size_t... Dims> Tensor<Dims...> operator-(const Tensor<Dims...> &a, float s)`](src/TensorOps.hpp)
+    - `A - b` (returns copy, `b` is scalar)
+
+- ***operatorx*** - [
+  `template<size_t... Dims> Tensor<Dims...> operator*(const Tensor<Dims...> &a, float s)`](src/TensorOps.hpp)
+    - `A * b` (returns copy, `b` is scalar)
+
+- ***operator/*** - [
+  `template<size_t... Dims> Tensor<Dims...> operator/(const Tensor<Dims...> &a, float s)`](src/TensorOps.hpp)
+    - `A / b` (returns copy, `b` is scalar)
 
 ```cpp
 Tensor<3, 4> A, B;
@@ -556,59 +696,6 @@ A += B;                                            // in-place accumulate
 // every operator preserves shape — and REQUIRES matching shape:
 // A + Tensor<4, 3>{};                             // ✗ won't compile: Tensor<3,4> + Tensor<4,3>
 ```
-
----
-
-### Permutation
-
-- ***MoveToLastPerm*** — [`struct MoveToLastPerm<size_t Src, size_t Rank>`](src/TensorContract.hpp)
-    - Compile-time helper to rearrange `Tensor`'s shape such that `Src` is at index
-      `[Rank - 1]` and all others are kept in order
-
-- ***MoveToFirstPerm*** — [`struct MoveToFirstPerm<size_t Src, size_t Rank>`](src/TensorContract.hpp)
-    - Compile-time helper to rearrange `Tensor`'s shape such that `Src` is at index
-      `[0]` and all others are kept in order
-
-- ***PermuteFromHolder*** — [
-  `template<typename PermHolder, size_t... I, size_t... Dims> auto PermuteFromHolder(const Tensor<Dims...>& t, std::index_sequence<I...>)`](src/TensorContract.hpp)
-    - Unpack a `constexpr` permutation indices array into a proper `Permute`-given `Tensor` type
-    - `PermHolder` is an array of permutation indices, typically the result of `MoveToLastPerm` or `MoveToFirstPerm`
-    - Call with `PermHolder` as template arg, `Tensor<Dims...>` as first arg,
-      `std::make_index_sequence<sizeof...(Dims)>{}` as second arg
-
-```cpp
-Tensor<3, 4, 5> cube;
-
-// arbitrary axis reordering — the result type is computed at compile time
-auto p = Permute<2, 0, 1>(cube);
-static_assert(std::is_same_v<decltype(p), Tensor<5, 3, 4>>);
-
-// Transpose reverses all axes
-auto t = Transpose(cube);
-static_assert(std::is_same_v<decltype(t), Tensor<5, 4, 3>>);
-
-// rank-2 transpose is classical matrix transpose
-Tensor<3, 4> W;
-auto Wt = Transpose(W);
-static_assert(std::is_same_v<decltype(Wt), Tensor<4, 3>>);
-
-// the permutation indices are template args — invalid permutations are compile errors:
-// Permute<0, 0, 1>(cube);                         // ✗ repeated axis
-// Permute<0, 1>(cube);                            // ✗ wrong number of axes
-```
-
----
-
-## [TensorFunctions.hpp](src/TensorFunctions.hpp): Functional Helpers
-
-Free-function wrappers for the core tensor transforms: `Map`, `MapMove`, `Zip`, `ZipMove`, `Permute`, `Transpose`,
-`TensorIndex`, and `TensorIndexApply`. Also the canonical home of all op-tag structs (`Add`, `Mul`, `Max`, `Exp`,
-`Compose`, etc.) — these are the types you pass as template arguments to `BroadcastReduce`, `ReduceApply`,
-`Map`, and friends.
-
-- ***TensorIndex*** — [
-  `template<size_t Axis, size_t... Dims> typename RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...>& src, size_t idx)`](src/TensorFunctions.hpp)
-    - #########
 
 ---
 

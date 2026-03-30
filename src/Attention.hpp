@@ -54,11 +54,12 @@ namespace TTTN {
         mutable std::vector<float> bX_buf_, bQ_buf_, bK_buf_, bV_buf_, battn_buf_, battended_buf_;
 
         template<typename T>
-        static void bcache_store(const T& t, std::vector<float>& buf) {
+        static void bcache_store(const T &t, std::vector<float> &buf) {
             buf.assign(t.data(), t.data() + T::Size);
         }
+
         template<typename T>
-        static T bcache_load(const std::vector<float>& buf) {
+        static T bcache_load(const std::vector<float> &buf) {
             T t;
             std::copy(buf.begin(), buf.begin() + T::Size, t.data());
             return t;
@@ -87,9 +88,9 @@ namespace TTTN {
             XavierInitMD(WO_.value, EmbSize, EmbSize);
         }
 
-        template <size_t... Is>
-        static constexpr auto QKV_Contract(const InputTensor& X, const W_QKV_Type& wm, std::index_sequence<Is...>) {
-            return Contract<AxisList<(1+Is)...>{}, AxisList<(2+Is)...>{}, Mul, Add>(X, wm);
+        template<size_t... Is>
+        static constexpr auto QKV_Contract(const InputTensor &X, const W_QKV_Type &wm, std::index_sequence<Is...>) {
+            return Contract<AxisList<(1 + Is)...>{}, AxisList<(2 + Is)...>{}, Mul, Add>(X, wm);
         };
 
 
@@ -111,11 +112,12 @@ namespace TTTN {
 
             // attended[h,s_q,d] = Σ_{s_k} attn[h,s_q,s_k] * V[s_k,h,d]
             // Batch H(0,1)  Contract S_k(2,0)  Free S_q(1) D(2)  -> [H,S,D]
-            attended_ = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<2>{}, AxisList<0>{}, Mul, Add>(attn_weights_, V_);
+            attended_ = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<2>{}, AxisList<0>{}, Mul, Add>(
+                attn_weights_, V_);
 
             // out[s,e...] = Σ_{h,d} attended[h,s,d] * WO[e...,h,d]
             // Contract H(0,N_emb) D(2,N_emb+1)  Free S(1) and E...  -> [S,E...]
-            return Contract<AxisList<0,2>{}, AxisList<N_emb, N_emb+1>{}, Mul, Add>(attended_, WO_.value);
+            return Contract<AxisList<0, 2>{}, AxisList<N_emb, N_emb + 1>{}, Mul, Add>(attended_, WO_.value);
         }
 
 
@@ -138,11 +140,13 @@ namespace TTTN {
             // --- Attended backward ---
             // d_attn[h,s_q,s_k] = Σ_d d_att[s_q,h,d] * V[s_k,h,d]
             // Batch H(1,1)  Contract D(2,2)  Free S_q(0) S_k(0)  -> [H,S_q,S_k]
-            const auto d_attn = BatchContract<AxisList<1>{}, AxisList<1>{}, AxisList<2>{}, AxisList<2>{}, Mul, Add>(d_att, V_);
+            const auto d_attn = BatchContract<AxisList<1>{}, AxisList<1>{}, AxisList<2>{}, AxisList<2>{}, Mul, Add>(
+                d_att, V_);
 
             // d_V[h,s_k,d] = Σ_{s_q} attn[h,s_q,s_k] * d_att[s_q,h,d]
             // Batch H(0,1)  Contract S_q(1,0)  Free S_k(2) D(2)  -> [H,S_k,D]
-            const auto d_V = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<1>{}, AxisList<0>{}, Mul, Add>(attn_weights_, d_att);
+            const auto d_V = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<1>{}, AxisList<0>{}, Mul, Add>(
+                attn_weights_, d_att);
 
             // --- Softmax backward ---
             const auto d_scores = SoftmaxPrime<2>(d_attn, attn_weights_) * inv_sqrt;
@@ -150,11 +154,13 @@ namespace TTTN {
             // --- Scores backward ---
             // d_Q[h,s_q,d] = Σ_{s_k} d_scores[h,s_q,s_k] * K[s_k,h,d]
             // Batch H(0,1)  Contract S_k(2,0)  Free S_q(1) D(2)  -> [H,S_q,D]
-            const auto d_Q = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<2>{}, AxisList<0>{}, Mul, Add>(d_scores, K_);
+            const auto d_Q = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<2>{}, AxisList<0>{}, Mul, Add>(
+                d_scores, K_);
 
             // d_K[h,s_k,d] = Σ_{s_q} d_scores[h,s_q,s_k] * Q[s_q,h,d]
             // Batch H(0,1)  Contract S_q(1,0)  Free S_k(2) D(2)  -> [H,S_k,D]
-            const auto d_K = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<1>{}, AxisList<0>{}, Mul, Add>(d_scores, Q_);
+            const auto d_K = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<1>{}, AxisList<0>{}, Mul, Add>(
+                d_scores, Q_);
 
             // --- W grads: d_[H,S,D] × X[S,E...] -> [H,D,E...]
             // Contract S: axis 1 in d_, axis 0 in X
@@ -164,9 +170,9 @@ namespace TTTN {
 
             // --- dX: d_[H,S,D] × W[H,D,E...] -> [S,E...]
             // Contract (H,D): axes {0,2} in d_, axes {0,1} in W
-            return Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_Q, WQ_.value)
-                 + Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_K, WK_.value)
-                 + Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_V, WV_.value);
+            return Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_Q, WQ_.value)
+                   + Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_K, WK_.value)
+                   + Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_V, WV_.value);
         }
 
         // ─── BATCHED (no loop — fully batched tensor ops via BatchContract/Contract) ──
@@ -174,15 +180,17 @@ namespace TTTN {
         // Helper: project [B,S,E...] through [H,D,E...] → [B,S,H,D]
         // Contracts E... at axes (2+Is) in X against axes (2+Is) in W.
         template<size_t Batch, size_t... Is>
-        static auto BatchedQKV_Contract(const Tensor<Batch, SeqLen, EmbDims...>& X, const W_QKV_Type& W, std::index_sequence<Is...>) {
-            return Contract<AxisList<(2+Is)...>{}, AxisList<(2+Is)...>{}, Mul, Add>(X, W);
+        static auto BatchedQKV_Contract(const Tensor<Batch, SeqLen, EmbDims...> &X, const W_QKV_Type &W,
+                                        std::index_sequence<Is...>) {
+            return Contract<AxisList<(2 + Is)...>{}, AxisList<(2 + Is)...>{}, Mul, Add>(X, W);
         }
 
         // Helper: backward through WO_ — contracts E... at axes (2+Is) in dA against axes (Is) in WO_.
         // [B,S,E...] × [E...,H,D] → [B,S,H,D]
         template<size_t Batch, size_t... Is>
-        static auto BatchedDAttended(const Tensor<Batch, SeqLen, EmbDims...>& dA, const W_O_Type& WO, std::index_sequence<Is...>) {
-            return Contract<AxisList<(2+Is)...>{}, AxisList<Is...>{}, Mul, Add>(dA, WO);
+        static auto BatchedDAttended(const Tensor<Batch, SeqLen, EmbDims...> &dA, const W_O_Type &WO,
+                                     std::index_sequence<Is...>) {
+            return Contract<AxisList<(2 + Is)...>{}, AxisList<Is...>{}, Mul, Add>(dA, WO);
         }
 
         // @doc: template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(...)
@@ -203,22 +211,24 @@ namespace TTTN {
             // scores[b,h,s_q,s_k] = Σ_d Q[b,s_q,h,d] * K[b,s_k,h,d]
             // Batch: B(0,0) H(2,2)  Contract: D(3,3)  Free: S_q(1) S_k(1)
             // → [B,H,S_q,S_k]
-            const auto scores = BatchContract<AxisList<0,2>{}, AxisList<0,2>{}, AxisList<3>{}, AxisList<3>{}, Mul, Add>(bQ, bK) * inv_sqrt;
+            const auto scores = BatchContract<AxisList<0, 2>{}, AxisList<0, 2>{}, AxisList<3>{}, AxisList<3>{}, Mul,
+                                    Add>(bQ, bK) * inv_sqrt;
 
             const auto battn = Softmax<3>(scores);
             bcache_store(battn, battn_buf_);
-            attn_weights_ = TensorIndex<0>(battn, 0); // snap() support: expose first-sample head weights
+            attn_weights_ = TensorIndex<0, 0>(battn); // snap() support: expose first-sample head weights
 
             // attended[b,h,s_q,d] = Σ_{s_k} attn[b,h,s_q,s_k] * V[b,s_k,h,d]
             // Batch: B(0,0) H(1,2)  Contract: S_k(3,1)  Free: S_q(2) D(3)
             // → [B,H,S_q,D]
-            const auto battended = BatchContract<AxisList<0,1>{}, AxisList<0,2>{}, AxisList<3>{}, AxisList<1>{}, Mul, Add>(battn, bV);
+            const auto battended = BatchContract<AxisList<0, 1>{}, AxisList<0, 2>{}, AxisList<3>{}, AxisList<1>{}, Mul,
+                Add>(battn, bV);
             bcache_store(battended, battended_buf_);
 
             // out[b,s,e...] = Σ_{h,d} attended[b,h,s,d] * WO[e...,h,d]
             // Contract: H(1,N_emb) D(3,N_emb+1)  Free: (B,S) and E...
             // → [B,S,E...]
-            return Contract<AxisList<1,3>{}, AxisList<N_emb, N_emb+1>{}, Mul, Add>(battended, WO_.value);
+            return Contract<AxisList<1, 3>{}, AxisList<N_emb, N_emb + 1>{}, Mul, Add>(battended, WO_.value);
         }
 
         template<size_t Batch>
@@ -226,21 +236,20 @@ namespace TTTN {
             const Tensor<Batch, SeqLen, EmbDims...> &delta_A,
             const Tensor<Batch, SeqLen, EmbDims...> & /*a*/,
             const Tensor<Batch, SeqLen, EmbDims...> & /*a_prev*/) {
-
             const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
             const float inv_batch = 1.f / static_cast<float>(Batch);
 
-            const auto bQ        = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim>>(bQ_buf_);
-            const auto bK        = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim>>(bK_buf_);
-            const auto bV        = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim>>(bV_buf_);
-            const auto battn     = bcache_load<Tensor<Batch, Heads, SeqLen, SeqLen>>(battn_buf_);
-            const auto battended = bcache_load<Tensor<Batch, Heads, SeqLen, HeadDim>>(battended_buf_);
-            const auto bX        = bcache_load<Tensor<Batch, SeqLen, EmbDims...>>(bX_buf_);
+            const auto bQ = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim> >(bQ_buf_);
+            const auto bK = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim> >(bK_buf_);
+            const auto bV = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim> >(bV_buf_);
+            const auto battn = bcache_load<Tensor<Batch, Heads, SeqLen, SeqLen> >(battn_buf_);
+            const auto battended = bcache_load<Tensor<Batch, Heads, SeqLen, HeadDim> >(battended_buf_);
+            const auto bX = bcache_load<Tensor<Batch, SeqLen, EmbDims...> >(bX_buf_);
 
             // --- WO_ grad ---
             // dWO[e...,h,d] = Σ_{b,s} dA[b,s,e...] * attended[b,h,s,d]
             // Contract (B,S): axes {0,1} in dA, axes {0,2} in attended
-            WO_.grad += Contract<AxisList<0,1>{}, AxisList<0,2>{}, Mul, Add>(delta_A, battended) * inv_batch;
+            WO_.grad += Contract<AxisList<0, 1>{}, AxisList<0, 2>{}, Mul, Add>(delta_A, battended) * inv_batch;
 
             // d_attended[b,s,h,d] = Σ_{e...} dA[b,s,e...] * WO[e...,h,d]   → [B,S,H,D]
             const auto d_attended = BatchedDAttended<Batch>(delta_A, WO_.value, std::make_index_sequence<N_emb>{});
@@ -248,11 +257,13 @@ namespace TTTN {
             // --- Attended backward ---
             // d_attn[b,h,s_q,s_k] = Σ_d d_att[b,s_q,h,d] * V[b,s_k,h,d]
             // Batch: B(0,0) H(2,2)  Contract: D(3,3)  Free: S_q(1) S_k(1)  → [B,H,S_q,S_k]
-            const auto d_attn = BatchContract<AxisList<0,2>{}, AxisList<0,2>{}, AxisList<3>{}, AxisList<3>{}, Mul, Add>(d_attended, bV);
+            const auto d_attn = BatchContract<AxisList<0, 2>{}, AxisList<0, 2>{}, AxisList<3>{}, AxisList<3>{}, Mul,
+                Add>(d_attended, bV);
 
             // d_V[b,h,s_k,d] = Σ_{s_q} attn[b,h,s_q,s_k] * d_att[b,s_q,h,d]
             // Batch: B(0,0) H(1,2)  Contract: S_q(2,1)  Free: S_k(3) D(3)  → [B,H,S_k,D]
-            const auto d_V = BatchContract<AxisList<0,1>{}, AxisList<0,2>{}, AxisList<2>{}, AxisList<1>{}, Mul, Add>(battn, d_attended);
+            const auto d_V = BatchContract<AxisList<0, 1>{}, AxisList<0, 2>{}, AxisList<2>{}, AxisList<1>{}, Mul, Add>(
+                battn, d_attended);
 
             // --- Softmax backward (over axis 3) ---
             const auto d_scores = SoftmaxPrime<3>(d_attn, battn) * inv_sqrt;
@@ -260,23 +271,25 @@ namespace TTTN {
             // --- Scores backward ---
             // d_Q[b,h,s_q,d] = Σ_{s_k} d_scores[b,h,s_q,s_k] * K[b,s_k,h,d]
             // Batch: B(0,0) H(1,2)  Contract: S_k(3,1)  Free: S_q(2) D(3)  → [B,H,S_q,D]
-            const auto d_Q = BatchContract<AxisList<0,1>{}, AxisList<0,2>{}, AxisList<3>{}, AxisList<1>{}, Mul, Add>(d_scores, bK);
+            const auto d_Q = BatchContract<AxisList<0, 1>{}, AxisList<0, 2>{}, AxisList<3>{}, AxisList<1>{}, Mul, Add>(
+                d_scores, bK);
 
             // d_K[b,h,s_k,d] = Σ_{s_q} d_scores[b,h,s_q,s_k] * Q[b,s_q,h,d]
             // Batch: B(0,0) H(1,2)  Contract: S_q(2,1)  Free: S_k(3) D(3)  → [B,H,S_k,D]
-            const auto d_K = BatchContract<AxisList<0,1>{}, AxisList<0,2>{}, AxisList<2>{}, AxisList<1>{}, Mul, Add>(d_scores, bQ);
+            const auto d_K = BatchContract<AxisList<0, 1>{}, AxisList<0, 2>{}, AxisList<2>{}, AxisList<1>{}, Mul, Add>(
+                d_scores, bQ);
 
             // --- W grads: d_[B,H,S,D] × bX[B,S,E...] → [H,D,E...]
             // Contract (B,S): axes {0,2} in d_, axes {0,1} in bX
-            WQ_.grad += Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_Q, bX) * inv_batch;
-            WK_.grad += Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_K, bX) * inv_batch;
-            WV_.grad += Contract<AxisList<0,2>{}, AxisList<0,1>{}, Mul, Add>(d_V, bX) * inv_batch;
+            WQ_.grad += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_Q, bX) * inv_batch;
+            WK_.grad += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_K, bX) * inv_batch;
+            WV_.grad += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_V, bX) * inv_batch;
 
             // --- dX: d_[B,H,S,D] × W[H,D,E...] → [B,S,E...]
             // Contract (H,D): axes {1,3} in d_, axes {0,1} in W
-            return Contract<AxisList<1,3>{}, AxisList<0,1>{}, Mul, Add>(d_Q, WQ_.value)
-                 + Contract<AxisList<1,3>{}, AxisList<0,1>{}, Mul, Add>(d_K, WK_.value)
-                 + Contract<AxisList<1,3>{}, AxisList<0,1>{}, Mul, Add>(d_V, WV_.value);
+            return Contract<AxisList<1, 3>{}, AxisList<0, 1>{}, Mul, Add>(d_Q, WQ_.value)
+                   + Contract<AxisList<1, 3>{}, AxisList<0, 1>{}, Mul, Add>(d_K, WK_.value)
+                   + Contract<AxisList<1, 3>{}, AxisList<0, 1>{}, Mul, Add>(d_V, WV_.value);
         }
 
         // ─── ADAM UPDATE ────────────────────────────────────────────────────────

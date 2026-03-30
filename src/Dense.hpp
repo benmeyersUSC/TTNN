@@ -90,7 +90,7 @@ namespace TTTN {
 
         template<size_t Batch>
         Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...> &X) const {
-            return Map<Act>(BroadcastApply<0, Add>(ΣΠ<N_in>(X, W_.value), b_.value));
+            return Map<Act>(BroadcastMap<0, Add>(ΣΠ<N_in>(X, W_.value), b_.value));
         }
 
         template<size_t Batch>
@@ -101,7 +101,7 @@ namespace TTTN {
             const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
             W_.grad += Contract<AxisList<0>{}, AxisList<0>{}, Mul, Add>(delta_z, a_prev) * inv_batch;
-            b_.grad += ReduceApply<0, Add>(delta_z) * inv_batch;
+            b_.grad += Reduce<0, Add>(delta_z) * inv_batch;
 
             const auto W_T = PermuteFromArray<WTBlockSwapPerm<N_out, N_in>::value>(
                 W_.value, std::make_index_sequence<N_out + N_in>{});

@@ -274,8 +274,8 @@ namespace TTTN {
     //
     // Forward:
     //   centered = BroadcastReduce<1, SubMean<D>, Add>(X)   (x - mean)
-    //   inv_sigma = 1/sqrt(ReduceApply<1,SqAdd>(centered)/D + eps)
-    //   x_hat     = BroadcastApply<1, Mul>(centered, inv_sigma)
+    //   inv_sigma = 1/sqrt(Reduce<1,SqAdd>(centered)/D + eps)
+    //   x_hat     = BroadcastMap<1, Mul>(centered, inv_sigma)
     //   out       = gamma * x_hat + beta   (broadcast over SeqLen)
     //
     // Backward: standard LayerNorm gradient.
@@ -308,25 +308,25 @@ namespace TTTN {
         /** Per-token layer norm: `out = gamma * (x - mean) / sigma + beta` */
         OutputTensor Forward(const InputTensor &X) const {
             auto centered  = BroadcastReduce<1, SubMean<EmbSize>, Add>(X);
-            auto sum_sq    = ReduceApply<1, SqAdd>(centered);
+            auto sum_sq    = Reduce<1, SqAdd>(centered);
             inv_sigma_     = sum_sq.map([](float s) {
                 return 1.f / std::sqrt(s / static_cast<float>(EmbSize) + eps);
             });
-            x_hat_         = BroadcastApply<1, Mul>(centered, inv_sigma_);
-            return BroadcastApply<0, Add>(BroadcastApply<0, Mul>(x_hat_, gamma_.value), beta_.value);
+            x_hat_         = BroadcastMap<1, Mul>(centered, inv_sigma_);
+            return BroadcastMap<0, Add>(BroadcastMap<0, Mul>(x_hat_, gamma_.value), beta_.value);
         }
 
         InputTensor Backward(const OutputTensor &delta_A,
                              const OutputTensor & /*a*/,
                              const InputTensor & /*a_prev*/) {
-            beta_.grad  += ReduceApply<0, Add>(delta_A);
-            gamma_.grad += ReduceApply<0, Add>(delta_A * x_hat_);
+            beta_.grad  += Reduce<0, Add>(delta_A);
+            gamma_.grad += Reduce<0, Add>(delta_A * x_hat_);
 
-            auto ds       = BroadcastApply<0, Mul>(delta_A, gamma_.value);
+            auto ds       = BroadcastMap<0, Mul>(delta_A, gamma_.value);
             auto ds_c     = BroadcastReduce<1, SubMean<EmbSize>, Add>(ds);
-            auto cov_ds   = ReduceApply<1, Add>(ds * x_hat_) * (1.f / static_cast<float>(EmbSize));
-            return BroadcastApply<1, Mul>(
-                ds_c - BroadcastApply<1, Mul>(x_hat_, cov_ds),
+            auto cov_ds   = Reduce<1, Add>(ds * x_hat_) * (1.f / static_cast<float>(EmbSize));
+            return BroadcastMap<1, Mul>(
+                ds_c - BroadcastMap<1, Mul>(x_hat_, cov_ds),
                 inv_sigma_);
         }
 
