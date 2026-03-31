@@ -182,11 +182,11 @@ Replace the parallel CPU dispatch (
 11. [NetworkUtil.hpp: Concepts, Types, and Utilities](#networkutilhpp--concepts-types-and-utilities)
 12. [TrainableTensorNetwork.hpp: The Network](#trainabletensornetworkhpp--the-network)
 13. [Params.hpp: Parameter Storage and Optimizer](#paramshpp--parameter-storage-and-optimizer)
+14. [ChainBlock.hpp: Sequential Block Composition](#chainblockhpp--sequential-block-composition)
 14. [Snapshot.hpp: Activation Snapshots](#snapshothpp--activation-snapshots)
-15. [ChainBlock.hpp: Sequential Block Composition](#chainblockhpp--sequential-block-composition)
-16. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
-17. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
-18. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
+15. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
+16. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
+17. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
 
 ---
 
@@ -1322,40 +1322,68 @@ Defines the two block concepts that gate the type system, the chain-resolution m
       `ApplyBuildChain`
     - Defines `OutputTensor = Tensor<Dims...>` to begin chain
 
----
+- ***ApplyBuildChain*** - [
+  `template<typename In, Block... Rs> struct ApplyBuildChain<In, std::tuple<Rs...> >`](src/NetworkUtil.hpp)
+    - Expects an `Block<Input>` first and a trailing variadic list of `Block`s passes them to `BuildChain`
+    - Used in `NetworkBuilder` to define `BlockTuple`, a `TrainableTensorNetwork`'s tuple of `ConcreteBlock`s
 
-### Chain Resolution
+- ***ActivationsWrap*** - [`template<typename TupleT> class ActivationsWrap`](src/NetworkUtil.hpp)
+    - Wrapper around a `std::tuple` of `Tensor`s representing intermediate activations of a `TrainableTensorNetwork`
+    - Internally stores `std::tuple` and provides safe access to elements and entire `std::tuple` via overloaded
+      `get` methods
 
-- ***BuildChain*** — [`struct BuildChain<typename In, Block... Recipes>`](src/NetworkUtil.hpp)
-  -
+- ***ActivationsWrap::ActivationsWrap*** - [`explicit ActivationsWrap::ActivationsWrap(TupleT t)`](src/NetworkUtil.hpp)
+    - `explicit` constructor which `move`s incoming `std::tuple` into member `data_`
 
-- ***Input*** — [`struct Input<size_t... Dims>`](src/NetworkUtil.hpp)
-  -
+- ***ActivationsWrap::get*** - [
+  `template<size_t N> auto ActivationsWrap::get() const & -> const std::tuple_element_t<N, TupleT> &`](src/NetworkUtil.hpp)
+    - `const &` getter, valid as long as `ActivationsWrap` object exists
 
-- ***PrependBatch*** — [`struct PrependBatch<size_t Batch, typename T>`](src/NetworkUtil.hpp)
-  -
+- ***ActivationsWrap::get*** - [
+  `template<size_t N> auto ActivationsWrap::get() & -> std::tuple_element_t<N, TupleT> &`](src/NetworkUtil.hpp)
+    - `&` getter, valid as long as `ActivationsWrap` object exists
 
----
 
-### `class ActivationsWrap<typename TupleT>`
+- ***ActivationsWrap::get*** - [
+  `template<size_t N> auto ActivationsWrap::get() && -> std::tuple_element_t<N, TupleT> &&`](src/NetworkUtil.hpp)
+    - Explicitly `delete`d function!
+    - Getting temporary activation `Tensor` from temporary `ActivationsWrap` is a compile error, you must bind the
+      `ActivationsWrap` object to a variable and get a reference
+    - This is because it would return a dangling reference to a soon-deleted `ActivationsWrap` object
+    - Instead of:
+        - `auto& act = net.BatchedForwardAll(X).get<2>();`
+    - You must do:
+        - `auto& wrap = net.BatchedForwardAll(X);`
+        - `auto& act = wrap.get<2>();`
 
-Thin owning wrapper around an activations tuple. Deletes the rvalue
-`get()` overload at compile time to prevent dangling references.
+- ***ActivationsWrap::tuple*** - [`const TupleT &ActivationsWrap::tuple() const`](src/NetworkUtil.hpp)
+    - `const &` to raw `std::tuple`
 
-- ***ActivationsWrap*** — [`explicit ActivationsWrap(TupleT t)`](src/NetworkUtil.hpp)
-  -
+- ***TensorTupleBuilder*** - [`template<typename Last> struct TensorTupleBuilder<Last>`](src/NetworkUtil.hpp)
+    - Recursively build `std::tuple` of
+      `Tensor` objects representing intermediate activations of the network, wrapped by `ActivationsWrap`
+    - Base case: one single `ConcreteBlock` left, whose `InputTensor` and `OutputTensor` are wrapped in a `std::tuple`
 
-- ***get*** — [`template<size_t N> auto get() const& -> const std::tuple_element_t<N, TupleT>&`](src/NetworkUtil.hpp)
-  -
+- ***TensorTupleBuilder*** - [
+  `template<typename First, typename... Rest> struct TensorTupleBuilder<First, Rest...>`](src/NetworkUtil.hpp)
+    - Recursively build `std::tuple` of
+      `Tensor` objects representing intermediate activations of the network, wrapped by `ActivationsWrap`
+    - Recursive case: `std::tuple_cat` of `First` `InputTensor` object and `TensorTupleBuilder<Rest...>`
 
-- ***get*** — [`template<size_t N> auto get() & -> std::tuple_element_t<N, TupleT>&`](src/NetworkUtil.hpp)
-  -
 
-- ***get*** — [`template<size_t N> auto get() && -> std::tuple_element_t<N, TupleT>&& = delete`](src/NetworkUtil.hpp)
-  -
+- ***BatchedTensorTupleBuilder*** - [
+  `template<size_t Batch, typename Last> struct BatchedTensorTupleBuilder<Batch, Last>`](src/NetworkUtil.hpp)
+    - For `Batched` functions and use-cases, create a `Batched` version of a `std::tuple` of activations by passing
+      `PrependBatch<Batch, ...>` on all `Tensor`s that `TensorTupleBuilder` adds raw
+    - Base case: one single `ConcreteBlock` left, whose `InputTensor` and `OutputTensor` are wrapped in
+      `PrependBatch<Batch, ...>` and then in a `std::tuple`
 
-- ***tuple*** — [`const TupleT& tuple() const`](src/NetworkUtil.hpp)
-  -
+- ***BatchedTensorTupleBuilder*** - [
+  `template<size_t Batch, typename First, typename... Rest> struct BatchedTensorTupleBuilder<Batch, First, Rest...>`](src/NetworkUtil.hpp)
+    - For `Batched` functions and use-cases, create a `Batched` version of a `std::tuple` of activations by passing
+      `PrependBatch<Batch, ...>` on all `Tensor`s that `TensorTupleBuilder` adds raw
+    - Recursive case: `std::tuple_cat` of `First` `PrependBatch<Batch, InputTensor>` object and
+      `BatchedTensorTupleBuilder<Rest...>`
 
 ---
 
@@ -1367,106 +1395,44 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
 
 ### `class TrainableTensorNetwork<ConcreteBlock... Blocks>`
 
-**Type aliases and constants:**
+- ***TrainableTensorNetwork*** - [
+  `template<ConcreteBlock... Blocks> class TrainableTensorNetwork`](src/TrainableTensorNetwork.hpp)
+    - Capstone object of the library
+    - Wrap `std::tuple` of shape-compliant `ConcreteBlock`s in a network API that enables and/or enforces:
+        - `Forward` and `BatchedForward`
+        - `Backward` and `BatchedBackward`
+        - `Update`, `ZeroGrad`, `TrainStep` and `BatchedTrainStep`, `Fit` and `BatchFit`
+        - `snap` (snapshot of activations)
+        - `Save` and `Load` serialization
 
-- ***InputTensor*** — [`using InputTensor`](src/TrainableTensorNetwork.hpp)
-    - Tensor type of the first block's input
-- ***OutputTensor*** — [`using OutputTensor`](src/TrainableTensorNetwork.hpp)
-    - Tensor type of the last block's output
-- ***InSize*** — [`static constexpr size_t InSize`](src/TrainableTensorNetwork.hpp)
-  -
-- ***OutSize*** — [`static constexpr size_t OutSize`](src/TrainableTensorNetwork.hpp)
-  -
-- ***TotalParamCount*** — [`static constexpr size_t TotalParamCount`](src/TrainableTensorNetwork.hpp)
-    - Derived from `TupleParamCount` over each block's `all_params()` — no `ParamCount` member required on blocks
-- ***Activations*** — [`using Activations`](src/TrainableTensorNetwork.hpp)
-  -
-- ***BatchedActivations*** — [`template<size_t Batch> using BatchedActivations`](src/TrainableTensorNetwork.hpp)
-  -
+- ***TrainableTensorNetwork::check_connected()*** - [
+  `static constexpr bool TrainableTensorNetwork::check_connected()`](src/TrainableTensorNetwork.hpp)
+    - Immediate `static_assert` function to ensure that `ConcreteBlock... Blocks` have compliant shapes:
+      -
+      `std::is_same_v<typename std::tuple_element_t<Is, BlockTuple>::OutputTensor, typename std::tuple_element_t<Is + 1, BlockTuple>::InputTensor> && ...)`
 
-**Single-sample interface:**
+### Type Aliases and Public Members
 
-- ***BackwardAll*** — [
-  `void BackwardAll(const Activations& A, const OutputTensor& grad)`](src/TrainableTensorNetwork.hpp)
-    -
+- ***TrainableTensorNetwork::BlockTuple*** - [`TrainableTensorNetwork::BlockTuple`](src/TrainableTensorNetwork.hpp)
+    - `using BlockTuple = std::tuple<Blocks...>`
+    - NOTE: not a `std::tuple` of `Blocks...` *objects* but *types*
 
-- ***Update*** — [`void Update(float lr)`](src/TrainableTensorNetwork.hpp)
-    - Calls `mAdam_.step()` then `UpdateAll(block.all_params(), mAdam_, lr)` for every block
+- ***TrainableTensorNetwork::InputTensor*** - [`TrainableTensorNetwork::InputTensor`](src/TrainableTensorNetwork.hpp)
+    - Extract `InputTensor` type from first element of `BlockTuple`
 
-- ***ZeroGrad*** — [`void ZeroGrad()`](src/TrainableTensorNetwork.hpp)
-    - Calls `ZeroAllGrads(block.all_params())` for every block
+- ***TrainableTensorNetwork::OutputTensor*** - [`TrainableTensorNetwork::OutputTensor`](src/TrainableTensorNetwork.hpp)
+    - Extract `OutputTensor` type from last element of `BlockTuple`
 
-- ***TrainStep*** — [
-  `void TrainStep(const InputTensor& x, const OutputTensor& grad, float lr)`](src/TrainableTensorNetwork.hpp)
-    -
+- ***TrainableTensorNetwork::InSize*** - [`TrainableTensorNetwork::InSize`](src/TrainableTensorNetwork.hpp)
+    - Convenience member for total size of `InputTensor` type
 
-- ***Fit*** — [
-  `template<typename Loss> float Fit(const InputTensor& x, const OutputTensor& target, float lr)`](src/TrainableTensorNetwork.hpp)
-    -
+- ***TrainableTensorNetwork::OutSize*** - [`TrainableTensorNetwork::OutSize`](src/TrainableTensorNetwork.hpp)
+    - Convenience member for total size of `OutputTensor` type
 
-**Batched interface:**
+### Private Members and Functions
 
-- ***BatchedBackwardAll*** — [
-  `template<size_t Batch> void BatchedBackwardAll(const BatchedActivations<Batch>& A, const typename PrependBatch<Batch, OutputTensor>::type& grad)`](src/TrainableTensorNetwork.hpp)
-    -
-
-- ***BatchTrainStep*** — [
-  `template<size_t Batch> void BatchTrainStep(const typename PrependBatch<Batch, InputTensor>::type& X, const typename PrependBatch<Batch, OutputTensor>::type& grad, float lr)`](src/TrainableTensorNetwork.hpp)
-    -
-
-- ***BatchFit*** — [
-  `template<typename Loss, size_t Batch> float BatchFit(const typename PrependBatch<Batch, InputTensor>::type& X, const typename PrependBatch<Batch, OutputTensor>::type& Y, float lr)`](src/TrainableTensorNetwork.hpp)
-    -
-
-**Serialization:**
-
-- ***Save*** — [`void Save(const std::string& path) const`](src/TrainableTensorNetwork.hpp)
-  -
-
-- ***Load*** — [`void Load(const std::string& path)`](src/TrainableTensorNetwork.hpp)
-  -
-
----
-
-### Free Functions
-
-- ***RunEpoch*** — [
-  `template<typename Loss, size_t Batch, ConcreteBlock... Blocks, size_t N, size_t... DataDims, typename PrepFn> float RunEpoch(TrainableTensorNetwork<Blocks...>& net, const Tensor<N, DataDims...>& dataset, std::mt19937& rng, float lr, PrepFn prep)`](src/TrainableTensorNetwork.hpp)
-    -
-
----
-
-### `struct NetworkBuilder<typename In, Block... Recipes>`
-
-- ***type*** — [`using type`](src/TrainableTensorNetwork.hpp) -- the fully resolved `TrainableTensorNetwork<...>` type
-  -
-
----
-
-### `struct CombineNetworks<typename NetA, typename NetB>`
-
-Type-level composition of two networks into one. Concatenates the block lists of `NetA` and `NetB`
-into a single `TrainableTensorNetwork`. A compile-time `static_assert` enforces that
-`NetA::OutputTensor == NetB::InputTensor`. No shared weight state -- the result is an independent network whose parameter count equals
-`NetA::TotalParamCount + NetB::TotalParamCount`. All three types (`NetA`,
-`NetB`, and the combined type) can be instantiated and trained independently.
-
-```cpp
-using Encoder     = NetworkBuilder<Input<784>, Dense<128, ReLU>, Dense<32>>::type;
-using Decoder     = NetworkBuilder<Input<32>,  Dense<128, ReLU>, Dense<784>>::type;
-using Autoencoder = CombineNetworks<Encoder, Decoder>::type;
-
-Encoder     enc;   // train for representations
-Decoder     dec;   // train for generation
-Autoencoder ae;    // train end-to-end -- all blocks update together
-```
-
-- ***type*** — [`using type`](src/TrainableTensorNetwork.hpp) -- the combined
-  `TrainableTensorNetwork<BlocksA..., BlocksB...>`
-    - Result of splicing the block lists of `NetA` and
-      `NetB`; a complete network supporting all single-sample and batched interfaces
-
----
+- ***TrainableTensorNetwork::mBlocks*** - [`TrainableTensorNetwork::mBlocks`](src/TrainableTensorNetwork.hpp)
+    - Default-constructed `BlockTuple` type containing actual `ConcreteBlock` values
 
 ## [Params.hpp](src/Params.hpp): Parameter Storage and Optimizer
 
@@ -1524,6 +1490,8 @@ Operate over the `std::tuple<Param<T>&...>` returned by `all_params()`.
     - Calls `load(f)` on every `Param` in the tuple
 
 ---
+
+## [ChainBlock.hpp](src/ChainBlock.hpp): Composed Block Object
 
 ## [Snapshot.hpp](src/Snapshot.hpp): Activation Snapshots
 

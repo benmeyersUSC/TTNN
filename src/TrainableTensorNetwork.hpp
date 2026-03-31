@@ -1,23 +1,34 @@
 #pragma once
 #include <stdexcept>
-#include "NetworkUtil.hpp"
+#include "ChainBlock.hpp"
 #include "TTTN_ML.hpp"
 
 namespace TTTN {
-    // TRAINABLE TENSOR NETWORK
-    // templatized by Block-concept-compliant types
-    //      Blocks[0]   = first block  (network InSize  = its InSize)
-    //      Blocks[N-1] = last block   (network OutSize = its OutSize)
-    // network is a std::tuple<Blocks...>; connectivity Blocks[I]::OutSize == Blocks[I+1]::InSize
-    //      is enforced at compile time
+    // @doc: template<ConcreteBlock... Blocks> class TrainableTensorNetwork
+    /**
+     * Capstone object of the library
+     * Wrap `std::tuple` of shape-compliant `ConcreteBlock`s in a network API that enables and/or enforces:
+     * `Forward` and `BatchedForward`
+     * `Backward` and `BatchedBackward`
+     * `Update`, `ZeroGrad`, `TrainStep` and `BatchedTrainStep`, `Fit` and `BatchFit`
+     * `snap` (snapshot of activations)
+     * `Save` and `Load` serialization
+     */
     template<ConcreteBlock... Blocks>
     class TrainableTensorNetwork {
         static_assert(sizeof...(Blocks) >= 1, "Need at least one block");
 
         static constexpr size_t NumBlocks = sizeof...(Blocks);
+
+        // @doc: TrainableTensorNetwork::BlockTuple
+        /**
+         * `using BlockTuple = std::tuple<Blocks...>`
+         * NOTE: not a `std::tuple` of `Blocks...` *objects* but *types*
+         */
         using BlockTuple = std::tuple<Blocks...>;
 
-        // connectivity check: every Blocks[I]::OutputTensor must equal Blocks[I+1]::InputTensor
+        // @doc: static constexpr bool TrainableTensorNetwork::check_connected()
+        /** Immediate `static_assert` function to ensure that `ConcreteBlock... Blocks` have compliant shapes: - `std::is_same_v<typename std::tuple_element_t<Is, BlockTuple>::OutputTensor, typename std::tuple_element_t<Is + 1, BlockTuple>::InputTensor> && ...)` */
         static constexpr bool check_connected() {
             return []<size_t... Is>(std::index_sequence<Is...>) -> bool {
                 return (
@@ -31,79 +42,38 @@ namespace TTTN {
         static_assert(check_connected(), "Block output/input sizes don't chain");
 
 
-        // TENSOR TUPLE BUILDER
-        // walks Blocks to produce
-        //      std::tuple<B0::InputTensor, B0::OutputTensor, B1::OutputTensor, ...>
-        // (consecutive OutputTensor/InputTensor are identical by the connectivity check, so no duplicates)
-
-        template<typename... Bs>
-        struct TensorTupleBuilder;
-
-        // base case: single block --> (InputTensor, OutputTensor)
-        template<typename Last>
-        struct TensorTupleBuilder<Last> {
-            using type = std::tuple<typename Last::InputTensor, typename Last::OutputTensor>;
-        };
-
-        // recursive case: emit First::InputTensor, then recurse on <Rest...>
-        template<typename First, typename... Rest>
-        struct TensorTupleBuilder<First, Rest...> {
-            using type = decltype(std::tuple_cat(
-                std::declval<std::tuple<typename First::InputTensor> >(),
-                std::declval<typename TensorTupleBuilder<Rest...>::type>()
-            ));
-        };
-
-        // BATCHED TENSOR TUPLE BUILDER
-        // like TensorTupleBuilder but prepends Batch to every tensor's dims via PrependBatch
-        // produces std::tuple<Tensor<Batch, B0InputDims...>, Tensor<Batch, B0OutputDims...>, ...>
-
-        template<size_t Batch, typename... Bs>
-        struct BatchedTensorTupleBuilder;
-
-        template<size_t Batch, typename Last>
-        struct BatchedTensorTupleBuilder<Batch, Last> {
-            using type = std::tuple<
-                typename PrependBatch<Batch, typename Last::InputTensor>::type,
-                typename PrependBatch<Batch, typename Last::OutputTensor>::type>;
-        };
-
-        template<size_t Batch, typename First, typename... Rest>
-        struct BatchedTensorTupleBuilder<Batch, First, Rest...> {
-            using type = decltype(std::tuple_cat(
-                std::declval<std::tuple<typename PrependBatch<Batch, typename First::InputTensor>::type> >(),
-                std::declval<typename BatchedTensorTupleBuilder<Batch, Rest...>::type>()
-            ));
-        };
-
+        // @doc: TrainableTensorNetwork::mBlocks
+        /** Default-constructed `BlockTuple` type containing actual `ConcreteBlock` values */
         BlockTuple mBlocks;
         AdamState mAdam_{};
 
     public:
-        // tensor types flow directly from the first and last blocks
-        // @doc: using InputTensor
-        /** Tensor type of the first block's input */
-        using InputTensor = typename std::tuple_element_t<0, BlockTuple>::InputTensor;
-        // @doc: using OutputTensor
-        /** Tensor type of the last block's output */
-        using OutputTensor = typename std::tuple_element_t<NumBlocks - 1, BlockTuple>::OutputTensor;
+        // @doc: TrainableTensorNetwork::InputTensor
+        /** Extract `InputTensor` type from first element of `BlockTuple` */
+        using InputTensor = std::tuple_element_t<0, BlockTuple>::InputTensor;
 
-        // scalar convenience aliases derived from the tensor types
+        // @doc: TrainableTensorNetwork::OutputTensor
+        /** Extract `OutputTensor` type from last element of `BlockTuple` */
+        using OutputTensor = std::tuple_element_t<NumBlocks - 1, BlockTuple>::OutputTensor;
+
+        // @doc: TrainableTensorNetwork::InSize
+        /** Convenience member for total size of `InputTensor` type */
         static constexpr size_t InSize = InputTensor::Size;
+        // @doc: TrainableTensorNetwork::OutSize
+        /** Convenience member for total size of `OutputTensor` type */
         static constexpr size_t OutSize = OutputTensor::Size;
-        // @doc: static constexpr size_t TotalParamCount
-        /** Derived from `TupleParamCount` over each block's `all_params()` — no `ParamCount` member required on blocks */
+
+        //
         static constexpr size_t TotalParamCount =
                 (TupleParamCount<decltype(std::declval<Blocks &>().all_params())> + ...);
 
-        /** Direct access to the I-th block (0-indexed). Useful for reading cached state (e.g. attention weights) after a forward pass. */
         template<size_t I>
         const auto &block() const { return std::get<I>(mBlocks); }
 
         // raw tuple types (internal / advanced use)
         using ActivationsTuple = TensorTupleBuilder<Blocks...>::type;
         template<size_t Batch>
-        using BatchedActivationsTuple = typename BatchedTensorTupleBuilder<Batch, Blocks...>::type;
+        using BatchedActivationsTuple = BatchedTensorTupleBuilder<Batch, Blocks...>::type;
 
         // safe owning wrappers returned by ForwardAll / BatchedForwardAll
         using Activations = ActivationsWrap<ActivationsTuple>;
@@ -131,9 +101,7 @@ namespace TTTN {
             backward_impl<NumBlocks>(A.tuple(), grad);
         }
 
-        // apply Adam to every block's stored gradients via all_params()
-        // @doc: void Update(float lr)
-        /** Calls `mAdam_.step()` then `UpdateAll(block.all_params(), mAdam_, lr)` for every block */
+
         void Update(float lr) {
             mAdam_.step();
             [&]<size_t... Is>(std::index_sequence<Is...>) {
@@ -141,18 +109,14 @@ namespace TTTN {
             }(std::make_index_sequence<NumBlocks>{});
         }
 
-        // zero all blocks' gradients via all_params()
-        // @doc: void ZeroGrad()
-        /** Calls `ZeroAllGrads(block.all_params())` for every block */
+
         void ZeroGrad() {
             [&]<size_t... Is>(std::index_sequence<Is...>) {
                 (ZeroAllGrads(std::get<Is>(mBlocks).all_params()), ...);
             }(std::make_index_sequence<NumBlocks>{});
         }
 
-        // snap: collect activation snapshots from all PeekableBlock blocks.
-        // Called after Forward() — reads each block's cached state.
-        // Keys: "block_0.field", "block_1.field", etc.
+
         [[nodiscard]] SnapshotMap snap() const {
             SnapshotMap out;
             [&]<size_t... Is>(std::index_sequence<Is...>) {
@@ -195,7 +159,7 @@ namespace TTTN {
         // BatchedForwardAll: returns a BatchedActivations wrapper (same safety guarantee).
         template<size_t Batch>
         [[nodiscard]] BatchedActivations<Batch> BatchedForwardAll(
-            const typename PrependBatch<Batch, InputTensor>::type &X) const {
+            const PrependBatch<Batch, InputTensor>::type &X) const {
             BatchedActivationsTuple<Batch> A;
             std::get<0>(A) = X;
             batched_forward_impl<Batch>(A);
@@ -205,7 +169,7 @@ namespace TTTN {
         // BatchedForward
         template<size_t Batch>
         [[nodiscard]] PrependBatch<Batch, OutputTensor>::type BatchedForward(
-            const typename PrependBatch<Batch, InputTensor>::type &X) {
+            const PrependBatch<Batch, InputTensor>::type &X) {
             const auto A = BatchedForwardAll<Batch>(X);
             return A.template get<NumBlocks>();
         }
@@ -213,14 +177,14 @@ namespace TTTN {
         // BatchedBackwardAll: takes the wrapper produced by BatchedForwardAll.
         template<size_t Batch>
         void BatchedBackwardAll(const BatchedActivations<Batch> &A,
-                                const typename PrependBatch<Batch, OutputTensor>::type &grad) {
+                                const PrependBatch<Batch, OutputTensor>::type &grad) {
             batched_backward_impl<Batch, NumBlocks>(A.tuple(), grad);
         }
 
         // BatchTrainStep: raw batched gradient version.
         template<size_t Batch>
-        void BatchTrainStep(const typename PrependBatch<Batch, InputTensor>::type &X,
-                            const typename PrependBatch<Batch, OutputTensor>::type &grad, float lr) {
+        void BatchTrainStep(const PrependBatch<Batch, InputTensor>::type &X,
+                            const PrependBatch<Batch, OutputTensor>::type &grad, float lr) {
             const auto A = BatchedForwardAll<Batch>(X);
 
             ZeroGrad();
@@ -233,8 +197,8 @@ namespace TTTN {
         // Returns the average loss over the batch at the start of the step.
         // Usage: float loss = net.BatchFit<CEL, 32>(X, Y, lr);
         template<typename Loss, size_t Batch>
-        float BatchFit(const typename PrependBatch<Batch, InputTensor>::type &X,
-                       const typename PrependBatch<Batch, OutputTensor>::type &Y, float lr) {
+        float BatchFit(const PrependBatch<Batch, InputTensor>::type &X,
+                       const PrependBatch<Batch, OutputTensor>::type &Y, float lr) {
             static_assert(LossFunction<Loss, OutputTensor>,
                           "Loss must expose static Loss(pred,target)->float and Grad(pred,target)->OutputTensor");
             const auto A = BatchedForwardAll<Batch>(X);
@@ -335,18 +299,6 @@ namespace TTTN {
     };
 
 
-    // COMBINE NETWORKS
-    // Concatenates the block lists of two networks into one TrainableTensorNetwork.
-    // Compile-time check: OutTensor of A must equal InputTensor of B.
-    //
-    // Usage:
-    //   using Encoder  = NetworkBuilder<Input<784>, Dense<128, ReLU>, Dense<32>>::type;
-    //   using Decoder  = NetworkBuilder<Input<32>,  Dense<128, ReLU>, Dense<784>>::type;
-    //   using Autoencoder = CombineNetworks<Encoder, Decoder>::type;
-    //
-    // All three types can be independently instantiated and trained.
-    // CombineNetworks is a type-level operation — no shared weight state.
-
     template<typename NetA, typename NetB>
     struct CombineNetworks;
 
@@ -361,20 +313,6 @@ namespace TTTN {
     };
 
 
-    // RUN EPOCH
-    // Runs `Steps` batched train steps, returning the average loss.
-    // `prep(batch, X, Y)` is a user-provided lambda that fills X and Y from a raw data batch —
-    // keeping all dataset-specific logic (label extraction, normalization, one-hot encoding) at the call site.
-    //
-    // Usage (MNIST):
-    //   float avg_loss = RunEpoch<CEL, 108, 200>(net, train_data, rng, 0.001f,
-    //       [](const auto& batch, auto& X, auto& Y) {
-    //           for (size_t b = 0; b < 108; ++b) {
-    //               const auto label = static_cast<size_t>(batch(b, 0));
-    //               for (size_t p = 0; p < 784; ++p) X(b, p) = batch(b, p+1) / 255.f;
-    //               for (size_t c = 0; c < 10;  ++c) Y(b, c) = (c == label) ? 1.f : 0.f;
-    //           }
-    //       });
     template<typename Loss, size_t Batch,
         ConcreteBlock... Blocks, size_t N, size_t... DataDims, typename PrepFn>
     float RunEpoch(TrainableTensorNetwork<Blocks...> &net,
@@ -382,8 +320,8 @@ namespace TTTN {
                    std::mt19937 &rng, float lr, PrepFn prep) {
         static constexpr size_t Steps = N / Batch;
         using Net = TrainableTensorNetwork<Blocks...>;
-        using BatchX = typename PrependBatch<Batch, typename Net::InputTensor>::type;
-        using BatchY = typename PrependBatch<Batch, typename Net::OutputTensor>::type;
+        using BatchX = PrependBatch<Batch, typename Net::InputTensor>::type;
+        using BatchY = PrependBatch<Batch, typename Net::OutputTensor>::type;
         float total = 0.f;
         for (size_t s = 0; s < Steps; ++s) {
             auto batch = RandomBatch<Batch>(dataset, rng);
@@ -400,19 +338,17 @@ namespace TTTN {
     // FlattenRecipes expands any ComposeBlocks before BuildChain sees the recipes.
     template<typename In, typename... Recipes>
     struct NetworkBuilder {
-        using FlatRecipes = typename FlattenRecipes<Recipes...>::type;
-        using BlockTuple = typename ApplyBuildChain<In, FlatRecipes>::type;
+        using FlatRecipes = FlattenRecipes<Recipes...>::type;
+        using BlockTuple = ApplyBuildChain<In, FlatRecipes>::type;
 
         template<typename Tuple>
         struct Apply;
 
         template<typename... Bs>
         struct Apply<std::tuple<Bs...> > {
-            // @doc: using type
-            /** Result of splicing the block lists of `NetA` and `NetB`; a complete network supporting all single-sample and batched interfaces */
             using type = TrainableTensorNetwork<Bs...>;
         };
 
-        using type = typename Apply<BlockTuple>::type;
+        using type = Apply<BlockTuple>::type;
     };
 }
