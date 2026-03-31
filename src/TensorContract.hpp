@@ -90,16 +90,6 @@ namespace TTTN {
     };
 
 
-    // @doc: template<auto Perm, size_t... I, size_t... Dims> auto PermuteFromArray(const Tensor<Dims...> &t, std::index_sequence<I...>)
-    /**
-     * Takes a `std::array<size_t, Rank>` representing requested permutation ordering and unpacks them with a `std::index_sequence` into a call to `Permute`
-     * Returns a `Tensor` of new permuted shape
-     */
-    template<auto Perm, size_t... I, size_t... Dims>
-    auto PermuteFromArray(const Tensor<Dims...> &t, std::index_sequence<I...>) {
-        return Permute<Perm[I]...>(t);
-    }
-
     template<size_t M, size_t N, typename TA, typename TB>
     struct BatchedContractionKernel;
 
@@ -209,6 +199,10 @@ namespace TTTN {
                 // offset: base of the tile (8-aligned) + lane (0-7 inclusive)
                 const size_t o = base + tile_idx;
 
+                // calculate batch by treating batches as independent rows in the resulting matrix, where each row
+                // has a full AB_Free_Size worth of elements
+                // NOTE: this single batch value is used to index both A and B
+                //      THIS is what gives us batching: A and B are always being indexed at the same batch!
                 const size_t batch = o / K::AB_Free_Size;
                 const size_t rem = o % K::AB_Free_Size;
 

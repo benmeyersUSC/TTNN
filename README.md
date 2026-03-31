@@ -600,6 +600,14 @@ Default-constructible callable structs satisfying `FloatBinaryOp` or
       `<Tensor<Dims...>::Rank - 1, ..., 0>` (reverse all axes of `Tensor<Dims...>`)
     - `Transpose(Tensor<8, 4, 7>)` returns a `Tensor<7, 4, 8>`
 
+
+- ***PermuteFromArray*** - [
+  `template<auto Perm, size_t... I, size_t... Dims> auto PermuteFromArray(const Tensor<Dims...> &t, std::index_sequence<I...>)`](src/TensorFunctions.hpp)
+    - Takes a `std::array<size_t, Rank>` representing requested permutation ordering and unpacks them with a
+      `std::index_sequence` into a call to `Permute`
+    - Returns a `Tensor` of new permuted shape
+
+
 - ***MoveToLastPerm*** - [`template<size_t Src, size_t Rank> struct MoveToLastPerm`](src/TensorFunctions.hpp)
     - Create member `std::array<size_t, Rank> value`, representing `Rank` dimensions, permuted such that `src` is the
       *last* index
@@ -707,7 +715,12 @@ Tensor contraction is the unified `Reduce ∘ zipWith(Map) ∘ Align` operation 
 `FloatBinaryOp` can be used for `Reduce`.
 
 `Alignment` (choosing which axes to `Batch` or `Contract` is determined by which contraction function is chosen. NOTE:
-`Batch` dimensions must be identical in two source `Tensor`s.
+`Batch` dimensions must be identical in two source `Tensor`s. This is the essence of batching: whereas
+*free* indices from `A` and `B` are concatenated and indexed as a Cartesian product, the
+`Batch` axes are independent lanes upon which contractions will occur. We do not say
+`for a in A_Batch_Axes: {for b in B_Batch_Axes: {use A[a] and B[b]}}`, but instead we say
+`for batch in Batches: {use A[batch] and B[batch]}`. This necessary for things like **multi-headed attention** in *
+*Transformers**.
 
 All contractions eventually become a `BatchInnerContraction`, which takes in four arrays of axes: `A`'s `Batch` and
 `Contract` axes and `B`'s `Batch` and `Contract` axes. Non-batched `Contract` calls become
@@ -737,12 +750,6 @@ All contractions eventually become a `BatchInnerContraction`, which takes in fou
           `Tensor`s in `TTTN` are backed by ***row-major***
           `float` arrays. This means that in the backing array, the only sets of values which are stored contiguously are those in the right-most axes. To maximize vectorization optimizations for
           `Reduce ∘ zipWith(Map)` operations, we want the loops over contracted indices to be traversing contiguous memory. Detailed comments on this subject are resident in the code.
-
-- ***PermuteFromArray*** - [
-  `template<auto Perm, size_t... I, size_t... Dims> auto PermuteFromArray(const Tensor<Dims...> &t, std::index_sequence<I...>)`](src/TensorContract.hpp)
-    - Takes a `std::array<size_t, Rank>` representing requested permutation ordering and unpacks them with a
-      `std::index_sequence` into a call to `Permute`
-    - Returns a `Tensor` of new permuted shape
 
 - ***BatchedContractionKernel*** — [
   `template<size_t M_Batched, size_t N_Contracted, size_t... A_Dims, size_t... B_Dims> struct BatchedContractionKernel<M_Batched, N_Contracted, Tensor<A_Dims...>, Tensor<B_Dims...> >`](src/TensorContract.hpp)
@@ -1086,48 +1093,72 @@ Thin include-only header that pulls in `TensorContract.hpp` and `TensorReduce.hp
 Activation functions, their derivatives, loss functions, and the `SoftmaxBlock` layer. Depends on
 `TensorContract.hpp` and `TensorReduce.hpp`.
 
-**Constants:**
-
 - ***EPS*** — [`static constexpr float EPS`](src/TTTN_ML.hpp)
-  -
+    - Error constant used throughout ML file to allow divisions by `0`
 
 ### Activation Op Tags
 
 Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp` and `ActivationOp`. Use directly with
 `Map<Act>(z)` for forward and `Act::prime(a)` for the derivative (in terms of post-activation output).
 
-| Tag | Forward `operator()(x)` | `prime(a)` |
-|-----|--------------------------|------------|
-| `Linear` | `x` | `1.f` |
-| `ReLU` | `x > 0 ? x : 0` | `a > 0 ? 1 : 0` |
-| `Sigmoid` | `1 / (1 + exp(-x))` | `a * (1 - a)` |
-| `Tanh` | `std::tanh(x)` | `1 - a*a` |
+- ***ActivationOp*** - [
+  `template<typename T> concept ActivationOp = FloatUnaryOp<T> && requires(float a)`](src/TTTN_ML.hpp)
+    - `concept` requiring:
+        - `constexpr float operator()(float x)`
+        - `constexpr float prime(float a)`
 
-- **`ActivationOp`** — concept: `FloatUnaryOp<T>` + `T::prime(float) -> float`
+- ***ReLU*** - [`struct ReLU`](src/TTTN_ML.hpp)
+    - `ActivationOp` for ***Rectified Linear Unit*** (***ReLU***)
+    - `operator()` -> `[0, infinity)`
+    - `prime` -> `1.0f || 0.0f`
+
+- ***Sigmoid*** - [`struct Sigmoid`](src/TTTN_ML.hpp)
+    - `ActivationOp` for ***Sigmoid***
+    - `operator()` -> `[0, 1.0f]`
+    - `prime` -> `(0.0f, 0.25f]`
+
+- ***Tanh*** - [`struct Tanh`](src/TTTN_ML.hpp)
+    - `ActivationOp` for ***Hyperbolic Tangent*** (***Tanh***)
+    - `operator()` -> `[-1.0f, 1.0f]`
+    - `prime` -> `(0.0f, 1.0f]`
+
+- ***Liner*** - [`struct Linear`](src/TTTN_ML.hpp)
+    - `ActivationOp` for ***Linear*** (no activation)
+    - `operator()` -> `(-infinity, infinity)`
+    - `prime` -> `(-infinity, infinity)`
 
 ---
 
 ### Free Functions
 
-- ***CrossEntropyLoss*** — [
-  `template<size_t N> float CrossEntropyLoss(const Tensor<N>& output, const Tensor<N>& target)`](src/TTTN_ML.hpp)
-    -
+- ***CrossEntropyLoss*** - [
+  `template<size_t N> float CrossEntropyLoss(const Tensor<N> &output, const Tensor<N> &target)`](src/TTTN_ML.hpp)
+    - Computes ***Cross Entropy*** between two `Tensor`s, `output` and `target`, and returns `float`
+    - Calls `Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS>>>(output)) * -1.f`
 
-- ***XavierInitMD*** — [
-  `template<size_t... Dims> void XavierInitMD(Tensor<Dims...>& W, const size_t fan_in, const size_t fan_out)`](src/TTTN_ML.hpp)
-    -
+- ***XavierInitMD*** - [
+  `template<size_t... Dims> void XavierInitMD(Tensor<Dims...> &W, const size_t fan_in, const size_t fan_out)`](src/TTTN_ML.hpp)
+    - ***Xavier Initializes*** a `Tensor` inplace, given `fan_in` and
+      `fan_out` values denoting net size of input and output to a neural network layer
 
 ---
 
 ### Softmax (Axis-Generalized)
 
 - ***Softmax*** — [
-  `template<size_t Axis, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...>& x)`](src/TTTN_ML.hpp)
-    -
+  `template<size_t Axis, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...> &x)`](src/TTTN_ML.hpp)
+    - Given an `Axis` on which to normalize, perform ***Softmax*** normalization
+    - Elegantly calls
+      `BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(x))` to first map to
+      `a = e^(x - max)` and then to `b = a / sum(a)`
+    - Shape-preserving
 
 - ***SoftmaxPrime*** — [
-  `template<size_t Axis, size_t... Dims> Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...>& grad, const Tensor<Dims...>& a)`](src/TTTN_ML.hpp)
-    -
+  `template<size_t Axis, size_t... Dims> Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a)`](src/TTTN_ML.hpp)
+    - Computes derivative of `Softmax`
+    - Calls (efficient equivalent of) `a * BroadcastMap<Axis, Sub>(grad, BroadcastReduce<Axis, Add, Mul>(a, grad))`
+        - Generalization of `a * (g - (g . a))`
+    - Shape-preserving
 
 ---
 

@@ -4,47 +4,79 @@
 #include "TensorReduce.hpp"
 
 namespace TTTN {
+    // @doc: static constexpr float EPS
+    /** Error constant used throughout ML file to allow divisions by `0` */
     static constexpr float EPS = 1e-8f;
 
-    // ── Activation op tags ───────────────────────────────────────────────────────
-    // Each tag satisfies FloatUnaryOp: use with z.map(Act{}), Map<Act>(z), or
-    // Tensor::zip for the prime. prime(a) is the derivative wrt the post-activation value.
-
+    // @doc: struct ReLU
+    /**
+     * `ActivationOp` for ***Rectified Linear Unit*** (***ReLU***)
+     * `operator()` -> `[0, infinity)`
+     * `prime` -> `1.0f || 0.0f`
+     */
     struct ReLU {
-        constexpr float operator()(float x) const { return x > 0.f ? x : 0.f; }
-        static constexpr float prime(float a) { return a > 0.f ? 1.f : 0.f; }
+        constexpr float operator()(const float x) const { return x > 0.f ? x : 0.f; }
+        static constexpr float prime(const float a) { return a > 0.f ? 1.f : 0.f; }
     };
 
+    // @doc: Sigmoid
+    /**
+     * `ActivationOp` for ***Sigmoid***
+     * `operator()` -> `[0, 1.0f]`
+     * `prime` -> `(0.0f, 0.25f]`
+     */
     struct Sigmoid {
-        constexpr float operator()(float x) const { return 1.f / (1.f + std::exp(-x)); }
-        static constexpr float prime(float a) { return a * (1.f - a); }
+        constexpr float operator()(const float x) const { return 1.f / (1.f + std::exp(-x)); }
+        static constexpr float prime(const float a) { return a * (1.f - a); }
     };
 
+    // @doc: Tanh
+    /**
+     * `ActivationOp` for ***Hyperbolic Tangent*** (***Tanh***)
+     * `operator()` -> `[-1.0f, 1.0f]`
+     * `prime` -> `(0.0f, 1.0f]`
+     */
     struct Tanh {
-        constexpr float operator()(float x) const { return std::tanh(x); }
-        static constexpr float prime(float a) { return 1.f - a * a; }
+        constexpr float operator()(const float x) const { return std::tanh(x); }
+        static constexpr float prime(const float a) { return 1.f - a * a; }
     };
 
+    // @doc: Linear
+    /**
+     * `ActivationOp` for ***Linear*** (no activation)
+     * `operator()` -> `(-infinity, infinity)`
+     * `prime` -> `(-infinity, infinity)`
+     */
     struct Linear {
-        constexpr float operator()(float x) const { return x; }
+        constexpr float operator()(const float x) const { return x; }
         static constexpr float prime(float) { return 1.f; }
     };
 
-    // Concept: FloatUnaryOp + has prime(float) -> float
-    template<typename T>
-    concept ActivationOp = FloatUnaryOp<T> && requires(float a)
+    // @doc: template<typename T> concept ActivationOp = FloatUnaryOp<T> && requires(float a)
+    /**
+     * `concept` requiring:
+     * `constexpr float operator()(float x)`
+     * `constexpr float prime(float a)`
+     */
+    template<typename T> concept ActivationOp = FloatUnaryOp<T> && requires(float a)
     {
         { T::prime(a) } -> std::convertible_to<float>;
     };
 
-    // CROSS ENTROPY LOSS
+
+    // @doc: template<size_t N> float CrossEntropyLoss(const Tensor<N> &output, const Tensor<N> &target)
+    /**
+     * Computes ***Cross Entropy*** between two `Tensor`s, `output` and `target`, and returns `float`
+     * Calls `Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS>>>(output)) * -1.f`
+     */
     template<size_t N>
     float CrossEntropyLoss(const Tensor<N> &output, const Tensor<N> &target) {
-        return Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS>>>(output)) * -1.f;
+        return Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(output)) * -1.f;
     }
 
-    // Xavier init for arbitrary-rank tensors.
-    // fan_in / fan_out are the total element counts of the input and output spaces.
+
+    // @doc: template<size_t... Dims> void XavierInitMD(Tensor<Dims...> &W, const size_t fan_in, const size_t fan_out)
+    /** ***Xavier Initializes*** a `Tensor` inplace, given `fan_in` and `fan_out` values denoting net size of input and output to a neural network layer */
     template<size_t... Dims>
     void XavierInitMD(Tensor<Dims...> &W, const size_t fan_in, const size_t fan_out) {
         static std::mt19937 rng{std::random_device{}()};
@@ -54,39 +86,39 @@ namespace TTTN {
             W.flat(i) = dist(rng);
     }
 
-    // SOFTMAX
-    // Two BroadcastReduce passes:
-    //   1. reduce=max, apply=exp(a-m)   → numerically stable exps
-    //   2. reduce=sum, apply=e/s        → normalize
+
+    // @doc: template<size_t Axis, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...> &x)
+    /**
+     * Given an `Axis` on which to normalize, perform ***Softmax*** normalization
+     * Elegantly calls `BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(x))` to first map to `a = e^(x - max)` and then to `b = a / sum(a)`
+     * Shape-preserving
+     */
     template<size_t Axis, size_t... Dims>
     Tensor<Dims...> Softmax(const Tensor<Dims...> &x) {
-        return BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp,Sub>, Max>(x));
+        return BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(x));
     }
 
-template<size_t Axis, size_t... Dims>
-Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a) {
-    auto dot = Reduce<Axis, Add>(a * grad);
+    // @doc: template<size_t Axis, size_t... Dims> Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a)
+    /**
+     * Computes derivative of `Softmax`
+     * Calls (efficient equivalent of) `a * BroadcastMap<Axis, Sub>(grad, BroadcastReduce<Axis, Add, Mul>(a, grad))`
+     * Generalization of `a * (g - (g . a))`
+     * Shape-preserving
+     */
+    template<size_t Axis, size_t... Dims>
+    Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a) {
+        // sum of elementwise products along Axis
+        auto axisDots = Reduce<Axis, Add>(a * grad);
+        // copy grad in
+        auto g = grad;
+        // subtract dot inplace
+        BroadcastApply<Axis, Sub>(g, axisDots);
+        // multiply by activation inplace
+        g *= a;
+        return g;
+    }
 
-    auto g = grad;
 
-    BroadcastApply<Axis, Sub>(g, dot);  // no move needed
-    g *= a;
-
-    return g;
-}
-
-    // SOFTMAX BLOCK
-    // Shape-preserving, parameter-free block: applies Softmax<Axis> forward and
-    // the softmax VJP (SoftmaxPrime<Axis>) backward.
-    //
-    // Forward:  a = Softmax<Axis>(x)
-    // Backward: δx_i = a_i * (δy_i - dot(δy, a))   per pool along Axis
-    //
-    // InputTensor == OutputTensor == TensorT (shape flows through unchanged).
-    // all_params() returns std::tuple<>{} — no parameters, TTN handles the rest.
-    //
-    // Batched: prepending a Batch axis shifts the target axis by 1, so
-    // BatchedForward/Backward delegate to Softmax<Axis+1> / SoftmaxPrime<Axis+1>.
     template<size_t Axis, typename TensorT>
     class SoftmaxBlock;
 
@@ -95,8 +127,6 @@ Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> 
     public:
         using InputTensor = Tensor<Dims...>;
         using OutputTensor = Tensor<Dims...>;
-        // @doc: auto all_params()
-        /** Returns `std::tuple<>{}` — no parameters; TTN bulk helpers become no-ops automatically */
         auto all_params() { return std::tuple<>{}; }
         auto all_params() const { return std::tuple<>{}; }
 
@@ -123,9 +153,7 @@ Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> 
         }
     };
 
-    // SoftmaxLayer<Axis>: recipe for SoftmaxBlock.
-    // OutputTensor = Tensor<1> is a placeholder satisfying the Block concept self-check;
-    // actual output shape is always identical to the input shape (determined via Resolve).
+
     template<size_t Axis>
     struct SoftmaxLayer {
         using OutputTensor = Tensor<1>;
@@ -133,10 +161,6 @@ Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> 
         using Resolve = SoftmaxBlock<Axis, InputT>;
     };
 
-    // ── Loss functions ────────────────────────────────────────────────────────
-    //
-    // LossFunction<L, TensorT>: L must expose static Loss and Grad methods
-    // matching the concrete output tensor type of the network.
 
     template<typename L, typename TensorT>
     concept LossFunction =
@@ -147,14 +171,11 @@ Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> 
                 { L::Grad(std::declval<const TensorT &>(), std::declval<const TensorT &>()) } -> std::same_as<TensorT>;
             };
 
-    // MSE: mean squared error, any-rank tensor.
+
     struct MSE {
-        // @doc: template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)
-        /** ######### */
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             static constexpr float Inv = 1.f / Tensor<Dims...>::Size;
-            //
             return Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv;
         }
 
@@ -165,16 +186,13 @@ Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> 
         }
     };
 
-    // BinaryCEL: binary cross-entropy, any-rank tensor.
-    // Assumes sigmoid output (one output per independent binary prediction).
-    // Loss = -[t*log(p) + (1-t)*log(1-p)]
-    // Grad = (p-t) / (p*(1-p) + eps)  — after peeling sigmoid in Backward, net grad = p-t.
+
     struct BinaryCEL {
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
-            const auto p_c = Map<Clamp<EPS, 1.f - EPS>>(pred);
-            return -(Collapse<Mul, Add>(target,              Map<Log>(p_c)) +
-                     Collapse<Mul, Add>(Map<OneMinus>(target), Map<Compose<Log, OneMinus>>(p_c)));
+            const auto p_c = Map<Clamp<EPS, 1.f - EPS> >(pred);
+            return -(Collapse<Mul, Add>(target, Map<Log>(p_c)) +
+                     Collapse<Mul, Add>(Map<OneMinus>(target), Map<Compose<Log, OneMinus> >(p_c)));
         }
 
         template<size_t... Dims>
@@ -185,27 +203,25 @@ Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> 
         }
     };
 
-    // CEL: cross-entropy loss, any-rank tensor.
-    // Assumes softmax output; gradient = −target / pred.
+
     struct CEL {
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
-            return Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS>>>(pred)) * -1.f;
+            return Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f;
         }
 
         template<size_t... Dims>
         static Tensor<Dims...> Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
-            return Zip<Compose<Neg, Div>>(target, Map<Clamp<EPS>>(pred));
+            return Zip<Compose<Neg, Div> >(target, Map<Clamp<EPS> >(pred));
         }
     };
 
-    // @doc: template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N>& pred, const Tensor<Batch, N>& labels)
-    /** Returns the percentage of correctly classified samples in a batch. `labels` must be one-hot. Correct iff `argmax(pred[b]) == argmax(labels[b])`, computed via `ReduceApply<1, Add>(pred ⊙ labels)` (probability assigned to the true class) vs `ReduceApply<1, Max>(pred)` (highest predicted probability) — no explicit argmax loop required. */
+
     template<size_t Batch, size_t N>
     float BatchAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels) {
         const auto p_correct = Reduce<1, Add>(pred * labels); // Tensor<Batch>
-        const auto p_max     = Reduce<1, Max>(pred);          // Tensor<Batch>
-        const float n = Reduce<0, Add>(Map<Step<1e-5f>>(p_max - p_correct)).flat(0);
+        const auto p_max = Reduce<1, Max>(pred); // Tensor<Batch>
+        const float n = Reduce<0, Add>(Map<Step<1e-5f> >(p_max - p_correct)).flat(0);
         return 100.f * n / static_cast<float>(Batch);
     }
 };

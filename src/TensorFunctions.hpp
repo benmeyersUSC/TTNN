@@ -184,6 +184,17 @@ namespace TTTN {
         }(src, std::make_index_sequence<sizeof...(Dims)>{});
     }
 
+    // @doc: template<auto Perm, size_t... I, size_t... Dims> auto PermuteFromArray(const Tensor<Dims...> &t, std::index_sequence<I...>)
+    /**
+     * Takes a `std::array<size_t, Rank>` representing requested permutation ordering and unpacks them with a `std::index_sequence` into a call to `Permute`
+     * Returns a `Tensor` of new permuted shape
+     */
+    template<auto Perm, size_t... I, size_t... Dims>
+    auto PermuteFromArray(const Tensor<Dims...> &t, std::index_sequence<I...>) {
+        return Permute<Perm[I]...>(t);
+    }
+
+
 
     // @doc: template<size_t Axis, size_t Index, size_t... Dims> RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...> &src)
     /**
