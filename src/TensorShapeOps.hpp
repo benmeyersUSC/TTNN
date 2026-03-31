@@ -145,4 +145,38 @@ namespace TTTN {
         static constexpr std::array<size_t, sizeof...(Dims)> shape = {Dims...};
         using type = Tensor<shape[Perm]...>;
     };
+
+
+    // @doc: template<size_t N_out, size_t N_in> struct SwapNDims
+    /** Define permutation-ready `std::array<size_t, N_out + N_in>` that moves the final `N_out` axes to the front and the first `N_in` axes after */
+    template<size_t N_out, size_t N_in>
+    struct SwapNDims {
+        static constexpr auto value = [] {
+            std::array<size_t, N_out + N_in> p{};
+            for (size_t i = 0; i < N_in; ++i) p[i] = N_out + i;
+            for (size_t i = 0; i < N_out; ++i) p[N_in + i] = i;
+            return p;
+        }();
+    };
+
+
+    template<size_t Batch, typename T>
+    struct PrependBatch;
+
+    // @doc: template<size_t Batch, size_t... Dims> struct PrependBatch
+    /** Prepend a `Batch` axis, define `type = Tensor<Batch, Dims...>` */
+    template<size_t Batch, size_t... Dims>
+    struct PrependBatch<Batch, Tensor<Dims...> > {
+        using type = Tensor<Batch, Dims...>;
+    };
+
+    template<typename T>
+    struct TensorFirstDim;
+
+    // @doc: template<size_t D0, size_t... Rest> struct TensorFirstDim<Tensor<D0, Rest...> >
+    /** Get the first axis size from a `Tensor` */
+    template<size_t D0, size_t... Rest>
+    struct TensorFirstDim<Tensor<D0, Rest...> > {
+        static constexpr size_t value = D0;
+    };
 }

@@ -94,11 +94,11 @@ namespace TTTN {
         // @doc: static constexpr size_t TotalParamCount
         /** Derived from `TupleParamCount` over each block's `all_params()` — no `ParamCount` member required on blocks */
         static constexpr size_t TotalParamCount =
-            (TupleParamCount<decltype(std::declval<Blocks&>().all_params())> + ...);
+                (TupleParamCount<decltype(std::declval<Blocks &>().all_params())> + ...);
 
         /** Direct access to the I-th block (0-indexed). Useful for reading cached state (e.g. attention weights) after a forward pass. */
         template<size_t I>
-        const auto& block() const { return std::get<I>(mBlocks); }
+        const auto &block() const { return std::get<I>(mBlocks); }
 
         // raw tuple types (internal / advanced use)
         using ActivationsTuple = TensorTupleBuilder<Blocks...>::type;
@@ -157,8 +157,8 @@ namespace TTTN {
             SnapshotMap out;
             [&]<size_t... Is>(std::index_sequence<Is...>) {
                 ([&] {
-                    const auto& blk = std::get<Is>(mBlocks);
-                    if constexpr (PeekableBlock<std::remove_cvref_t<decltype(blk)>>)
+                    if constexpr (const auto &blk = std::get<Is>(mBlocks); PeekableBlock<std::remove_cvref_t<decltype(
+                        blk)> >)
                         blk.peek(out, "block_" + std::to_string(Is) + ".");
                 }(), ...);
             }(std::make_index_sequence<NumBlocks>{});

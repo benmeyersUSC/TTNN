@@ -278,15 +278,22 @@ namespace TTTN {
     /**
      * Computes accuracy for `Tensor`s organized in a batched `Tensor`
      * Takes any `Tensor<Batch, Dims...>` and flattens `Dims...` internally
+     * NOTE: assumes ***one-hot encoding*** for labels
      */
     template<size_t Batch, size_t... Dims>
     float BatchAccuracy(const Tensor<Batch, Dims...> &pred, const Tensor<Batch, Dims...> &labels) {
         constexpr size_t InnerSize = (Dims * ... * 1);
+        // flatten to become [Batch x FlatPredVector]
         const auto p = Reshape<Batch, InnerSize>(pred);
+        //                   [Batch x OneHotVector]
         const auto l = Reshape<Batch, InnerSize>(labels);
+        // collect predicted decimal @ target index
         const auto p_correct = Reduce<1, Add>(p * l);
+        // collect max prediction decimal
         const auto p_max = Reduce<1, Max>(p);
+        // global sum of (p_correct - p_max) < EPS ? 1 : 0 gives total count of correct predictions
         const float n = Collapse<Add>(Map<Step<1e-5f> >(p_max - p_correct));
+        // correct n out of total
         return 100.f * n / static_cast<float>(Batch);
     }
 };

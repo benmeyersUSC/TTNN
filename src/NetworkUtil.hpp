@@ -5,20 +5,28 @@
 #include "Snapshot.hpp"
 
 namespace TTTN {
-    // PeekableBlock — opt-in concept for blocks that expose internal activations.
-    // Blocks satisfy this by implementing:
-    //   void peek(SnapshotMap& out, const std::string& prefix) const
-    // Non-peekable blocks are silently skipped in TrainableTensorNetwork::snap().
+    // @doc: template<typename T> concept PeekableBlock
+    /**
+     * Opt-in `concept` for `ConcreteBlock`s to be able to expose their internal activations to an owning `TrainableTensorNetwork`
+     * Compliant `ConcreteBlock`s must implement `void peek(SnapshotMap& m, const std::string& s)`
+     */
     template<typename T>
-    concept PeekableBlock = requires(const T& t, SnapshotMap& m, const std::string& s) {
+    concept PeekableBlock = requires(const T &t, SnapshotMap &m, const std::string &s)
+    {
         { t.peek(m, s) } -> std::same_as<void>;
     };
 
-    // ConcreteBlock (hidden) concept
-    // any block in a TTN must define InputTensor and OutputTensor type aliases (must satisfy IsTensor),
-    // and implement Forward/Backward/Update/ZeroGrad/Save/Load with matching signatures
-    template<typename T>
-    concept ConcreteBlock =
+
+    // @doc: template<typename T> concept ConcreteBlock
+    /**
+     * Any block in a `TrainableTensorNetwork` must satisfy `ConcreteBlock`:
+     * Defined `InputTensor` and `OutputTensor` types which are `Tensor` objects
+     * `OutputTensor Forward(InputTensor)`
+     * `InputTensor Backward(OutputTensor, OutputTensor, InputTensor)`
+     * `auto all_params()` and `auto all_params() const`
+     * `TrainableTensorNetwork` blocks need not belong to a specific hierarchy; just satisfy this `concept`
+     */
+    template<typename T> concept ConcreteBlock =
             requires { typename T::InputTensor; } &&
             requires { typename T::OutputTensor; } &&
             IsTensor<typename T::InputTensor> &&
@@ -33,10 +41,12 @@ namespace TTTN {
                 { ct.all_params() }; // const: Save
             };
 
-    // Block concept: a recipe type that advertises its OutputTensor and can be Resolved
-    // with any input tensor type into a ConcreteBlock.
-    // Self-composition check: Resolve<OutputTensor> must itself satisfy ConcreteBlock --
-    // proves the recipe mechanism is valid for at least one instantiation (pure SFINAE).
+    // @doc: template<typename B> concept Block
+    /**
+     * Declarable recipe to define a `ConcreteBlock` in a `TrainableTensorNetwork` template argument list
+     * `Block`s must define an `OutputTensor` type and alias a `ConcreteBlock` as `Resolve`
+     * `Block` argument lists passed to `NetworkBuilder` will be resolved into full `ConcreteBlock`s with chained `InputTensor` attributes
+     */
     template<typename B>
     concept Block =
             requires { typename B::OutputTensor; } &&
@@ -47,59 +57,47 @@ namespace TTTN {
     template<typename In, Block... Recipes>
     struct BuildChain;
 
-    // base case: one last Block to parse
+    // @doc: template<typename Prev, Block Last> struct BuildChain<Prev, Last>
+    /**
+     * Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
+     * Base case for recursive `BuildChain`
+     */
     template<typename Prev, Block Last>
     struct BuildChain<Prev, Last> {
-        // Resolve the last recipe using the previous block's OutputTensor as its InputTensor
         using type = std::tuple<typename Last::template Resolve<typename Prev::OutputTensor> >;
     };
 
-    // typename (not Block) because Input is not a Block, though it has OutputTensor
+    // @doc: template<typename Prev, Block Next, Block... Rest> struct BuildChain<Prev, Next, Rest...>
+    /**
+     * Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
+     * Recursive case: `std::tuple_cat` of
+     * first `Block`'s `ConcreteBlock` as given by its `Resolve` member
+     * next `Block`s' `ConcreteBlock`s
+     * Used by `ApplyBuildChain`
+     */
     template<typename Prev, Block Next, Block... Rest>
     struct BuildChain<Prev, Next, Rest...> {
-        // resolve Next with the previous OutputTensor
+        // get next's ConcreteBlock
         using Resolved = typename Next::template Resolve<typename Prev::OutputTensor>;
 
+        // recurse down, grabbing next's ConcreteBlock
         using type = decltype(std::tuple_cat(
             std::declval<std::tuple<Resolved> >(),
             std::declval<typename BuildChain<Resolved, Rest...>::type>()
         ));
     };
 
-    // Input<Dims...>: the entry point of a NetworkBuilder chain.
-    // Exposes OutputTensor = Tensor<Dims...> so BuildChain can thread it into the first Block's Resolve.
+    // @doc: template<size_t... Dims> struct Input
+    /**
+     * `Block` type which begins and allows a variadic argument list of `Block`s to be processed by `BuildChain` via `ApplyBuildChain`
+     * Defines `OutputTensor = Tensor<Dims...>` to begin chain
+     */
     template<size_t... Dims>
     struct Input {
         using OutputTensor = Tensor<Dims...>;
     };
 
 
-    // prepends a Batch dimension to any Tensor<Dims...> type
-    template<size_t Batch, typename T>
-    struct PrependBatch;
-
-    template<size_t Batch, size_t... Dims>
-    struct PrependBatch<Batch, Tensor<Dims...> > {
-        using type = Tensor<Batch, Dims...>;
-    };
-
-    // =========================================================================
-    // ChainBlock
-    // =========================================================================
-    //
-    // A compound block that chains N sub-blocks sequentially.
-    // Satisfies ConcreteBlock so it can be used inside ParallelBlock, ResidualBlock, etc.
-    //
-    // Unlike TrainableTensorNetwork, this exposes the simple Forward/Backward interface
-    // rather than the ActivationsWrap pattern. It manages its own internal activations.
-    //
-    // =========================================================================
-
-    // @doc: concept ConcreteBlock<T>
-    /**
-     * Requires `InputTensor`, `OutputTensor` (both `IsTensor`), `Forward`, `Backward`, and `all_params()` (const + non-const).
-     * `Update`, `ZeroGrad`, `Save`, `Load` are **not** in the concept — TTN derives them from `all_params()` via the bulk helpers in `Params.hpp`. Blocks only declare what they own.
-     */
     template<ConcreteBlock... Blocks>
     class ChainBlock {
         static_assert(sizeof...(Blocks) >= 1, "ChainBlock needs at least one block");
@@ -221,7 +219,7 @@ namespace TTTN {
 
     public:
         template<size_t I>
-        const auto& block() const { return std::get<I>(blocks_); }
+        const auto &block() const { return std::get<I>(blocks_); }
 
         auto all_params() {
             return [&]<size_t... Is>(std::index_sequence<Is...>) {
@@ -268,26 +266,6 @@ namespace TTTN {
     };
 
 
-    // ── ComposeBlocks: recipe combiner that vanishes at NetworkBuilder time ──────
-    //
-    // Groups sub-recipes into a single type alias.  NetworkBuilder flattens it
-    // into its components before BuildChain runs — no runtime wrapper, no extra
-    // block in the network.  Nesting works: ComposeBlocks<ComposeBlocks<A,B>, C>
-    // flattens to A, B, C.
-    //
-    // Usage:
-    //   using TransformerFFN = ComposeBlocks<
-    //       MapDense<1, Tensor<FFN>, ReLU>,
-    //       MapDense<1, Tensor<Emb>>
-    //   >;
-    //   using TBlock = ComposeBlocks<MHAttention<4, Emb>, TransformerFFN>;
-    //
-    //   NetworkBuilder<Input<Seq, Emb>, TBlock, TBlock, Dense<10>>::type net;
-    //   // ≡  MHAttention, MapDense, MapDense, MHAttention, MapDense, MapDense, Dense
-    // template<typename... Recipes>
-    // struct ComposeBlocks {
-    // };
-
     // FlattenRecipes: recursively expand ComposeBlocks → std::tuple<Block...>
     template<typename... Rs>
     struct FlattenRecipes;
@@ -297,18 +275,6 @@ namespace TTTN {
         using type = std::tuple<>;
     };
 
-    // ComposeBlocks: splice its sub-recipes into the flat list
-    // template<typename... SubRs, typename... Rest>
-    // struct FlattenRecipes<ComposeBlocks<SubRs...>, Rest...> {
-    //     using type = decltype(std::tuple_cat(
-    //         std::declval<typename FlattenRecipes<SubRs...>::type>(),
-    //         std::declval<typename FlattenRecipes<Rest...>::type>()));
-    // };
-
-    // Replace the existing ComposeBlocks definition with this one.
-    // It still flattens when used directly in NetworkBuilder (FlattenRecipes handles that).
-    // But now it ALSO works as a recipe inside Parallel/Residual/Transposed
-    // by resolving into a ChainBlock.
 
     template<typename... Recipes>
     struct ComposeBlocks {
@@ -430,9 +396,4 @@ namespace TTTN {
         // Raw tuple access for internal backward pass machinery.
         const TupleT &tuple() const { return data_; }
     };
-
-    // Extract the leading (SeqLen) dimension from Tensor<SeqLen, Rest...>
-    template<typename T> struct TensorFirstDim;
-    template<size_t D0, size_t... Rest>
-    struct TensorFirstDim<Tensor<D0, Rest...>> { static constexpr size_t value = D0; };
 };

@@ -179,13 +179,13 @@ Replace the parallel CPU dispatch (
 8. [TensorReduce.hpp: Reduction and Broadcast](#tensorreducehpp--reduction-and-broadcast)
 9. [TensorUtil.hpp: Tensor Layer Umbrella](#tensorutilhpp--tensor-layer-umbrella)
 10. [TTTN_ML.hpp: ML Primitives](#tttn_mlhpp--ml-primitives)
-11. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
-12. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
-13. [ChainBlock.hpp: Sequential Block Composition](#chainblockhpp--sequential-block-composition)
-14. [NetworkUtil.hpp: Concepts, Types, and Utilities](#networkutilhpp--concepts-types-and-utilities)
-15. [Params.hpp: Parameter Storage and Optimizer](#paramshpp--parameter-storage-and-optimizer)
-16. [TrainableTensorNetwork.hpp: The Network](#trainabletensornetworkhpp--the-network)
-17. [Snapshot.hpp: Activation Snapshots](#snapshothpp--activation-snapshots)
+11. [NetworkUtil.hpp: Concepts, Types, and Utilities](#networkutilhpp--concepts-types-and-utilities)
+12. [TrainableTensorNetwork.hpp: The Network](#trainabletensornetworkhpp--the-network)
+13. [Params.hpp: Parameter Storage and Optimizer](#paramshpp--parameter-storage-and-optimizer)
+14. [Snapshot.hpp: Activation Snapshots](#snapshothpp--activation-snapshots)
+15. [ChainBlock.hpp: Sequential Block Composition](#chainblockhpp--sequential-block-composition)
+16. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
+17. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
 18. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
 
 ---
@@ -507,6 +507,18 @@ Shape-only metaprogramming — no data, no runtime. Purely compile-time type-lev
     - Specify `size_t Start`, `size_t Len`, and a starting set of `size_t...Dims` and construct a
       `Tensor` whose shape only contains the `Len` dimensions starting at `Start`
     - Calls `ArrayToTensor<SliceDimsHolder<...>>`
+
+- ***SwapNDims*** - [`template<size_t N_out, size_t N_in> struct SwapNDims`](src/TensorShapeOps.hpp)
+    - Define permutation-ready `std::array<size_t, N_out + N_in>` that moves the final
+      `N_out` axes to the front and the first `N_in` axes after
+
+- ***PrependBatch*** - [`template<size_t Batch, size_t... Dims> struct PrependBatch`](src/TensorShapeOps.hpp)
+    - Prepend a `Batch` axis, define `type = Tensor<Batch, Dims...>`
+
+
+- ***TensorFirstDim*** - [
+  `template<size_t D0, size_t... Rest> struct TensorFirstDim<Tensor<D0, Rest...> >`](src/TensorShapeOps.hpp)
+    - Get the first axis size from a `Tensor`
 
 ---
 
@@ -1262,104 +1274,7 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
   `template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels)`](src/TTTN_ML.hpp)
     - Computes accuracy for `Tensor`s organized in a batched `Tensor`
     - Takes any `Tensor<Batch, Dims...>` and flattens `Dims...` internally
-
----
-
-## [Dense.hpp](src/Dense.hpp): Fully-Connected Layer
-
-Implements the general multidimensional dense layer (`DenseMDBlock`) and its recipe types. Weights have shape
-`Tensor<OutDims..., InDims...>`; forward pass is a generalized matrix-vector product via
-`ΣΠ`. Includes Adam optimizer state.
-
-- ***WTBlockSwapPerm*** — [`struct WTBlockSwapPerm<size_t N_out, size_t N_in>`](src/Dense.hpp)
-  -
-
----
-
-### `class DenseMDBlock<typename InT, typename OutT, ActivationOp Act_>`
-
-The concrete fully-connected block. `W = Tensor<OutDims..., InDims...>`, `b = Tensor<OutDims...>`.
-
-- ***DenseMDBlock*** — [`DenseMDBlock()`](src/Dense.hpp)
-    - Xavier-initializes `W`
-- ***Forward*** — [`OutputTensor Forward(const InputTensor& x) const`](src/Dense.hpp)
-    - #########
-- ***Backward*** — [
-  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Dense.hpp)
-    - #########
-- ***BatchedForward*** — [
-  `template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp)
-    -
-- ***BatchedBackward*** — [`template<size_t Batch> Tensor<Batch, InDims...> BatchedBackward(...)`](src/Dense.hpp)
-  -
-- ***all_params*** — [`auto all_params()`](src/Dense.hpp)
-    - Returns `std::tie(W_, b_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this
-
----
-
-### `struct DenseMD<typename OutT, ActivationOp Act_>` *(Block recipe)*
-
-- ***Resolve*** — [`template<typename InputT> using Resolve = DenseMDBlock<InputT, OutT, Act_>`](src/Dense.hpp)
-  -
-
-### `template<size_t N, ActivationOp Act_> using Dense`
-
-- ***Dense*** — [`using Dense = DenseMD<Tensor<N>, Act_>`](src/Dense.hpp)
-    - `Dense<128, ReLU>`, `Dense<10, Sigmoid>`, `Dense<10>` (defaults to `Linear`)
-
----
-
-## [Attention.hpp](src/Attention.hpp): Multi-Head Self-Attention
-
-Implements scaled dot-product multi-head self-attention over sequences of arbitrary-rank token embeddings. Forward-pass cache is stored as
-`mutable` members. All four weight matrices (`W_Q`, `W_K`, `W_V`, `W_O`) are updated with Adam.
-
-### `class MultiHeadAttentionBlock<size_t SeqLen, size_t Heads, size_t... EmbDims>`
-
-`InputTensor = OutputTensor = Tensor<SeqLen, EmbDims...>`. Constraint: `EmbSize % Heads == 0`.
-
-- ***MultiHeadAttentionBlock*** — [`MultiHeadAttentionBlock()`](src/Attention.hpp)
-    - Xavier-initializes `WQ`, `WK`, `WV`, `WO`
-- ***Forward*** — [`OutputTensor Forward(const InputTensor& X) const`](src/Attention.hpp)
-    - #########
-- ***Backward*** — [
-  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Attention.hpp)
-    - #########
-- ***BatchedForward*** — [
-  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(...)`](src/Attention.hpp)
-    - #########
-- ***BatchedBackward*** — [
-  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(...)`](src/Attention.hpp)
-    -
-- ***all_params*** — [`auto all_params()`](src/Attention.hpp)
-    - Returns `std::tie(WQ_, WK_, WV_, WO_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this
-
----
-
-### `struct TensorFirstDim<typename T>`
-
-- ***value*** — [`static constexpr size_t value`](src/Attention.hpp)
-  -
-
----
-
-### `struct MHAttention<size_t Heads, size_t... EmbDims>` *(Block recipe)*
-
-- ***Resolve*** — [
-  `template<typename InputT> using Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`](src/Attention.hpp)
-    -
-
----
-
-## [ChainBlock.hpp](src/ChainBlock.hpp): Sequential Block Composition
-
-`ChainBlock<Blocks...>` composes an arbitrary sequence of `ConcreteBlock`s into a single block satisfying the
-`ConcreteBlock` concept. `InputTensor` is the first block's input;
-`OutputTensor` is the last block's output. Forward and backward threads through the chain in order;
-`all_params()` aggregates all sub-block parameters into one tuple.
-
-- ***Forward*** — [`OutputTensor Forward(const InputTensor& x) const`](src/ChainBlock.hpp)
-    - #########
+    - NOTE: assumes ***one-hot encoding*** for labels
 
 ---
 
@@ -1370,14 +1285,42 @@ Defines the two block concepts that gate the type system, the chain-resolution m
 
 ### Concepts
 
-- ***ConcreteBlock*** — [`concept ConcreteBlock<T>`](src/NetworkUtil.hpp)
-    - Requires `InputTensor`, `OutputTensor` (both `IsTensor`), `Forward`, `Backward`, and
-      `all_params()` (const + non-const).
-    - `Update`, `ZeroGrad`, `Save`, `Load` are **not** in the concept — TTN derives them from
-      `all_params()` via the bulk helpers in `Params.hpp`. Blocks only declare what they own.
+- ***ConcreteBlock*** - [`template<typename T> concept ConcreteBlock`](src/NetworkUtil.hpp)
+    - Any block in a `TrainableTensorNetwork` must satisfy `ConcreteBlock`:
+        - Defined `InputTensor` and `OutputTensor` types which are `Tensor` objects
+        - `OutputTensor Forward(InputTensor)`
+        - `InputTensor Backward(OutputTensor, OutputTensor, InputTensor)`
+        - `auto all_params()` and `auto all_params() const`
+    - `TrainableTensorNetwork` blocks need not belong to a specific hierarchy; just satisfy this `concept`
 
-- ***Block*** — [`concept Block<B>`](src/NetworkUtil.hpp)
-  -
+- ***Block*** - [`template<typename B> concept Block`](src/NetworkUtil.hpp)
+    - Declarable recipe to define a `ConcreteBlock` in a `TrainableTensorNetwork` template argument list
+    - `Block`s must define an `OutputTensor` type and alias a `ConcreteBlock` as `Resolve`
+    - `Block` argument lists passed to `NetworkBuilder` will be resolved into full `ConcreteBlock`s with chained
+      `InputTensor` attributes
+
+- ***PeekableBlock*** - [`template<typename T> concept PeekableBlock`](src/NetworkUtil.hpp)
+    - Opt-in `concept` for `ConcreteBlock`s to be able to expose their internal activations to an owning
+      `TrainableTensorNetwork`
+    - Compliant `ConcreteBlock`s must implement `void peek(SnapshotMap& m, const std::string& s)`
+
+
+- ***BuildChain*** - [`template<typename Prev, Block Last> struct BuildChain<Prev, Last>`](src/NetworkUtil.hpp)
+    - Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
+    - Base case for recursive `BuildChain`
+
+- ***BuildChain*** - [
+  `template<typename Prev, Block Next, Block... Rest> struct BuildChain<Prev, Next, Rest...>`](src/NetworkUtil.hpp)
+    - Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
+    - Recursive case: `std::tuple_cat` of
+        - first `Block`'s `ConcreteBlock` as given by its `Resolve` member
+        - next `Block`s' `ConcreteBlock`s
+    - Used by `ApplyBuildChain`
+
+- ***Input*** - [`template<size_t... Dims> struct Input`](src/NetworkUtil.hpp)
+    - `Block` type which begins and allows a variadic argument list of `Block`s to be processed by `BuildChain` via
+      `ApplyBuildChain`
+    - Defines `OutputTensor = Tensor<Dims...>` to begin chain
 
 ---
 
@@ -1413,63 +1356,6 @@ Thin owning wrapper around an activations tuple. Deletes the rvalue
 
 - ***tuple*** — [`const TupleT& tuple() const`](src/NetworkUtil.hpp)
   -
-
----
-
-## [Params.hpp](src/Params.hpp): Parameter Storage and Optimizer
-
-Defines the `Param<T>` template, the
-`AdamState` struct, and bulk helpers. No block ever writes an optimizer loop — everything routes through here.
-
-### `struct AdamState`
-
-All Adam hyperparameters and per-network bias-correction state in one place. TTN owns one instance (
-`mAdam_`) and passes it by const-ref to `UpdateAll` each step.
-
-| Member | Default | Meaning |
-|--------|---------|---------|
-| `beta1` | `0.9` | first-moment decay |
-| `beta2` | `0.999` | second-moment decay |
-| `eps` | `1e-8` | denominator stabilizer |
-| `mCorr` | `1` | `1 / (1 - β1^t)`, updated by `step()` |
-| `vCorr` | `1` | `1 / (1 - β2^t)`, updated by `step()` |
-| `t` | `0` | timestep counter |
-
-- ***step*** — [`void step()`](src/Params.hpp)
-    - Increments `t`, recomputes `mCorr = 1/(1-β1^t)` and `vCorr = 1/(1-β2^t)`. Call once per `Update()`.
-
-### `template<typename TensorT> struct Param`
-
-Single trainable tensor bundled with gradient and Adam moments (`value`, `grad`, `m`, `v`).
-
-- ***update*** — [`void update(const AdamState& adam, float lr)`](src/Params.hpp)
-    - One Adam step: updates `m`, `v`, then applies bias-corrected weight update to `value`
-
-- ***zero_grad*** — [`void zero_grad()`](src/Params.hpp)
-    - Zeroes `grad` — called by `ZeroAllGrads` at the start of each training step
-
-- ***save*** — [`void save(std::ofstream& f) const`](src/Params.hpp)
-    - Serializes `value` to binary file
-
-- ***load*** — [`void load(std::ifstream& f)`](src/Params.hpp)
-    - Deserializes `value` from binary file
-
-### Bulk Helpers
-
-Operate over the `std::tuple<Param<T>&...>` returned by `all_params()`.
-
-- ***ZeroAllGrads*** — [`template<typename Tuple> void ZeroAllGrads(Tuple&& params)`](src/Params.hpp)
-    - Calls `zero_grad()` on every `Param` in the tuple
-
-- ***UpdateAll*** — [
-  `template<typename Tuple> void UpdateAll(Tuple&& params, const AdamState& adam, float lr)`](src/Params.hpp)
-    - Calls `update(adam, lr)` on every `Param` in the tuple
-
-- ***SaveAll*** — [`template<typename Tuple> void SaveAll(Tuple&& params, std::ofstream& f)`](src/Params.hpp)
-    - Calls `save(f)` on every `Param` in the tuple
-
-- ***LoadAll*** — [`template<typename Tuple> void LoadAll(Tuple&& params, std::ifstream& f)`](src/Params.hpp)
-    - Calls `load(f)` on every `Param` in the tuple
 
 ---
 
@@ -1582,6 +1468,159 @@ Autoencoder ae;    // train end-to-end -- all blocks update together
 
 ---
 
+## [Params.hpp](src/Params.hpp): Parameter Storage and Optimizer
+
+Defines the `Param<T>` template, the
+`AdamState` struct, and bulk helpers. No block ever writes an optimizer loop — everything routes through here.
+
+### `struct AdamState`
+
+All Adam hyperparameters and per-network bias-correction state in one place. TTN owns one instance (
+`mAdam_`) and passes it by const-ref to `UpdateAll` each step.
+
+| Member | Default | Meaning |
+|--------|---------|---------|
+| `beta1` | `0.9` | first-moment decay |
+| `beta2` | `0.999` | second-moment decay |
+| `eps` | `1e-8` | denominator stabilizer |
+| `mCorr` | `1` | `1 / (1 - β1^t)`, updated by `step()` |
+| `vCorr` | `1` | `1 / (1 - β2^t)`, updated by `step()` |
+| `t` | `0` | timestep counter |
+
+- ***step*** — [`void step()`](src/Params.hpp)
+    - Increments `t`, recomputes `mCorr = 1/(1-β1^t)` and `vCorr = 1/(1-β2^t)`. Call once per `Update()`.
+
+### `template<typename TensorT> struct Param`
+
+Single trainable tensor bundled with gradient and Adam moments (`value`, `grad`, `m`, `v`).
+
+- ***update*** — [`void update(const AdamState& adam, float lr)`](src/Params.hpp)
+    - One Adam step: updates `m`, `v`, then applies bias-corrected weight update to `value`
+
+- ***zero_grad*** — [`void zero_grad()`](src/Params.hpp)
+    - Zeroes `grad` — called by `ZeroAllGrads` at the start of each training step
+
+- ***save*** — [`void save(std::ofstream& f) const`](src/Params.hpp)
+    - Serializes `value` to binary file
+
+- ***load*** — [`void load(std::ifstream& f)`](src/Params.hpp)
+    - Deserializes `value` from binary file
+
+### Bulk Helpers
+
+Operate over the `std::tuple<Param<T>&...>` returned by `all_params()`.
+
+- ***ZeroAllGrads*** — [`template<typename Tuple> void ZeroAllGrads(Tuple&& params)`](src/Params.hpp)
+    - Calls `zero_grad()` on every `Param` in the tuple
+
+- ***UpdateAll*** — [
+  `template<typename Tuple> void UpdateAll(Tuple&& params, const AdamState& adam, float lr)`](src/Params.hpp)
+    - Calls `update(adam, lr)` on every `Param` in the tuple
+
+- ***SaveAll*** — [`template<typename Tuple> void SaveAll(Tuple&& params, std::ofstream& f)`](src/Params.hpp)
+    - Calls `save(f)` on every `Param` in the tuple
+
+- ***LoadAll*** — [`template<typename Tuple> void LoadAll(Tuple&& params, std::ifstream& f)`](src/Params.hpp)
+    - Calls `load(f)` on every `Param` in the tuple
+
+---
+
+## [Snapshot.hpp](src/Snapshot.hpp): Activation Snapshots
+
+Runtime-typed storage for capturing named activation tensors. `SnapshotEntry` holds a shape vector and a flat
+`float` copy — erasing the compile-time type so snapshots can be stored in a uniform `SnapshotMap` (
+`unordered_map<string, SnapshotEntry>`). Used by visualization and debugging tools.
+
+- ***snap_add*** — [
+  `template<size_t... Dims> void snap_add(SnapshotMap& out, const std::string& key, const Tensor<Dims...>& t)`](src/Snapshot.hpp)
+    - #########
+
+--- 
+
+## [Dense.hpp](src/Dense.hpp): Fully-Connected Layer
+
+Implements the general multidimensional dense layer (`DenseMDBlock`) and its recipe types. Weights have shape
+`Tensor<OutDims..., InDims...>`; forward pass is a generalized matrix-vector product via
+`ΣΠ`. Includes Adam optimizer state.
+
+
+---
+
+### `class DenseMDBlock<typename InT, typename OutT, ActivationOp Act_>`
+
+The concrete fully-connected block. `W = Tensor<OutDims..., InDims...>`, `b = Tensor<OutDims...>`.
+
+- ***DenseMDBlock*** — [`DenseMDBlock()`](src/Dense.hpp)
+    - Xavier-initializes `W`
+- ***Forward*** — [`OutputTensor Forward(const InputTensor& x) const`](src/Dense.hpp)
+    - #########
+- ***Backward*** — [
+  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Dense.hpp)
+    - #########
+- ***BatchedForward*** — [
+  `template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp)
+    -
+- ***BatchedBackward*** — [`template<size_t Batch> Tensor<Batch, InDims...> BatchedBackward(...)`](src/Dense.hpp)
+  -
+- ***all_params*** — [`auto all_params()`](src/Dense.hpp)
+    - Returns `std::tie(W_, b_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this
+
+---
+
+### `struct DenseMD<typename OutT, ActivationOp Act_>` *(Block recipe)*
+
+- ***Resolve*** — [`template<typename InputT> using Resolve = DenseMDBlock<InputT, OutT, Act_>`](src/Dense.hpp)
+  -
+
+### `template<size_t N, ActivationOp Act_> using Dense`
+
+- ***Dense*** — [`using Dense = DenseMD<Tensor<N>, Act_>`](src/Dense.hpp)
+    - `Dense<128, ReLU>`, `Dense<10, Sigmoid>`, `Dense<10>` (defaults to `Linear`)
+
+---
+
+## [Attention.hpp](src/Attention.hpp): Multi-Head Self-Attention
+
+Implements scaled dot-product multi-head self-attention over sequences of arbitrary-rank token embeddings. Forward-pass cache is stored as
+`mutable` members. All four weight matrices (`W_Q`, `W_K`, `W_V`, `W_O`) are updated with Adam.
+
+### `class MultiHeadAttentionBlock<size_t SeqLen, size_t Heads, size_t... EmbDims>`
+
+`InputTensor = OutputTensor = Tensor<SeqLen, EmbDims...>`. Constraint: `EmbSize % Heads == 0`.
+
+- ***MultiHeadAttentionBlock*** — [`MultiHeadAttentionBlock()`](src/Attention.hpp)
+    - Xavier-initializes `WQ`, `WK`, `WV`, `WO`
+- ***Forward*** — [`OutputTensor Forward(const InputTensor& X) const`](src/Attention.hpp)
+    - #########
+- ***Backward*** — [
+  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Attention.hpp)
+    - #########
+- ***BatchedForward*** — [
+  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(...)`](src/Attention.hpp)
+    - #########
+- ***BatchedBackward*** — [
+  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(...)`](src/Attention.hpp)
+    -
+- ***all_params*** — [`auto all_params()`](src/Attention.hpp)
+    - Returns `std::tie(WQ_, WK_, WV_, WO_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this
+
+---
+
+### `struct TensorFirstDim<typename T>`
+
+- ***value*** — [`static constexpr size_t value`](src/Attention.hpp)
+  -
+
+---
+
+### `struct MHAttention<size_t Heads, size_t... EmbDims>` *(Block recipe)*
+
+- ***Resolve*** — [
+  `template<typename InputT> using Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`](src/Attention.hpp)
+    -
+
+---
+
 ## [DataIO.hpp](src/DataIO.hpp) -- Data Loading and Batching
 
 Utilities for loading datasets from disk, drawing random mini-batches, and displaying terminal progress bars. Shapes are compile-time parameters: the type
@@ -1617,12 +1656,3 @@ Lightweight terminal progress bar. Construct with a total step count and optiona
 
 ---
 
-## [Snapshot.hpp](src/Snapshot.hpp): Activation Snapshots
-
-Runtime-typed storage for capturing named activation tensors. `SnapshotEntry` holds a shape vector and a flat
-`float` copy — erasing the compile-time type so snapshots can be stored in a uniform `SnapshotMap` (
-`unordered_map<string, SnapshotEntry>`). Used by visualization and debugging tools.
-
-- ***snap_add*** — [
-  `template<size_t... Dims> void snap_add(SnapshotMap& out, const std::string& key, const Tensor<Dims...>& t)`](src/Snapshot.hpp)
-    - #########
