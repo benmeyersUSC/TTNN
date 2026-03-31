@@ -195,6 +195,29 @@ namespace TTTN {
     }
 
 
+    // @doc: template<size_t... NewDims, size_t... OldDims> Tensor<NewDims...> Reshape(const Tensor<OldDims...> &src)
+    /**
+     * Reinterpret `Tensor<OldDims...>` as `Tensor<NewDims...>` — total size must match
+     * Same flat data, new shape; copies via `std::copy`
+     */
+    template<size_t... NewDims, size_t... OldDims>
+    Tensor<NewDims...> Reshape(const Tensor<OldDims...> &src) {
+        static_assert(Tensor<NewDims...>::Size == Tensor<OldDims...>::Size, "Reshape: total size must match");
+        Tensor<NewDims...> result;
+        std::copy(src.data(), src.data() + src.Size, result.data());
+        return result;
+    }
+
+    // @doc: template<size_t... Dims> Tensor<Tensor<Dims...>::Size> Flatten(const Tensor<Dims...> &src)
+    /**
+     * Collapse `Tensor<Dims...>` to rank-1 `Tensor<Size>`
+     * Convenience wrapper around `Reshape<Size>`
+     */
+    template<size_t... Dims>
+    Tensor<Tensor<Dims...>::Size> Flatten(const Tensor<Dims...> &src) {
+        return Reshape<Tensor<Dims...>::Size>(src);
+    }
+
 
     // @doc: template<size_t Axis, size_t Index, size_t... Dims> RemoveAxis<Axis, Dims...>::type TensorIndex(const Tensor<Dims...> &src)
     /**

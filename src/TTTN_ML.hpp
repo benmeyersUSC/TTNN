@@ -122,48 +122,78 @@ namespace TTTN {
     template<size_t Axis, typename TensorT>
     class SoftmaxBlock;
 
+    // @doc: template<size_t Axis, size_t... Dims> class SoftmaxBlock<Axis, Tensor<Dims...> >
+    /** Class representing the concrete block of a  `Softmax` layer in a `TrainableTensorNetwork`, satisfying the `ConcreteBlock` `concept` */
     template<size_t Axis, size_t... Dims>
     class SoftmaxBlock<Axis, Tensor<Dims...> > {
     public:
         using InputTensor = Tensor<Dims...>;
         using OutputTensor = Tensor<Dims...>;
+
+        // @doc: auto all_params()
+        /** Returns `std::tuple<>{}` (no parameters) */
         auto all_params() { return std::tuple<>{}; }
+
+        // @doc: auto all_params()
+        /** Returns `std::tuple<>{}` (no parameters) */
         auto all_params() const { return std::tuple<>{}; }
 
+        // @doc: OutputTensor SoftmaxBlock::Forward(const InputTensor &x) const
+        /** Calls `Softmax<Axis>(x)` */
         OutputTensor Forward(const InputTensor &x) const {
             return Softmax<Axis>(x);
         }
 
-        // delta_A: dL/dA, a: post-softmax activation, a_prev: pre-block input (unused)
-        InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a,
-                             const InputTensor & /*a_prev*/) {
+        // @doc: InputTensor SoftmaxBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor & /*a_prev*/)
+        /** Calls `SoftmaxPrime<Axis>(delta_A, a)` */
+        InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor & /*a_prev*/) {
             return SoftmaxPrime<Axis>(delta_A, a);
         }
 
+        // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::BatchedForward(const Tensor<Batch, Dims...> &X) const
+        /**
+         * Calls `Softmax<Axis + 1>(X)`
+         * NOTE: assumes first axis is `Batch` axis
+         */
         template<size_t Batch>
         Tensor<Batch, Dims...> BatchedForward(const Tensor<Batch, Dims...> &X) const {
             return Softmax<Axis + 1>(X);
         }
 
+        // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::BatchedBackward(const Tensor<Batch, Dims...> &delta_A, const Tensor<Batch, Dims...> &a, const Tensor<Batch, Dims...> & /*a_prev*/)
+        /**
+         * Calls `SoftmaxPrime<Axis + 1>(delta_A, a)`
+         * NOTE: assumes first axis is `Batch` axis
+         */
         template<size_t Batch>
-        Tensor<Batch, Dims...> BatchedBackward(const Tensor<Batch, Dims...> &delta_A,
-                                               const Tensor<Batch, Dims...> &a,
+        Tensor<Batch, Dims...> BatchedBackward(const Tensor<Batch, Dims...> &delta_A, const Tensor<Batch, Dims...> &a,
                                                const Tensor<Batch, Dims...> & /*a_prev*/) {
             return SoftmaxPrime<Axis + 1>(delta_A, a);
         }
     };
 
 
+    // @doc: template<size_t Axis> struct SoftmaxLayer
+    /**
+     * `Block`-compliant recipe struct to create `ConcreteBlock SoftmaxBlock`
+     * Pass in `Axis` of normalization and `Tensor` type whose shape will be preserved from input to output will be deduced
+     */
     template<size_t Axis>
     struct SoftmaxLayer {
-        using OutputTensor = Tensor<1>;
+        using OutputTensor = Tensor<1>; // this is just for the concepts in TTN...InputT == OutputT
         template<typename InputT>
         using Resolve = SoftmaxBlock<Axis, InputT>;
     };
 
 
-    template<typename L, typename TensorT>
-    concept LossFunction =
+    // @doc: template<typename L, typename TensorT> concept LossFunction
+    /**
+     * `concept` to define `LossFunction` structs
+     * Requires:
+     * `Loss(Tensor<Dims...>, Tensor<Dims...>) -> float`
+     * `Grad(Tensor<Dims...>, Tensor<Dims...>) -> Tensor<Dims...>`
+     */
+    template<typename L, typename TensorT> concept LossFunction =
             IsTensor<TensorT> &&
             requires
             {
@@ -172,13 +202,22 @@ namespace TTTN {
             };
 
 
+    // @doc: struct MSE
+    /** `LossFunction` struct for ***Mean Squared Error*** (***MSE***) */
     struct MSE {
+        // @doc: template<size_t... Dims> static float MSE::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
+        /**
+         * Sum of squares of difference between `target` and `pred`
+         * Calls `Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv`
+         */
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             static constexpr float Inv = 1.f / Tensor<Dims...>::Size;
             return Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv;
         }
 
+        // @doc: template<size_t... Dims> static Tensor<Dims...> MSE::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
+        /** Derivative of ***MSE*** loss - `2(pred - target) / Tensor<Dims...>::Size` (standard power rule derivative, scaled by how many elements composed the original sum) */
         template<size_t... Dims>
         static Tensor<Dims...> Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             constexpr float inv = 2.f / static_cast<float>(Tensor<Dims...>::Size);
@@ -187,7 +226,14 @@ namespace TTTN {
     };
 
 
+    // @doc: struct BinaryCEL
+    /**
+     * `LossFunction` struct for ***Binary Cross Entropy Loss*** (***BinaryCEL***)
+     * Helper for binary cases, but is just a specialization of `struct CEL`
+     */
     struct BinaryCEL {
+        // @doc: template<size_t... Dims> static float BinaryCEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
+        /** `-log(pred[true])` (negative log of the predicted value for `true` answer, whose target value is `1.0f`) */
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             const auto p_c = Map<Clamp<EPS, 1.f - EPS> >(pred);
@@ -195,6 +241,8 @@ namespace TTTN {
                      Collapse<Mul, Add>(Map<OneMinus>(target), Map<Compose<Log, OneMinus> >(p_c)));
         }
 
+        // @doc: template<size_t... Dims> static Tensor<Dims...> BinaryCEL::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
+        /** `(p - t) / (p * (1.f - p) + EPS)` */
         template<size_t... Dims>
         static Tensor<Dims...> Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             return pred.zip(target, [](float p, float t) {
@@ -204,12 +252,21 @@ namespace TTTN {
     };
 
 
+    // @doc: struct CEL
+    /** `LossFunction` struct for ***Cross Entropy Loss*** (***CEL***) */
     struct CEL {
+        // @doc: template<size_t... Dims> static float CEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
+        /**
+         * `-log(pred[true])` (negative log of the predicted value for `true` answer, whose target value is `1.0f`)
+         * Elegantly calls `Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f`
+         */
         template<size_t... Dims>
         static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             return Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f;
         }
 
+        // @doc: template<size_t... Dims> static Tensor<Dims...> CEL::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
+        /** Elegantly calls `Zip<Compose<Neg, Div> >(target, Map<Clamp<EPS> >(pred))` */
         template<size_t... Dims>
         static Tensor<Dims...> Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             return Zip<Compose<Neg, Div> >(target, Map<Clamp<EPS> >(pred));
@@ -217,11 +274,19 @@ namespace TTTN {
     };
 
 
-    template<size_t Batch, size_t N>
-    float BatchAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels) {
-        const auto p_correct = Reduce<1, Add>(pred * labels); // Tensor<Batch>
-        const auto p_max = Reduce<1, Max>(pred); // Tensor<Batch>
-        const float n = Reduce<0, Add>(Map<Step<1e-5f> >(p_max - p_correct)).flat(0);
+    // @doc: template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels)
+    /**
+     * Computes accuracy for `Tensor`s organized in a batched `Tensor`
+     * Takes any `Tensor<Batch, Dims...>` and flattens `Dims...` internally
+     */
+    template<size_t Batch, size_t... Dims>
+    float BatchAccuracy(const Tensor<Batch, Dims...> &pred, const Tensor<Batch, Dims...> &labels) {
+        constexpr size_t InnerSize = (Dims * ... * 1);
+        const auto p = Reshape<Batch, InnerSize>(pred);
+        const auto l = Reshape<Batch, InnerSize>(labels);
+        const auto p_correct = Reduce<1, Add>(p * l);
+        const auto p_max = Reduce<1, Max>(p);
+        const float n = Collapse<Add>(Map<Step<1e-5f> >(p_max - p_correct));
         return 100.f * n / static_cast<float>(Batch);
     }
 };

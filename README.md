@@ -608,6 +608,17 @@ Default-constructible callable structs satisfying `FloatBinaryOp` or
     - Returns a `Tensor` of new permuted shape
 
 
+- ***Reshape*** - [
+  `template<size_t... NewDims, size_t... OldDims> Tensor<NewDims...> Reshape(const Tensor<OldDims...> &src)`](src/TensorFunctions.hpp)
+    - Reinterpret `Tensor<OldDims...>` as `Tensor<NewDims...>` — total size must match
+    - Same flat data, new shape; copies via `std::copy`
+
+- ***Flatten*** - [
+  `template<size_t... Dims> Tensor<Tensor<Dims...>::Size> Flatten(const Tensor<Dims...> &src)`](src/TensorFunctions.hpp)
+    - Collapse `Tensor<Dims...>` to rank-1 `Tensor<Size>`
+    - Convenience wrapper around `Reshape<Size>`
+
+
 - ***MoveToLastPerm*** - [`template<size_t Src, size_t Rank> struct MoveToLastPerm`](src/TensorFunctions.hpp)
     - Create member `std::array<size_t, Rank> value`, representing `Rank` dimensions, permuted such that `src` is the
       *last* index
@@ -1160,80 +1171,97 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
         - Generalization of `a * (g - (g . a))`
     - Shape-preserving
 
+- ***SoftmaxBlock*** - [
+  `template<size_t Axis, size_t... Dims> class SoftmaxBlock<Axis, Tensor<Dims...> >`](src/TTTN_ML.hpp)
+    - Class representing the concrete block of a  `Softmax` layer in a `TrainableTensorNetwork`, satisfying the
+      `ConcreteBlock` `concept`
+
+- ***SoftmaxBlock::Forward*** — [`OutputTensor SoftmaxBlock::Forward(const InputTensor &x) const`](src/TTTN_ML.hpp)
+    - Calls `Softmax<Axis>(x)`
+
+- ***SoftmaxBlock::Backward*** — [
+  `InputTensor SoftmaxBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor & /*a_prev*/)`](src/TTTN_ML.hpp)
+    - Calls `SoftmaxPrime<Axis>(delta_A, a)`
+
+- ***SoftmaxBlock::BatchedForward*** — [
+  `template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::BatchedForward(const Tensor<Batch, Dims...> &X) const`](src/TTTN_ML.hpp)
+    - Calls `Softmax<Axis + 1>(X)`
+    - NOTE: assumes first axis is `Batch` axis
+
+- ***SoftmaxBlock::BatchedBackward*** — [
+  `template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::BatchedBackward(const Tensor<Batch, Dims...> &delta_A, const Tensor<Batch, Dims...> &a, const Tensor<Batch, Dims...> & /*a_prev*/)`](src/TTTN_ML.hpp)
+    - Calls `SoftmaxPrime<Axis + 1>(delta_A, a)`
+    - NOTE: assumes first axis is `Batch` axis
+
+- ***SoftmaxBlock::all_params*** — [`auto all_params()`](src/TTTN_ML.hpp)
+    - Returns `std::tuple<>{}` (no parameters)
+
+
+- ***SoftmaxLayer*** - [`template<size_t Axis> struct SoftmaxLayer`](src/TTTN_ML.hpp)
+    - `Block`-compliant recipe struct to create `ConcreteBlock SoftmaxBlock`
+    - Pass in `Axis` of normalization and
+      `Tensor` type whose shape will be preserved from input to output will be deduced
+
 ---
 
-### `class SoftmaxBlock<size_t Axis, typename TensorT>`
+### Loss Function Concept
 
-A shape-preserving, parameter-free block. `all_params()` returns
-`std::tuple<>{}` — TTN's bulk helpers become no-ops automatically.
-
-- ***Forward*** — [`OutputTensor Forward(const InputTensor& x) const`](src/TTTN_ML.hpp)
-  -
-
-- ***Backward*** — [
-  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/TTTN_ML.hpp)
-    -
-
-- ***BatchedForward*** — [
-  `template<size_t Batch> Tensor<Batch, Dims...> BatchedForward(const Tensor<Batch, Dims...>& X) const`](src/TTTN_ML.hpp)
-    -
-
-- ***BatchedBackward*** — [
-  `template<size_t Batch> Tensor<Batch, Dims...> BatchedBackward(const Tensor<Batch, Dims...>& delta_A, const Tensor<Batch, Dims...>& a, const Tensor<Batch, Dims...>& a_prev)`](src/TTTN_ML.hpp)
-    -
-
-- ***all_params*** — [`auto all_params()`](src/TTTN_ML.hpp)
-    - Returns `std::tuple<>{}` — no parameters; TTN bulk helpers become no-ops automatically
-
----
-
-### `struct SoftmaxLayer<size_t Axis>` *(Block recipe)*
-
-- ***Resolve*** — [`template<typename InputT> using Resolve = SoftmaxBlock<Axis, InputT>`](src/TTTN_ML.hpp)
-  -
-
----
-
-### Loss Functions
-
-- ***LossFunction*** — [`concept LossFunction<typename L, typename TensorT>`](src/TTTN_ML.hpp)
-  -
+- ***LossFunction*** — [`template<typename L, typename TensorT> concept LossFunction`](src/TTTN_ML.hpp)
+    - `concept` to define `LossFunction` structs
+    - Requires:
+        - `Loss(Tensor<Dims...>, Tensor<Dims...>) -> float`
+        - `Grad(Tensor<Dims...>, Tensor<Dims...>) -> Tensor<Dims...>`
 
 #### `struct MSE`
 
-- ***Loss*** — [
-  `template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-    - #########
-- ***Grad*** — [
-  `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
+- ***MSE*** - [`struct MSE`](src/TTTN_ML.hpp)
+    - `LossFunction` struct for ***Mean Squared Error*** (***MSE***)
+
+- ***MSE::Loss*** - [
+  `template<size_t... Dims> static float MSE::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
+    - Sum of squares of difference between `target` and `pred`
+    - Calls `Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv`
+
+- ***MSE::Grad*** - [
+  `template<size_t... Dims> static Tensor<Dims...> MSE::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
+    - Derivative of ***MSE*** loss
     -
+  `2(pred - target) / Tensor<Dims...>::Size` (standard power rule derivative, scaled by how many elements composed the original sum)
 
 #### `struct BinaryCEL`
 
-- ***Loss*** — [
-  `template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-    -
-- ***Grad*** — [
-  `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-    -
+- ***BinaryCEL*** - [`struct BinaryCEL`](src/TTTN_ML.hpp)
+    - `LossFunction` struct for ***Binary Cross Entropy Loss*** (***BinaryCEL***)
+    - Helper for binary cases, but is just a specialization of `struct CEL`
+
+- ***BinaryCEL::Loss*** - [
+  `template<size_t... Dims> static float BinaryCEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
+    - `-log(pred[true])` (negative log of the predicted value for `true` answer, whose target value is `1.0f`)
+
+- ***BinaryCEL::Grad*** - [
+  `template<size_t... Dims> static Tensor<Dims...> BinaryCEL::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
+    - `(p - t) / (p * (1.f - p) + EPS)`
 
 #### `struct CEL`
 
-- ***Loss*** — [
-  `template<size_t... Dims> static float Loss(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-    -
-- ***Grad*** — [
-  `template<size_t... Dims> static Tensor<Dims...> Grad(const Tensor<Dims...>& pred, const Tensor<Dims...>& target)`](src/TTTN_ML.hpp)
-    -
+- ***CEL*** - [`struct CEL`](src/TTTN_ML.hpp)
+    - `LossFunction` struct for ***Cross Entropy Loss*** (***CEL***)
+
+- ***CEL::Loss*** - [
+  `template<size_t... Dims> static float CEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
+    - `-log(pred[true])` (negative log of the predicted value for `true` answer, whose target value is `1.0f`)
+    - Elegantly calls `Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f`
+
+- ***CEL::Grad*** - [
+  `template<size_t... Dims> static Tensor<Dims...> CEL::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
+    - Elegantly calls `Zip<Compose<Neg, Div> >(target, Map<Clamp<EPS> >(pred))`
 
 #### `BatchAccuracy`
 
-- ***BatchAccuracy*** — [
-  `template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N>& pred, const Tensor<Batch, N>& labels)`](src/TTTN_ML.hpp)
-    - Returns the percentage of correctly classified samples in a batch. `labels` must be one-hot. Correct iff
-      `argmax(pred[b]) == argmax(labels[b])`, computed via
-      `ReduceApply<1, Add>(pred ⊙ labels)` (probability assigned to the true class) vs
-      `ReduceApply<1, Max>(pred)` (highest predicted probability) — no explicit argmax loop required.
+- ***BatchAccuracy*** - [
+  `template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels)`](src/TTTN_ML.hpp)
+    - Computes accuracy for `Tensor`s organized in a batched `Tensor`
+    - Takes any `Tensor<Batch, Dims...>` and flattens `Dims...` internally
 
 ---
 
