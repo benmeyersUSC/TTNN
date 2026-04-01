@@ -1,10 +1,94 @@
 #pragma once
 #include <concepts>
 #include "Tensor.hpp"
-#include "Params.hpp"
 #include "Snapshot.hpp"
+#include <cmath>
+#include <fstream>
+#include <tuple>
+
 
 namespace TTTN {
+    struct AdamState {
+        float beta1 = 0.9f;
+        float beta2 = 0.999f;
+        float eps = 1e-8f;
+        float mCorr = 1.f; // 1 / (1 - β1^t)
+        float vCorr = 1.f; // 1 / (1 - β2^t)
+        int t = 0;
+
+        void step() {
+            ++t;
+            mCorr = 1.f / (1.f - std::pow(beta1, static_cast<float>(t)));
+            vCorr = 1.f / (1.f - std::pow(beta2, static_cast<float>(t)));
+        }
+    };
+
+
+    template<typename TensorT>
+    struct Param {
+        TensorT value{};
+        TensorT grad{};
+        TensorT m{};
+        TensorT v{};
+
+        static constexpr size_t Size = TensorT::Size;
+
+
+        void zero_grad() { grad.fill(0.f); }
+
+         void update(const AdamState &adam, float lr) {
+            ParForEach(Size, [&](const size_t i) {
+                const float g = grad.flat(i);
+                m.flat(i) = adam.beta1 * m.flat(i) + (1.f - adam.beta1) * g;
+                v.flat(i) = adam.beta2 * v.flat(i) + (1.f - adam.beta2) * g * g;
+                value.flat(i) -= lr * (m.flat(i) * adam.mCorr) / (std::sqrt(v.flat(i) * adam.vCorr) + adam.eps);
+            });
+        }
+
+
+        void save(std::ofstream &f) const { value.Save(f); }
+
+        void load(std::ifstream &f) { value.Load(f); }
+    };
+
+
+    template<typename Tuple>
+    void ZeroAllGrads(Tuple &&params) {
+        std::apply([](auto &... p) { (p.zero_grad(), ...); }, params);
+    }
+
+    template<typename Tuple>
+    void UpdateAll(Tuple &&params, const AdamState &adam, float lr) {
+        std::apply([&](auto &... p) { (p.update(adam, lr), ...); }, params);
+    }
+
+    template<typename Tuple>
+    void SaveAll(Tuple &&params, std::ofstream &f) {
+        std::apply([&](const auto &... p) { (p.save(f), ...); }, params);
+    }
+
+
+    template<typename Tuple>
+    void LoadAll(Tuple &&params, std::ifstream &f) {
+        std::apply([&](auto &... p) { (p.load(f), ...); }, params);
+    }
+
+    //
+    template<typename... Params>
+    constexpr size_t TotalParamSize = (Params::Size + ...);
+
+
+    template<typename Tuple, size_t... Is>
+    constexpr size_t tuple_param_count_impl(std::index_sequence<Is...>) {
+        return (size_t(0) + ... + std::remove_reference_t<std::tuple_element_t<Is, Tuple> >::Size);
+    }
+
+    template<typename Tuple>
+    constexpr size_t TupleParamCount =
+            tuple_param_count_impl<std::remove_cvref_t<Tuple> >(
+                std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<Tuple> > >{});
+
+
     // @doc: template<typename T> concept PeekableBlock
     /**
      * Opt-in `concept` for `ConcreteBlock`s to be able to expose their internal activations to an owning `TrainableTensorNetwork`

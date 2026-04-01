@@ -277,4 +277,57 @@ namespace TTTN {
             return p;
         }();
     };
+
+
+    // @doc: template<size_t N, size_t... Dims, typename Fn> auto BatchMap(const Tensor<N, Dims...> &src, Fn fn)
+    /** Using a map `Fn` from `Tensor<Dims...>` to some other `Tensor` shape, map `Tensor<N, Dims...> -> PrependBatch<N, OutSlice>::type`, where `OutSlice` is the return `Tensor` type from `Fn` */
+    template<size_t N, size_t... Dims, typename Fn>
+    auto BatchMap(const Tensor<N, Dims...> &src, Fn fn) {
+        // what is the type/shape of the function's return
+        using OutSlice = std::invoke_result_t<Fn, Tensor<Dims...> >;
+        // make sure that's a Tensor
+        static_assert(IsTensor<OutSlice>, "BatchMap: fn must return a Tensor");
+        // result is N many of these
+        using ResultT = PrependBatch<N, OutSlice>::type;
+
+        // get size of input and output tensors for mem copying
+        constexpr size_t InSliceSize = Tensor<Dims...>::Size;
+        constexpr size_t OutSliceSize = OutSlice::Size;
+
+        // default construct result type
+        ResultT result;
+        // for each (batch)
+        for (size_t b = 0; b < N; ++b) {
+            Tensor<Dims...> slice;
+            // fill a sub result tensor with source
+            std::copy(src.data() + b * InSliceSize, src.data() + (b + 1) * InSliceSize, slice.data());
+            // get result
+            const auto out = fn(slice);
+            // fill b-th result subtensor with result of fn
+            std::copy(out.data(), out.data() + OutSliceSize, result.data() + b * OutSliceSize);
+        }
+        return result;
+    }
+
+
+    // @doc: template<size_t N, size_t... Dims, typename Fn> auto BatchZip(const Tensor<N, Dims...> &A, const Tensor<N, Dims...> &B, Fn fn)
+    /** Using a map `Fn` from `(Tensor<Dims...>, Tensor<Dims...>)` to some other `Tensor` shape, map `(Tensor<N, Dims...>, Tensor<N, Dims...>) -> PrependBatch<N, OutSlice>::type`, where `OutSlice` is the return `Tensor` type from `Fn` */
+    template<size_t N, size_t... Dims, typename Fn>
+    auto BatchZip(const Tensor<N, Dims...> &A, const Tensor<N, Dims...> &B, Fn fn) {
+        // same internal logic as BatchMap
+        using OutSlice = std::invoke_result_t<Fn, Tensor<Dims...>, Tensor<Dims...> >;
+        static_assert(IsTensor<OutSlice>, "BatchZip: fn must return a Tensor");
+        using ResultT = PrependBatch<N, OutSlice>::type;
+        constexpr size_t InSliceSize = Tensor<Dims...>::Size;
+        constexpr size_t OutSliceSize = OutSlice::Size;
+        ResultT result;
+        for (size_t b = 0; b < N; ++b) {
+            Tensor<Dims...> a_slice, b_slice;
+            std::copy(A.data() + b * InSliceSize, A.data() + (b + 1) * InSliceSize, a_slice.data());
+            std::copy(B.data() + b * InSliceSize, B.data() + (b + 1) * InSliceSize, b_slice.data());
+            const auto out = fn(a_slice, b_slice);
+            std::copy(out.data(), out.data() + OutSliceSize, result.data() + b * OutSliceSize);
+        }
+        return result;
+    }
 }

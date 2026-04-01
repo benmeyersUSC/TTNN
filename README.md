@@ -641,6 +641,20 @@ Default-constructible callable structs satisfying `FloatBinaryOp` or
       *first* index
     - (Pass to `PermuteFromArray`)
 
+
+- ***BatchMap*** - [
+  `template<size_t N, size_t... Dims, typename Fn> auto BatchMap(const Tensor<N, Dims...> &src, Fn fn)`](src/TensorFunctions.hpp)
+    - Using a map `Fn` from `Tensor<Dims...>` to some other `Tensor` shape, map
+      `Tensor<N, Dims...> -> PrependBatch<N, OutSlice>::type`, where `OutSlice` is the return `Tensor`
+      type from `Fn`
+
+- ***BatchZip*** - [
+  `template<size_t N, size_t... Dims, typename Fn> auto BatchZip(const Tensor<N, Dims...> &A, const Tensor<N, Dims...> &B, Fn fn)`](src/TensorFunctions.hpp)
+    - Using a map `Fn` from `(Tensor<Dims...>, Tensor<Dims...>)` to some other `Tensor` shape, map
+      `(Tensor<N, Dims...>, Tensor<N, Dims...>) -> PrependBatch<N, OutSlice>::type`, where `OutSlice` is the return
+      `Tensor`
+      type from `Fn`
+
 ---
 
 ## [TensorOps.hpp](src/TensorOps.hpp): Element-wise Primitives
@@ -1221,7 +1235,7 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 - ***LossFunction*** — [`template<typename L, typename TensorT> concept LossFunction`](src/TTTN_ML.hpp)
     - `concept` to define `LossFunction` structs
     - Requires:
-        - `Loss(Tensor<Dims...>, Tensor<Dims...>) -> float`
+        - `Loss(Tensor<Dims...>, Tensor<Dims...>) -> Tensor<>` (rank-0 scalar; implicitly converts to `float`)
         - `Grad(Tensor<Dims...>, Tensor<Dims...>) -> Tensor<Dims...>`
 
 #### `struct MSE`
@@ -1230,7 +1244,7 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
     - `LossFunction` struct for ***Mean Squared Error*** (***MSE***)
 
 - ***MSE::Loss*** - [
-  `template<size_t... Dims> static float MSE::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
+  `template<size_t... Dims> static Tensor<> MSE::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
     - Sum of squares of difference between `target` and `pred`
     - Calls `Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv`
 
@@ -1247,7 +1261,7 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
     - Helper for binary cases, but is just a specialization of `struct CEL`
 
 - ***BinaryCEL::Loss*** - [
-  `template<size_t... Dims> static float BinaryCEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
+  `template<size_t... Dims> static Tensor<> BinaryCEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
     - `-log(pred[true])` (negative log of the predicted value for `true` answer, whose target value is `1.0f`)
 
 - ***BinaryCEL::Grad*** - [
@@ -1260,7 +1274,7 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
     - `LossFunction` struct for ***Cross Entropy Loss*** (***CEL***)
 
 - ***CEL::Loss*** - [
-  `template<size_t... Dims> static float CEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
+  `template<size_t... Dims> static Tensor<> CEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
     - `-log(pred[true])` (negative log of the predicted value for `true` answer, whose target value is `1.0f`)
     - Elegantly calls `Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f`
 
@@ -1385,6 +1399,22 @@ Defines the two block concepts that gate the type system, the chain-resolution m
     - Recursive case: `std::tuple_cat` of `First` `PrependBatch<Batch, InputTensor>` object and
       `BatchedTensorTupleBuilder<Rest...>`
 
+### `struct AdamState`
+
+All Adam hyperparameters and per-network bias-correction state in one place. TTN owns one instance (
+`mAdam_`) and passes it by const-ref to `UpdateAll` each step.
+
+| Member | Default | Meaning |
+|--------|---------|---------|
+| `beta1` | `0.9` | first-moment decay |
+| `beta2` | `0.999` | second-moment decay |
+| `eps` | `1e-8` | denominator stabilizer |
+| `mCorr` | `1` | `1 / (1 - β1^t)`, updated by `step()` |
+| `vCorr` | `1` | `1 / (1 - β2^t)`, updated by `step()` |
+| `t` | `0` | timestep counter |
+
+### `template<typename TensorT> struct Param`
+
 ---
 
 ## [TrainableTensorNetwork.hpp](src/TrainableTensorNetwork.hpp): The Network
@@ -1429,65 +1459,149 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
 - ***TrainableTensorNetwork::OutSize*** - [`TrainableTensorNetwork::OutSize`](src/TrainableTensorNetwork.hpp)
     - Convenience member for total size of `OutputTensor` type
 
-### Private Members and Functions
+- ***TrainableTensorNetwork::TotalParamCount*** - [
+  `static constexpr size_t TrainableTensorNetwork::TotalParamCount`](src/TrainableTensorNetwork.hpp)
+    - Sum of parameter counts of all elements of `Blocks...`
+
+- ***TrainableTensorNetwork::block*** - [
+  `template<size_t I> const auto &TrainableTensorNetwork::block() const`](src/TrainableTensorNetwork.hpp)
+    - Get a `const &` to the `I`-th `ConcreteBlock` in `TrainableTensorNetwork::mBlocks`
+
+- ***TrainableTensorNetwork::ActivationsTuple*** - [
+  `using TrainableTensorNetwork::ActivationsTuple`](src/TrainableTensorNetwork.hpp)
+    - Type alias around `TensorTupleBuilder<Blocks...>::type`
+
+- ***TrainableTensorNetwork::Activations*** - [
+  `using TrainableTensorNetwork::Activations`](src/TrainableTensorNetwork.hpp)
+    - Access-safe `ActivationsWrap` wrapper around `ActivationsTuple`
+
+
+- ***TrainableTensorNetwork::BatchedActivationsTuple*** - [
+  `template<size_t Batch> using TrainableTensorNetwork::BatchedActivationsTuple`](src/TrainableTensorNetwork.hpp)
+    - Type alias around `BatchedTensorTupleBuilder<Blocks...>::type`
+
+- ***TrainableTensorNetwork::BatchedActivations*** - [
+  `template<size_t Batch> using TrainableTensorNetwork::BatchedActivations`](src/TrainableTensorNetwork.hpp)
+    - Access-safe `ActivationsWrap` wrapper around `BatchedActivationsTuple`
+
+- ***TrainableTensorNetwork::TrainableTensorNetwork*** - [
+  `TrainableTensorNetwork::TrainableTensorNetwork`](src/TrainableTensorNetwork.hpp)
+    - Default constructor `= default`
+
+### Private Members
 
 - ***TrainableTensorNetwork::mBlocks*** - [`TrainableTensorNetwork::mBlocks`](src/TrainableTensorNetwork.hpp)
     - Default-constructed `BlockTuple` type containing actual `ConcreteBlock` values
 
-## [Params.hpp](src/Params.hpp): Parameter Storage and Optimizer
+### Inference
 
-Defines the `Param<T>` template, the
-`AdamState` struct, and bulk helpers. No block ever writes an optimizer loop — everything routes through here.
+- ***TrainableTensorNetwork::ForwardAll*** - [
+  `[[nodiscard]] Activations TrainableTensorNetwork::ForwardAll(const InputTensor &x) const`](src/TrainableTensorNetwork.hpp)
+    - Forward pass of the network, returning full `ActivationsWrap Activations` object
+        - Calls `TrainableTensorNetwork::forward_impl` on `InputTensor &x`
 
-### `struct AdamState`
+- ***TrainableTensorNetwork::Forward*** - [
+  `[[nodiscard]] OutputTensor TrainableTensorNetwork::Forward(const InputTensor &x) const`](src/TrainableTensorNetwork.hpp)
+    - Forward pass of the network, returning `OutputTensor` extracted from the back of result of
+      `TrainableTensorNetwork::ForwardAll`
 
-All Adam hyperparameters and per-network bias-correction state in one place. TTN owns one instance (
-`mAdam_`) and passes it by const-ref to `UpdateAll` each step.
+- ***TrainableTensorNetwork::forward_impl*** - [
+  `template<size_t I = 0> void TrainableTensorNetwork::forward_impl(ActivationsTuple &A) const`](src/TrainableTensorNetwork.hpp)
+    - Private implementation of forward pass of network, fills `ActivationsTuple &A`
+        - Recursively iterates through `TrainableTensorNetwork::mBlocks`, assigning results of mandated
+          `ConcreteBlock::Forward` to corresponding entries of `ActivationsTuple &A`
 
-| Member | Default | Meaning |
-|--------|---------|---------|
-| `beta1` | `0.9` | first-moment decay |
-| `beta2` | `0.999` | second-moment decay |
-| `eps` | `1e-8` | denominator stabilizer |
-| `mCorr` | `1` | `1 / (1 - β1^t)`, updated by `step()` |
-| `vCorr` | `1` | `1 / (1 - β2^t)`, updated by `step()` |
-| `t` | `0` | timestep counter |
+- ***TrainableTensorNetwork::BatchedForwardAll*** - [
+  `template<size_t Batch> [[nodiscard]] BatchedActivations<Batch> TrainableTensorNetwork::BatchedForwardAll(const PrependBatch<Batch, InputTensor>::type &X) const`](src/TrainableTensorNetwork.hpp)
+    - Batched forward pass of the network, returning full `ActivationsWrap BatchedActivations` object
+        - Calls `TrainableTensorNetwork::forward_impl` on `const PrependBatch<Batch, InputTensor>::type &X`
 
-- ***step*** — [`void step()`](src/Params.hpp)
-    - Increments `t`, recomputes `mCorr = 1/(1-β1^t)` and `vCorr = 1/(1-β2^t)`. Call once per `Update()`.
+- ***TrainableTensorNetwork::BatchedForward*** - [
+  `template<size_t Batch> [[nodiscard]] PrependBatch<Batch, OutputTensor>::type TrainableTensorNetwork::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X)`](src/TrainableTensorNetwork.hpp)
+    - Batched forward pass of the network, returning
+      `PrependBatch<Batch, OutputTensor>` extracted from the back of result of
+      `TrainableTensorNetwork::BatchedForwardAll`
 
-### `template<typename TensorT> struct Param`
 
-Single trainable tensor bundled with gradient and Adam moments (`value`, `grad`, `m`, `v`).
+- ***TrainableTensorNetwork::batched_forward_impl*** - [
+  `template<size_t Batch, size_t I = 0> void TrainableTensorNetwork::batched_forward_impl(BatchedActivationsTuple<Batch> &A) const`](src/TrainableTensorNetwork.hpp)
+    - Private implementation of batched forward pass of network, fills `BatchedActivationsTuple &A`
+        - Recursively iterates through `TrainableTensorNetwork::mBlocks`, assigning results of mandated
+          `ConcreteBlock::BatchedForward` to corresponding entries of `BatchedActivationsTuple &A`
 
-- ***update*** — [`void update(const AdamState& adam, float lr)`](src/Params.hpp)
-    - One Adam step: updates `m`, `v`, then applies bias-corrected weight update to `value`
+### Training
 
-- ***zero_grad*** — [`void zero_grad()`](src/Params.hpp)
-    - Zeroes `grad` — called by `ZeroAllGrads` at the start of each training step
+- ***TrainableTensorNetwork::BackwardAll*** - [
+  `void TrainableTensorNetwork::BackwardAll(const Activations &A, const OutputTensor &grad)`](src/TrainableTensorNetwork.hpp)
+    - Calls `TrainableTensorNetwork::backward_impl`, which backpropagates gradient via `ConcreteBlock::Backward` calls
+    - Gradients are assumed stored and managed by `ConcreteBlock`s with `Param` members
 
-- ***save*** — [`void save(std::ofstream& f) const`](src/Params.hpp)
-    - Serializes `value` to binary file
+- ***TrainableTensorNetwork::backward_impl*** - [
+  `template<size_t I, typename Delta> requires IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple> > void TrainableTensorNetwork::backward_impl(const ActivationsTuple &A, const Delta &delta)`](src/TrainableTensorNetwork.hpp)
+    - Starts with `Delta` `Tensor`, the derivative of the `Loss` with respect to the `OutputTensor`
+        - `Delta` satisfies:
+            - `IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple> >`
+    - `I` starts at `NumBlocks` and recurses down until `I == 1`
+    - At each `I`, the `I - 1`-th `ConcreteBlock`'s gradient takes into account that this block outputs the
+      `I`-th activation in an `ActivationsTuple`, having taken the `I - 1`-th activation from `ActivationsTuple`
 
-- ***load*** — [`void load(std::ifstream& f)`](src/Params.hpp)
-    - Deserializes `value` from binary file
+- ***TrainableTensorNetwork::BatchedBackwardAll*** - [
+  `template<size_t Batch> void TrainableTensoeNetwork::BatchedBackwardAll(const BatchedActivations<Batch> &A, const PrependBatch<Batch, OutputTensor>::type &grad)`](src/TrainableTensorNetwork.hpp)
+    - Calls `TrainableTensorNetwork::batched_backward_impl`, which backpropagates gradient via
+      `ConcreteBlock::BatchedBackward` calls
+    - Gradients are assumed stored and managed by `ConcreteBlock`s with `Param` members
 
-### Bulk Helpers
 
-Operate over the `std::tuple<Param<T>&...>` returned by `all_params()`.
+- ***TrainableTensorNetwork::batched_backward_impl*** - [
+  `template<size_t Batch, size_t I, typename Delta> requires IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, BatchedActivationsTuple<Batch> > > void TrainableTensorNetwork::batched_backward_impl(const BatchedActivationsTuple<Batch> &A, const Delta &delta)`](src/TrainableTensorNetwork.hpp)
+    - Starts with `Delta` batched-prepended `Tensor`, the batched derivatives of the
+      `Loss` with respect to the batch-prepended `OutputTensor`
+    - Same logic as `TrainableTensorNetwork::backward_impl` but calling `ConcreteBlock::BatchedBackward` instead
 
-- ***ZeroAllGrads*** — [`template<typename Tuple> void ZeroAllGrads(Tuple&& params)`](src/Params.hpp)
-    - Calls `zero_grad()` on every `Param` in the tuple
+- ***TrainableTensorNetwork::Update*** - [
+  `void TrainableTensorNetwork::Update(float lr)`](src/TrainableTensorNetwork.hpp)
+    - Calls `mAdam_.step()`, calls `UpdateAll` on each `ConcreteBlock`'s `all_params()`, passing `mAdam_` and `lr`
 
-- ***UpdateAll*** — [
-  `template<typename Tuple> void UpdateAll(Tuple&& params, const AdamState& adam, float lr)`](src/Params.hpp)
-    - Calls `update(adam, lr)` on every `Param` in the tuple
+- ***TrainableTensorNetwork::ZeroGrad()*** - [`void TrainableTensorNetwork::ZeroGrad()`](src/TrainableTensorNetwork.hpp)
+    - Calls `ZeroAllGrads` on each `ConcreteBlock`'s `all_params()`
 
-- ***SaveAll*** — [`template<typename Tuple> void SaveAll(Tuple&& params, std::ofstream& f)`](src/Params.hpp)
-    - Calls `save(f)` on every `Param` in the tuple
 
-- ***LoadAll*** — [`template<typename Tuple> void LoadAll(Tuple&& params, std::ifstream& f)`](src/Params.hpp)
-    - Calls `load(f)` on every `Param` in the tuple
+- ***TrainableTensorNetwork::TrainStep*** - [
+  `void TrainableTensorNetwork::TrainStep(const InputTensor &x, const OutputTensor &grad, const float lr)`](src/TrainableTensorNetwork.hpp)
+    - Inference -> ZeroGrad -> BackwardAll -> Update
+    - Assumes `grad` is `dLoss/dOutputTensor`
+
+- ***TrainableTensorNetwork::BatchedTrainStep*** - [
+  `template<size_t Batch> void TrainableTensorNetwork::BatchTrainStep(const PrependBatch<Batch, InputTensor>::type &X, const PrependBatch<Batch, OutputTensor>::type &grad, const float lr)`](src/TrainableTensorNetwork.hpp)
+    - Batched Inference -> ZeroGrad -> BatchedBackwardAll -> Update
+    - Assumes `grad` is batched `dLoss/dOutputTensor`
+
+
+- ***TrainableTensorNetwork::Fit*** - [
+  `template<typename Loss> float TrainableTensorNetwork::Fit(const InputTensor &x, const OutputTensor &target, const float lr)`](src/TrainableTensorNetwork.hpp)
+    - Parameterized by `Loss` (satisfying
+      `LossFunction<Loss, OutputTensor>`), runs Inference, calculates loss, then backpropagates and updates like
+      `TrainStep`
+
+- ***TrainableTensorNetwork::BatchFit*** - [
+  `template<typename Loss, size_t Batch> float TrainableTensorNetwork::BatchFit(const PrependBatch<Batch, InputTensor>::type &X, const PrependBatch<Batch, OutputTensor>::type &Y, const float lr)`](src/TrainableTensorNetwork.hpp)
+    - Parameterized by `Loss` (satisfying
+      `LossFunction<Loss, OutputTensor>`), runs Batched Inference, calculates loss, then batch backpropagates and updates like
+      `TrainStep`
+
+### Serialization and Snapshot
+
+- ***TrainableTensorNetwork::Save*** - [
+  `void TrainableTensorNetwork::Save(const std::string &path) const`](src/TrainableTensorNetwork.hpp)
+    - Calls `SaveAll` on each `ConcreteBlock::all_params()`, which calls `Tensor` binary serialization function
+
+- ***TrainableTensorNetwork::Load*** - [
+  `void TrainableTensorNetwork::Load(const std::string &path)`](src/TrainableTensorNetwork.hpp)
+    - Calls `LoadAll` on each `ConcreteBlock::all_params()`, which calls `Tensor` binary serialization function
+
+- ***TrainableTensorNetwork::Snap*** - [
+  `[[nodiscard]] SnapshotMap TrainableTensorNetwork::Snap() const`](src/TrainableTensorNetwork.hpp)
+    - Create and fill `SnapshotMap` for each block, calling `peek()` for any `PeekableBlock`s
 
 ---
 

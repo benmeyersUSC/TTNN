@@ -190,14 +190,14 @@ namespace TTTN {
     /**
      * `concept` to define `LossFunction` structs
      * Requires:
-     * `Loss(Tensor<Dims...>, Tensor<Dims...>) -> float`
+     * `Loss(Tensor<Dims...>, Tensor<Dims...>) -> Tensor<>` (rank-0 scalar; implicitly converts to `float`)
      * `Grad(Tensor<Dims...>, Tensor<Dims...>) -> Tensor<Dims...>`
      */
     template<typename L, typename TensorT> concept LossFunction =
             IsTensor<TensorT> &&
             requires
             {
-                { L::Loss(std::declval<const TensorT &>(), std::declval<const TensorT &>()) } -> std::same_as<float>;
+                { L::Loss(std::declval<const TensorT &>(), std::declval<const TensorT &>()) } -> std::same_as<Tensor<>>;
                 { L::Grad(std::declval<const TensorT &>(), std::declval<const TensorT &>()) } -> std::same_as<TensorT>;
             };
 
@@ -205,15 +205,15 @@ namespace TTTN {
     // @doc: struct MSE
     /** `LossFunction` struct for ***Mean Squared Error*** (***MSE***) */
     struct MSE {
-        // @doc: template<size_t... Dims> static float MSE::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
+        // @doc: template<size_t... Dims> static Tensor<> MSE::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
         /**
          * Sum of squares of difference between `target` and `pred`
          * Calls `Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv`
          */
         template<size_t... Dims>
-        static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
+        static Tensor<> Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             static constexpr float Inv = 1.f / Tensor<Dims...>::Size;
-            return Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv;
+            Tensor<> s; s.flat(0) = Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv; return s;
         }
 
         // @doc: template<size_t... Dims> static Tensor<Dims...> MSE::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
@@ -232,13 +232,14 @@ namespace TTTN {
      * Helper for binary cases, but is just a specialization of `struct CEL`
      */
     struct BinaryCEL {
-        // @doc: template<size_t... Dims> static float BinaryCEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
+        // @doc: template<size_t... Dims> static Tensor<> BinaryCEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
         /** `-log(pred[true])` (negative log of the predicted value for `true` answer, whose target value is `1.0f`) */
         template<size_t... Dims>
-        static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
+        static Tensor<> Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             const auto p_c = Map<Clamp<EPS, 1.f - EPS> >(pred);
-            return -(Collapse<Mul, Add>(target, Map<Log>(p_c)) +
-                     Collapse<Mul, Add>(Map<OneMinus>(target), Map<Compose<Log, OneMinus> >(p_c)));
+            Tensor<> s; s.flat(0) = -(Collapse<Mul, Add>(target, Map<Log>(p_c)) +
+                                      Collapse<Mul, Add>(Map<OneMinus>(target), Map<Compose<Log, OneMinus> >(p_c)));
+            return s;
         }
 
         // @doc: template<size_t... Dims> static Tensor<Dims...> BinaryCEL::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
@@ -255,14 +256,14 @@ namespace TTTN {
     // @doc: struct CEL
     /** `LossFunction` struct for ***Cross Entropy Loss*** (***CEL***) */
     struct CEL {
-        // @doc: template<size_t... Dims> static float CEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
+        // @doc: template<size_t... Dims> static Tensor<> CEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
         /**
          * `-log(pred[true])` (negative log of the predicted value for `true` answer, whose target value is `1.0f`)
          * Elegantly calls `Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f`
          */
         template<size_t... Dims>
-        static float Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
-            return Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f;
+        static Tensor<> Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
+            Tensor<> s; s.flat(0) = Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f; return s;
         }
 
         // @doc: template<size_t... Dims> static Tensor<Dims...> CEL::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)

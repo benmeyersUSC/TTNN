@@ -608,7 +608,7 @@ void runSeqTasksViz() {
                     tokens[t] = static_cast<int>(train_data(i, t + 1));
                 const auto pred_out = net.Forward(make_input(train_data, i));
                 const size_t pred   = pred_out.flat(1) > pred_out.flat(0) ? 1u : 0u;
-                ppm_samples.push_back({lbl, pred, tokens, net.snap()});
+                ppm_samples.push_back({lbl, pred, tokens, net.Snap()});
             }
         };
         pick(cand1, 1);
