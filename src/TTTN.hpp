@@ -2,8 +2,8 @@
 
 #include "Snapshot.hpp"
 #include "TensorUtil.hpp"
-#include "TrainableTensorNetwork.hpp"
 
+#include "BlockComposition.hpp"
 #include "Dense.hpp"
 #include "Attention.hpp"
 #include "MoreNets.hpp"

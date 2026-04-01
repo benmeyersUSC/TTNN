@@ -182,7 +182,7 @@ Replace the parallel CPU dispatch (
 11. [NetworkUtil.hpp: Concepts, Types, and Utilities](#networkutilhpp--concepts-types-and-utilities)
 12. [TrainableTensorNetwork.hpp: The Network](#trainabletensornetworkhpp--the-network)
 13. [Params.hpp: Parameter Storage and Optimizer](#paramshpp--parameter-storage-and-optimizer)
-14. [ChainBlock.hpp: Sequential Block Composition](#chainblockhpp--sequential-block-composition)
+14. [BlockComposition.hpp: Sequential Block Composition](#BlockCompositionhpp--sequential-block-composition)
 14. [Snapshot.hpp: Activation Snapshots](#snapshothpp--activation-snapshots)
 15. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
 16. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
@@ -579,6 +579,16 @@ Default-constructible callable structs satisfying `FloatBinaryOp` or
   `template<size_t Axis, FloatBinaryOp F, size_t... Dims> void TensorIndexApply(Tensor<Dims...> &dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type &src, F f)`](src/TensorFunctions.hpp)
     - Using indexing conventions described in `TensorIndex`, apply a `FloatBinaryOp` on a sub-`Tensor`, combining
       `src` elements with those of `dst`, a sub-`Tensor` of the same type as the slice
+
+- ***TensorGet*** — [
+  `template<size_t Axis, size_t... Dims> RemoveAxis<Axis, Dims...>::type TensorGet(const Tensor<Dims...> &src, size_t idx)`](src/TensorFunctions.hpp)
+    - Runtime-index read: extract the slice at position `idx` along `Axis`, returning a `Tensor` with that axis removed
+    - Runtime counterpart to compile-time `TensorIndex`
+
+- ***TensorSet*** — [
+  `template<size_t Axis, size_t... Dims> void TensorSet(Tensor<Dims...> &dst, size_t idx, const RemoveAxis<Axis, Dims...>::type &src)`](src/TensorFunctions.hpp)
+    - Runtime-index write: assign `src` into the slice at position `idx` along `Axis` of `dst`
+    - Plain-assignment counterpart to `TensorIndexApply` (no binary op needed)
 
 - ***Map*** - [
   `template<typename Op, size_t... Dims> requires FloatUnaryOp<Op> && std::default_initializable<Op> Tensor<Dims...> Map(const Tensor<Dims...> &src)`](src/TensorFunctions.hpp)
@@ -1034,29 +1044,34 @@ static_assert(std::is_same_v<decltype(restored),  Tensor<8, 16, 64>>);
 
 ### Indexed Slice Access
 
-`TensorIndex` and
-`TensorIndexApply` are the gather/scatter primitives. The axis is compile-time — the compiler knows the slice shape and stride layout. Only the index into that axis is runtime.
+`TensorIndex`, `TensorGet`, `TensorSet`, and
+`TensorIndexApply` are the gather/scatter primitives. The axis is always compile-time — the compiler knows the slice shape and stride layout. The index into that axis is compile-time for
+`TensorIndex`, runtime for the others.
 
 ```cpp
 Tensor<16, 64> seq;                                 // 16 tokens, 64-dim embeddings
 
-// gather: extract a single token's embedding
-auto tok5 = TensorIndex<0>(seq, 5);                 // seq[5, :] → Tensor<64>
+// compile-time gather: index must be known at compile time
+auto tok1 = TensorIndex<0, 1>(seq);                 // seq[1, :] → Tensor<64>
+
+// runtime gather: index is a runtime value
+size_t i = 5;
+auto tok5 = TensorGet<0>(seq, i);                   // seq[i, :] → Tensor<64>
 static_assert(std::is_same_v<decltype(tok5), Tensor<64>>);
 
-// scatter: accumulate a gradient into one token's slot
+// runtime set: assign a slice directly
+Tensor<64> embedding;
+TensorSet<0>(seq, i, embedding);                    // seq[i, :] = embedding[:]
+
+// scatter with binary op: accumulate a gradient into one token's slot
 Tensor<16, 64> grad_seq;
 Tensor<64>     grad_tok;
-TensorIndexApply<0>(grad_seq, 5, grad_tok,
-    [](float a, float b) { return a + b; });        // grad_seq[5, :] += grad_tok[:]
-
-// the op is generic — overwrite instead of accumulate:
-TensorIndexApply<0>(seq, 5, grad_tok,
-    [](float, float b) { return b; });              // seq[5, :] = grad_tok[:]
+TensorIndexApply<0>(grad_seq, i, grad_tok,
+    [](float a, float b) { return a + b; });        // grad_seq[i, :] += grad_tok[:]
 
 // higher-rank: gather along a middle axis
 Tensor<8, 16, 64> batch_seq;                        // batch × seq × embed
-auto col3 = TensorIndex<1>(batch_seq, 3);           // batch_seq[:, 3, :] → Tensor<8, 64>
+auto col3 = TensorGet<1>(batch_seq, 3);             // batch_seq[:, 3, :] → Tensor<8, 64>
 static_assert(std::is_same_v<decltype(col3), Tensor<8, 64>>);
 ```
 
@@ -1661,8 +1676,10 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
 - ***TrainableTensorNetwork::RunEpoch*** - [
   `template<typename Loss, size_t Batch, size_t N, size_t... InDims, size_t... OutDims> float TrainableTensorNetwork::RunEpoch(const Tensor<N, InDims...> &X_data, const Tensor<N, OutDims...> &Y_data, std::mt19937 &rng, const float lr)`](src/TrainableTensorNetwork.hpp)
     - Run one full epoch: `Steps = N / Batch` rounds of `BatchFit`, returning average loss per step
-    - `X_data` and `Y_data` must already be in network shape (`Tensor<InDims...> == InputTensor`, `Tensor<OutDims...> == OutputTensor`); enforced by `static_assert`
-    - Samples `Batch` indices per step from `[0, N)` using `rng`, applied to both `X_data` and `Y_data` in the same loop to keep them in sync
+    - `X_data` and `Y_data` must already be in network shape (`Tensor<InDims...> == InputTensor`,
+      `Tensor<OutDims...> == OutputTensor`); enforced by `static_assert`
+    - Samples `Batch` indices per step from `[0, N)` using `rng`, applied to both `X_data` and
+      `Y_data` in the same loop to keep them in sync
 
 ### Serialization and Snapshot
 
@@ -1678,11 +1695,31 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
   `[[nodiscard]] SnapshotMap TrainableTensorNetwork::Snap() const`](src/TrainableTensorNetwork.hpp)
     - Create and fill `SnapshotMap` for each block, calling `peek()` for any `PeekableBlock`s
 
-### Network Creation and Combination API
-
 ---
 
-## [ChainBlock.hpp](src/ChainBlock.hpp): Composed Block Object
+## [BlockComposition.hpp](src/BlockComposition.hpp): Network Creation, Composition, CompositeBlock object
+
+### CompositeBlock
+
+- ***CompositeBlock*** - [`template<ConcreteBlock... Blocks> class CompositeBlock`](src/BlockComposition.hpp)
+    - Created by `ComposeBlocks`, which takes in `Block` (recipe) objects, to stitch their inner
+      `ConcreteBlock`s into a new composite `ConcreteBlock`, which satisfies `concept` to join a
+      `TrainableTensorNetwork`
+    - Essentially a thin sub-`TrainableTensorNetwork`
+    - Very useful for `Parallel` (and its descendents), which calls `Forward` on two
+      `ConcreteBlock`s and sums their result
+
+
+- ***CombineNetworks*** - [
+  `template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB> struct CombineNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> >`](src/BlockComposition.hpp)
+    - Unpacks two `ConcreteBlock...` arg lists into new `TrainableTensorNetwork` composed of the two respective sets of
+      `ConcreteBlock`s
+    - Asserts
+      `std::is_same_v<typename TrainableTensorNetwork<BlocksA...>::OutputTensor, typename TrainableTensorNetwork<BlocksB...>::InputTensor>`
+
+- ***NetworkBuilder*** - [`template<typename In, typename... Recipes> struct NetworkBuilder`](src/BlockComposition.hpp)
+    - Takes in variadic arg list of `Block` recipes (including `Input` as the first), flattens and opens up
+      `Block`s into a `BlockTuple` of `ConcreteBlock`s, and defines a `TrainableTensorNetwork` type
 
 ## [Snapshot.hpp](src/Snapshot.hpp): Activation Snapshots
 

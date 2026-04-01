@@ -244,6 +244,47 @@ namespace TTTN {
     }
 
 
+    // @doc: template<size_t Axis, size_t... Dims> RemoveAxis<Axis, Dims...>::type TensorGet(const Tensor<Dims...> &src, size_t idx)
+    /**
+     * Runtime-index read: extract the slice at position `idx` along `Axis`, returning a `Tensor` with that axis removed
+     * Runtime counterpart to compile-time `TensorIndex`
+     */
+    template<size_t Axis, size_t... Dims>
+    RemoveAxis<Axis, Dims...>::type TensorGet(const Tensor<Dims...> &src, size_t idx) {
+        using Source = Tensor<Dims...>;
+        using Result = RemoveAxis<Axis, Dims...>::type;
+        Result dst;
+        ParForEach(Result::Size, [&](const size_t i) {
+            auto dst_multi = Result::FlatToMulti(i);
+            std::array<size_t, Source::Rank> src_multi{};
+            size_t dst_d = 0;
+            for (size_t d = 0; d < Source::Rank; ++d)
+                src_multi[d] = d == Axis ? idx : dst_multi[dst_d++];
+            dst.flat(i) = src.flat(Source::MultiToFlat(src_multi));
+        });
+        return dst;
+    }
+
+    // @doc: template<size_t Axis, size_t... Dims> void TensorSet(Tensor<Dims...> &dst, size_t idx, const RemoveAxis<Axis, Dims...>::type &src)
+    /**
+     * Runtime-index write: assign `src` into the slice at position `idx` along `Axis` of `dst`
+     * Plain-assignment counterpart to `TensorIndexApply` (no binary op needed)
+     */
+    template<size_t Axis, size_t... Dims>
+    void TensorSet(Tensor<Dims...> &dst, size_t idx, const typename RemoveAxis<Axis, Dims...>::type &src) {
+        using Dest = Tensor<Dims...>;
+        using Slice = RemoveAxis<Axis, Dims...>::type;
+        ParForEach(Slice::Size, [&](const size_t i) {
+            auto src_multi = Slice::FlatToMulti(i);
+            std::array<size_t, Dest::Rank> dst_multi{};
+            size_t src_d = 0;
+            for (size_t d = 0; d < Dest::Rank; ++d)
+                dst_multi[d] = d == Axis ? idx : src_multi[src_d++];
+            dst.flat(Dest::MultiToFlat(dst_multi)) = src.flat(i);
+        });
+    }
+
+
     // @doc: template<size_t Src, size_t Rank> struct MoveToLastPerm
     /**
      * Create member `std::array<size_t, Rank> value`, representing `Rank` dimensions, permuted such that `src` is the *last* index

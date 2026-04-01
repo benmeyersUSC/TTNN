@@ -1,11 +1,16 @@
 #pragma once
-#include "NetworkUtil.hpp"
-#include "TensorOps.hpp"
+#include "TrainableTensorNetwork.hpp"
 
 namespace TTTN {
+    // @doc: template<ConcreteBlock... Blocks> class CompositeBlock
+    /**
+     * Created by `ComposeBlocks`, which takes in `Block` (recipe) objects, to stitch their inner `ConcreteBlock`s into a new composite `ConcreteBlock`, which satisfies `concept` to join a `TrainableTensorNetwork`
+     * Essentially a thin sub-`TrainableTensorNetwork`
+     * Very useful for `Parallel` (and its descendents), which calls `Forward` on two `ConcreteBlock`s and sums their result
+     */
     template<ConcreteBlock... Blocks>
-    class ChainBlock {
-        static_assert(sizeof...(Blocks) >= 1, "ChainBlock needs at least one block");
+    class CompositeBlock {
+        static_assert(sizeof...(Blocks) >= 1, "CompositeBlock needs at least one block");
         static constexpr size_t N = sizeof...(Blocks);
         using BlockTuple = std::tuple<Blocks...>;
 
@@ -20,7 +25,7 @@ namespace TTTN {
                 }(std::make_index_sequence<N - 1>{});
         }
 
-        static_assert(check_connected(), "ChainBlock: block output/input types don't chain");
+        static_assert(check_connected(), "CompositeBlock: block output/input types don't chain");
 
     public:
         using InputTensor = std::tuple_element_t<0, BlockTuple>::InputTensor;
@@ -174,7 +179,7 @@ namespace TTTN {
     template<typename... Recipes>
     struct ComposeBlocks {
         // For use inside Parallel/Residual/Transposed:
-        // Resolve<InputT> builds the chain of concrete blocks and wraps in ChainBlock.
+        // Resolve<InputT> builds the chain of concrete blocks and wraps in CompositeBlock.
 
         // We need OutputTensor. Walk the recipe chain to find the final output type.
         // ResolveChain: given an input type, resolve each recipe in sequence, return tuple of blocks.
@@ -219,19 +224,19 @@ namespace TTTN {
 
         using OutputTensor = LastOutputTensor<Recipes...>::type;
 
-        // Resolve<InputT>: resolve the full chain into a ChainBlock
+        // Resolve<InputT>: resolve the full chain into a CompositeBlock
         template<typename InputT>
         struct ResolveImpl {
             using Chain = ResolveChain<InputT, Recipes...>;
             using BlockTuple = Chain::type;
 
-            // Unpack tuple into ChainBlock template args
+            // Unpack tuple into CompositeBlock template args
             template<typename Tuple>
             struct Apply;
 
             template<typename... Bs>
             struct Apply<std::tuple<Bs...> > {
-                using type = ChainBlock<Bs...>;
+                using type = CompositeBlock<Bs...>;
             };
 
             using type = Apply<BlockTuple>::type;
@@ -242,21 +247,40 @@ namespace TTTN {
     };
 
 
-    // FlattenRecipes: recursively expand ComposeBlocks → std::tuple<Block...>
-    template<typename... Rs>
-    struct FlattenRecipes;
+    template<typename NetA, typename NetB>
+    struct CombineNetworks;
 
-    template<>
-    struct FlattenRecipes<> {
-        using type = std::tuple<>;
+    // @doc: template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB> struct CombineNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> >
+    /**
+     * Unpacks two `ConcreteBlock...` arg lists into new `TrainableTensorNetwork` composed of the two respective sets of `ConcreteBlock`s
+     * Asserts `std::is_same_v<typename TrainableTensorNetwork<BlocksA...>::OutputTensor, typename TrainableTensorNetwork<BlocksB...>::InputTensor>`
+     */
+    template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB>
+    struct CombineNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> > {
+        static_assert(
+            std::is_same_v<
+                typename TrainableTensorNetwork<BlocksA...>::OutputTensor,
+                typename TrainableTensorNetwork<BlocksB...>::InputTensor>,
+            "CombineNetworks: OutputTensor of first network must equal InputTensor of second");
+        using type = TrainableTensorNetwork<BlocksA..., BlocksB...>;
     };
 
 
-    // anything else: keep it and continue
-    template<typename First, typename... Rest>
-    struct FlattenRecipes<First, Rest...> {
-        using type = decltype(std::tuple_cat(
-            std::declval<std::tuple<First> >(),
-            std::declval<typename FlattenRecipes<Rest...>::type>()));
+    // @doc: template<typename In, typename... Recipes> struct NetworkBuilder
+    /** Takes in variadic arg list of `Block` recipes (including `Input` as the first), flattens and opens up `Block`s into a `BlockTuple` of `ConcreteBlock`s, and defines a `TrainableTensorNetwork` type */
+    template<typename In, typename... Recipes>
+    struct NetworkBuilder {
+        using BlockTuple = ApplyBuildChain<In, std::tuple<Recipes...> >::type;
+
+        template<typename Tuple>
+        struct Apply;
+
+        template<typename... Bs>
+        struct Apply<std::tuple<Bs...> > {
+            using type = TrainableTensorNetwork<Bs...>;
+        };
+
+        // now just unpack tuple directly into TrainableTensorNetwork
+        using type = Apply<BlockTuple>::type;
     };
 }

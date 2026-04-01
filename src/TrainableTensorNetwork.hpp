@@ -1,8 +1,8 @@
 #pragma once
 #include <stdexcept>
 #include <random>
-#include "ChainBlock.hpp"
 #include "TTTN_ML.hpp"
+#include "NetworkUtil.hpp"
 
 namespace TTTN {
     // @doc: template<ConcreteBlock... Blocks> class TrainableTensorNetwork
@@ -316,21 +316,23 @@ namespace TTTN {
             static_assert(std::is_same_v<Tensor<OutDims...>, OutputTensor>,
                           "Y_data sample shape must match network OutputTensor");
             static constexpr size_t Steps = N / Batch;
+            // to sample random rows for batches
             std::uniform_int_distribution<size_t> dist{0, N - 1};
-            float total = 0.f;
+            float total_loss = 0.f;
             for (size_t s = 0; s < Steps; ++s) {
+                // fill a new batch tensor
                 typename PrependBatch<Batch, InputTensor>::type X;
                 typename PrependBatch<Batch, OutputTensor>::type Y;
                 for (size_t b = 0; b < Batch; ++b) {
+                    // get random (row) index
                     const size_t idx = dist(rng);
-                    for (size_t i = 0; i < InputTensor::Size; ++i)
-                        X.flat(b * InputTensor::Size + i) = X_data.flat(idx * InputTensor::Size + i);
-                    for (size_t i = 0; i < OutputTensor::Size; ++i)
-                        Y.flat(b * OutputTensor::Size + i) = Y_data.flat(idx * OutputTensor::Size + i);
+                    // grab subtensors at that index into batched tensor
+                    TensorSet<0>(X, b, TensorGet<0>(X_data, idx));
+                    TensorSet<0>(Y, b, TensorGet<0>(Y_data, idx));
                 }
-                total += BatchFit<Loss, Batch>(X, Y, lr);
+                total_loss += BatchFit<Loss, Batch>(X, Y, lr);
             }
-            return total / static_cast<float>(Steps);
+            return total_loss / static_cast<float>(Steps);
         }
 
     private:
@@ -402,38 +404,5 @@ namespace TTTN {
                 batched_backward_impl<Batch, I - 1>(A, grad);
             }
         }
-    };
-
-
-    template<typename NetA, typename NetB>
-    struct CombineNetworks;
-
-    template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB>
-    struct CombineNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> > {
-        static_assert(
-            std::is_same_v<
-                typename TrainableTensorNetwork<BlocksA...>::OutputTensor,
-                typename TrainableTensorNetwork<BlocksB...>::InputTensor>,
-            "CombineNetworks: OutputTensor of first network must equal InputTensor of second");
-        using type = TrainableTensorNetwork<BlocksA..., BlocksB...>;
-    };
-
-
-    // NetworkBuilder: typename... (not Block...) so ComposeBlocks can appear in the list.
-    // FlattenRecipes expands any ComposeBlocks before BuildChain sees the recipes.
-    template<typename In, typename... Recipes>
-    struct NetworkBuilder {
-        using FlatRecipes = FlattenRecipes<Recipes...>::type;
-        using BlockTuple = ApplyBuildChain<In, FlatRecipes>::type;
-
-        template<typename Tuple>
-        struct Apply;
-
-        template<typename... Bs>
-        struct Apply<std::tuple<Bs...> > {
-            using type = TrainableTensorNetwork<Bs...>;
-        };
-
-        using type = Apply<BlockTuple>::type;
     };
 }
