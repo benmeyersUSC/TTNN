@@ -2,7 +2,6 @@
 #include "TensorContract.hpp"
 #include "TensorReduce.hpp"
 #include "NetworkUtil.hpp"
-#include "Params.hpp"
 
 namespace TTTN {
     template<size_t SeqLen, size_t Heads, size_t... EmbDims>

@@ -1413,7 +1413,76 @@ All Adam hyperparameters and per-network bias-correction state in one place. TTN
 | `vCorr` | `1` | `1 / (1 - β2^t)`, updated by `step()` |
 | `t` | `0` | timestep counter |
 
-### `template<typename TensorT> struct Param`
+- ***AdamState::step*** - [`void AdamState::step()`](src/NetworkUtil.hpp)
+    - Increment `t`
+    - Recompute `mCorr`, `vCorr`
+
+### Param
+
+| Member          | Default | Meaning                      |
+|-----------------|---------|------------------------------|
+| `TensorT value` | `{}`    | parameter `Tensor` itself    |
+| `TensorT grad`  | `{}`    | gradient `Tensor` of `value` |
+| `TensorT m`     | `{}`    | `value`'s first Adam moment  |
+| `TensorT v`     | `{}`    | `value`'s second Adam moment |
+
+- ***struct Param*** - [`template<typename TensorT> struct Param`](src/NetworkUtil.hpp)
+    - `struct` layer around a `ConcreteBlock` to abstract away management, Adam updates
+
+- ***Param::Size*** - [`static constexpr size_t Param::Size`](src/NetworkUtil.hpp)
+    - Size of parameter `Tensor`
+
+- ***Param::zero_grad*** - [`void Param::zero_grad()`](src/NetworkUtil.hpp)
+    - Fill `grad` with `0.f`
+
+- ***Param::update*** - [`void Param::update(const AdamState &adam, float lr)`](src/NetworkUtil.hpp)
+    - For each `float` parameter in `value`, use Adam moments and gradient to update
+
+
+- ***Param::save*** - [`void Param::save(std::ofstream &f) const`](src/NetworkUtil.hpp)
+    - Call `Tensor::Save` on `value`
+
+- ***Param::save*** - [`void Param::save(std::ifstream &f)`](src/NetworkUtil.hpp)
+    - Call `Tensor::Load` on `value`
+
+### Free Concepts and Functions on Param
+
+- ***IsParam*** - [`template<typename T> concept IsParam`](src/NetworkUtil.hpp)
+    - Concept to verify that a type `T` is a `Param`
+
+- ***IsParamTuple*** - [`template<typename Tuple> concept IsParamTuple`](src/NetworkUtil.hpp)
+    - Concept to verify that a type `Tuple` is a `std::tuple` of `Param` objects
+
+- ***ZeroAllGrads*** - [
+  `template<IsParamTuple Tuple> void ZeroAllGrads(Tuple &&params)`](src/NetworkUtil.hpp)
+    - Calls `Param::zero_grad` on each `Param` in the `std::tuple` of `Param`s
+
+
+- ***UpdateAll*** - [
+  `template<IsParamTuple Tuple> void UpdateAll(Tuple &&params)`](src/NetworkUtil.hpp)
+    - Calls `Param::update` on each `Param` in the `std::tuple` of `Param`s
+
+
+- ***SaveAll*** - [
+  `template<IsParamTuple Tuple> void SaveAll(Tuple &&params)`](src/NetworkUtil.hpp)
+    - Calls `Param::save` on each `Param` in the `std::tuple` of `Param`s
+
+- ***LoadAll*** - [
+  `template<IsParamTuple Tuple> void LoadAll(Tuple &&params)`](src/NetworkUtil.hpp)
+    - Calls `Param::load` on each `Param` in the `std::tuple` of `Param`s
+
+- ***TotalParamSize*** - [`template<IsParam... Params> constexpr size_t TotalParamSize`](src/NetworkUtil.hpp)
+    - Sum of all `Param` sizes in variadic list of `Param`s
+    - `(Params::Size + ...)`
+
+- ***tuple_param_count_impl*** - [
+  `template<IsParamTuple Tuple, size_t... Is> constexpr size_t tuple_param_count_impl(std::index_sequence<Is...>)`](src/NetworkUtil.hpp)
+    - Unpacks `IsParamTuple` and sums each `Param::Size`, giving the net size of a `std::tuple` of `Param`s
+
+
+- ***TupleParamCount*** - [`template<IsParamTuple Tuple> constexpr size_t TupleParamCount`](src/NetworkUtil.hpp)
+    - Sum of all `Param` sizes in a `std::tuple` of `Param`s
+    - Calls `tuple_param_count_impl`
 
 ---
 
@@ -1562,7 +1631,7 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
   `void TrainableTensorNetwork::Update(float lr)`](src/TrainableTensorNetwork.hpp)
     - Calls `mAdam_.step()`, calls `UpdateAll` on each `ConcreteBlock`'s `all_params()`, passing `mAdam_` and `lr`
 
-- ***TrainableTensorNetwork::ZeroGrad()*** - [`void TrainableTensorNetwork::ZeroGrad()`](src/TrainableTensorNetwork.hpp)
+- ***TrainableTensorNetwork::ZeroGrad*** - [`void TrainableTensorNetwork::ZeroGrad()`](src/TrainableTensorNetwork.hpp)
     - Calls `ZeroAllGrads` on each `ConcreteBlock`'s `all_params()`
 
 
@@ -1589,6 +1658,12 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
       `LossFunction<Loss, OutputTensor>`), runs Batched Inference, calculates loss, then batch backpropagates and updates like
       `TrainStep`
 
+- ***TrainableTensorNetwork::RunEpoch*** - [
+  `template<typename Loss, size_t Batch, size_t N, size_t... InDims, size_t... OutDims> float TrainableTensorNetwork::RunEpoch(const Tensor<N, InDims...> &X_data, const Tensor<N, OutDims...> &Y_data, std::mt19937 &rng, const float lr)`](src/TrainableTensorNetwork.hpp)
+    - Run one full epoch: `Steps = N / Batch` rounds of `BatchFit`, returning average loss per step
+    - `X_data` and `Y_data` must already be in network shape (`Tensor<InDims...> == InputTensor`, `Tensor<OutDims...> == OutputTensor`); enforced by `static_assert`
+    - Samples `Batch` indices per step from `[0, N)` using `rng`, applied to both `X_data` and `Y_data` in the same loop to keep them in sync
+
 ### Serialization and Snapshot
 
 - ***TrainableTensorNetwork::Save*** - [
@@ -1602,6 +1677,8 @@ The top-level network class and the `NetworkBuilder` factory. Owns all blocks in
 - ***TrainableTensorNetwork::Snap*** - [
   `[[nodiscard]] SnapshotMap TrainableTensorNetwork::Snap() const`](src/TrainableTensorNetwork.hpp)
     - Create and fill `SnapshotMap` for each block, calling `peek()` for any `PeekableBlock`s
+
+### Network Creation and Combination API
 
 ---
 

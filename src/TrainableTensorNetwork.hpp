@@ -1,5 +1,6 @@
 #pragma once
 #include <stdexcept>
+#include <random>
 #include "ChainBlock.hpp"
 #include "TTTN_ML.hpp"
 
@@ -297,6 +298,41 @@ namespace TTTN {
             }(std::make_index_sequence<NumBlocks>{});
         }
 
+
+        // @doc: template<typename Loss, size_t Batch, size_t N, size_t... InDims, size_t... OutDims> float TrainableTensorNetwork::RunEpoch(const Tensor<N, InDims...> &X_data, const Tensor<N, OutDims...> &Y_data, std::mt19937 &rng, const float lr)
+        /**
+         * Run one full epoch: `Steps = N / Batch` rounds of `BatchFit`, returning average loss per step
+         * `X_data` and `Y_data` must already be in network shape (`Tensor<InDims...> == InputTensor`, `Tensor<OutDims...> == OutputTensor`); enforced by `static_assert`
+         * Samples `Batch` indices per step from `[0, N)` using `rng`, applied to both `X_data` and `Y_data` in the same loop to keep them in sync
+         */
+        template<typename Loss, size_t Batch, size_t N, size_t... InDims, size_t... OutDims>
+        float RunEpoch(const Tensor<N, InDims...> &X_data,
+                       const Tensor<N, OutDims...> &Y_data,
+                       std::mt19937 &rng, const float lr) {
+            static_assert(LossFunction<Loss, OutputTensor>,
+                          "Loss must expose static Loss(pred,target)->Tensor<> and Grad(pred,target)->OutputTensor");
+            static_assert(std::is_same_v<Tensor<InDims...>, InputTensor>,
+                          "X_data sample shape must match network InputTensor");
+            static_assert(std::is_same_v<Tensor<OutDims...>, OutputTensor>,
+                          "Y_data sample shape must match network OutputTensor");
+            static constexpr size_t Steps = N / Batch;
+            std::uniform_int_distribution<size_t> dist{0, N - 1};
+            float total = 0.f;
+            for (size_t s = 0; s < Steps; ++s) {
+                typename PrependBatch<Batch, InputTensor>::type X;
+                typename PrependBatch<Batch, OutputTensor>::type Y;
+                for (size_t b = 0; b < Batch; ++b) {
+                    const size_t idx = dist(rng);
+                    for (size_t i = 0; i < InputTensor::Size; ++i)
+                        X.flat(b * InputTensor::Size + i) = X_data.flat(idx * InputTensor::Size + i);
+                    for (size_t i = 0; i < OutputTensor::Size; ++i)
+                        Y.flat(b * OutputTensor::Size + i) = Y_data.flat(idx * OutputTensor::Size + i);
+                }
+                total += BatchFit<Loss, Batch>(X, Y, lr);
+            }
+            return total / static_cast<float>(Steps);
+        }
+
     private:
         // @doc: template<size_t I = 0> void TrainableTensorNetwork::forward_impl(ActivationsTuple &A) const
         /**
@@ -381,27 +417,6 @@ namespace TTTN {
             "CombineNetworks: OutputTensor of first network must equal InputTensor of second");
         using type = TrainableTensorNetwork<BlocksA..., BlocksB...>;
     };
-
-
-    template<typename Loss, size_t Batch,
-        ConcreteBlock... Blocks, size_t N, size_t... DataDims, typename PrepFn>
-    float RunEpoch(TrainableTensorNetwork<Blocks...> &net,
-                   const Tensor<N, DataDims...> &dataset,
-                   std::mt19937 &rng, float lr, PrepFn prep) {
-        static constexpr size_t Steps = N / Batch;
-        using Net = TrainableTensorNetwork<Blocks...>;
-        using BatchX = PrependBatch<Batch, typename Net::InputTensor>::type;
-        using BatchY = PrependBatch<Batch, typename Net::OutputTensor>::type;
-        float total = 0.f;
-        for (size_t s = 0; s < Steps; ++s) {
-            auto batch = RandomBatch<Batch>(dataset, rng);
-            BatchX X;
-            BatchY Y;
-            prep(batch, X, Y);
-            total += net.template BatchFit<Loss, Batch>(X, Y, lr);
-        }
-        return total / static_cast<float>(Steps);
-    }
 
 
     // NetworkBuilder: typename... (not Block...) so ComposeBlocks can appear in the list.

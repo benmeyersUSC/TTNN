@@ -293,7 +293,7 @@ namespace TTTN {
         // collect max prediction decimal
         const auto p_max = Reduce<1, Max>(p);
         // global sum of (p_correct - p_max) < EPS ? 1 : 0 gives total count of correct predictions
-        const float n = Collapse<Add>(Map<Step<1e-5f> >(p_max - p_correct));
+        const float n = Reduce<0, Add>(Map<Step<1e-5f> >(p_max - p_correct));
         // correct n out of total
         return 100.f * n / static_cast<float>(Batch);
     }

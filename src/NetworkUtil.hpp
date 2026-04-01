@@ -16,6 +16,11 @@ namespace TTTN {
         float vCorr = 1.f; // 1 / (1 - β2^t)
         int t = 0;
 
+        // @doc: void AdamState::step()
+        /**
+         * Increment `t`
+         * Recompute `mCorr`, `vCorr`
+         */
         void step() {
             ++t;
             mCorr = 1.f / (1.f - std::pow(beta1, static_cast<float>(t)));
@@ -24,6 +29,8 @@ namespace TTTN {
     };
 
 
+    // @doc: template<typename TensorT> struct Param
+    /** `struct` layer around a `ConcreteBlock` to abstract away management, Adam updates */
     template<typename TensorT>
     struct Param {
         TensorT value{};
@@ -31,12 +38,18 @@ namespace TTTN {
         TensorT m{};
         TensorT v{};
 
+        // @doc: static constexpr size_t Param::Size
+        /** Size of parameter `Tensor` */
         static constexpr size_t Size = TensorT::Size;
 
 
+        // @doc: void Param::zero_grad()
+        /** Fill `grad` with `0.f` */
         void zero_grad() { grad.fill(0.f); }
 
-         void update(const AdamState &adam, float lr) {
+        // @doc: void Param::update(const AdamState &adam, float lr)
+        /** For each `float` parameter in `value`, use Adam moments and gradient to update */
+        void update(const AdamState &adam, float lr) {
             ParForEach(Size, [&](const size_t i) {
                 const float g = grad.flat(i);
                 m.flat(i) = adam.beta1 * m.flat(i) + (1.f - adam.beta1) * g;
@@ -45,45 +58,94 @@ namespace TTTN {
             });
         }
 
-
+        // @doc: void Param::save(std::ofstream &f) const
+        /** Call `Tensor::Save` on `value` */
         void save(std::ofstream &f) const { value.Save(f); }
 
+        // @doc: void Param::save(std::ifstream &f)
+        /** Call `Tensor::Load` on `value` */
         void load(std::ifstream &f) { value.Load(f); }
     };
 
+    template<typename T>
+    struct is_param : std::false_type {
+    };
+
+    template<typename TensorT>
+    struct is_param<Param<TensorT> > : std::true_type {
+    };
+
+    // @doc: template<typename T> concept IsParam
+    /** Concept to verify that a type `T` is a `Param` */
+    template<typename T>
+    concept IsParam = is_param<std::remove_cvref_t<T> >::value;
 
     template<typename Tuple>
+    struct all_params_check : std::false_type {
+    };
+
+    template<typename... Ts>
+    struct all_params_check<std::tuple<Ts...> > : std::bool_constant<(IsParam<Ts> && ...)> {
+    };
+
+    // @doc: template<typename Tuple> concept IsParamTuple
+    /** Concept to verify that a type `Tuple` is a `std::tuple` of `Param` objects */
+    template<typename Tuple>
+    concept IsParamTuple = all_params_check<std::remove_cvref_t<Tuple> >::value;
+
+
+    // @doc: template<IsParamTuple Tuple> void ZeroAllGrads(Tuple &&params)
+    /** Calls `Param::zero_grad` on each `Param` in the `std::tuple` of `Param`s */
+    template<IsParamTuple Tuple>
     void ZeroAllGrads(Tuple &&params) {
         std::apply([](auto &... p) { (p.zero_grad(), ...); }, params);
     }
 
-    template<typename Tuple>
+    // @doc: template<IsParamTuple Tuple> void UpdateAll(Tuple &&params)
+    /** Calls `Param::update` on each `Param` in the `std::tuple` of `Param`s */
+    template<IsParamTuple Tuple>
     void UpdateAll(Tuple &&params, const AdamState &adam, float lr) {
         std::apply([&](auto &... p) { (p.update(adam, lr), ...); }, params);
     }
 
-    template<typename Tuple>
+    // @doc: template<IsParamTuple Tuple> void SaveAll(Tuple &&params)
+    /** Calls `Param::save` on each `Param` in the `std::tuple` of `Param`s */
+    template<IsParamTuple Tuple>
     void SaveAll(Tuple &&params, std::ofstream &f) {
         std::apply([&](const auto &... p) { (p.save(f), ...); }, params);
     }
 
-
-    template<typename Tuple>
+    // @doc: template<IsParamTuple Tuple> void LoadAll(Tuple &&params)
+    /** Calls `Param::load` on each `Param` in the `std::tuple` of `Param`s */
+    template<IsParamTuple Tuple>
     void LoadAll(Tuple &&params, std::ifstream &f) {
         std::apply([&](auto &... p) { (p.load(f), ...); }, params);
     }
 
-    //
-    template<typename... Params>
+
+    // @doc: template<IsParam... Params> constexpr size_t TotalParamSize
+    /**
+     * Sum of all `Param` sizes in variadic list of `Param`s
+     * `(Params::Size + ...)`
+     */
+    template<IsParam... Params>
     constexpr size_t TotalParamSize = (Params::Size + ...);
 
 
-    template<typename Tuple, size_t... Is>
+    // @doc: template<IsParamTuple Tuple, size_t... Is> constexpr size_t tuple_param_count_impl(std::index_sequence<Is...>)
+    /** Unpacks `IsParamTuple` and sums each `Param::Size`, giving the net size of a `std::tuple` of `Param`s */
+    template<IsParamTuple Tuple, size_t... Is>
     constexpr size_t tuple_param_count_impl(std::index_sequence<Is...>) {
-        return (size_t(0) + ... + std::remove_reference_t<std::tuple_element_t<Is, Tuple> >::Size);
+        return (static_cast<size_t>(0) + ... + std::remove_reference_t<std::tuple_element_t<Is, Tuple> >::Size);
     }
 
-    template<typename Tuple>
+
+    // @doc: template<IsParamTuple Tuple> constexpr size_t TupleParamCount
+    /**
+     * Sum of all `Param` sizes in a `std::tuple` of `Param`s
+     * Calls `tuple_param_count_impl`
+     */
+    template<IsParamTuple Tuple>
     constexpr size_t TupleParamCount =
             tuple_param_count_impl<std::remove_cvref_t<Tuple> >(
                 std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<Tuple> > >{});
