@@ -82,7 +82,7 @@ We align the shared axis `K`, then map + reduce:
 
             A (M×K)                     B (K×N)
         
-               k →                        k ↓
+               k ->                        k ↓
         ┌───────────────┐         ┌────────────────┐
       i │ aᵢ₀ aᵢ₁ … aᵢₖ │          │ b₀ⱼ b₁ⱼ … bₖⱼ  │ j
         └───────────────┘         └────────────────┘
@@ -183,10 +183,10 @@ Replace the parallel CPU dispatch (
 12. [TrainableTensorNetwork.hpp: The Network](#trainabletensornetworkhpp--the-network)
 13. [Params.hpp: Parameter Storage and Optimizer](#paramshpp--parameter-storage-and-optimizer)
 14. [BlockComposition.hpp: Sequential Block Composition](#BlockCompositionhpp--sequential-block-composition)
-14. [Snapshot.hpp: Activation Snapshots](#snapshothpp--activation-snapshots)
-15. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
-16. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
-17. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
+15. [Snapshot.hpp: Activation Snapshots](#snapshothpp--activation-snapshots)
+16. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
+17. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
+18. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
 
 ---
 
@@ -907,12 +907,12 @@ Tensor<5, 4> M;
 auto d1 = Dot(u, v);                               // named alias
 auto d2 = ΣΠ<1>(u, v);                             // "contract 1 dim"
 auto d3 = Einsum<0, 0>(u, v);                      // "contract axis 0 of A with axis 0 of B"
-static_assert(std::is_same_v<decltype(d1), Tensor<>>);  // all three → rank-0 scalar
+static_assert(std::is_same_v<decltype(d1), Tensor<>>);  // all three -> rank-0 scalar
 static_assert(std::is_same_v<decltype(d2), Tensor<>>);
 static_assert(std::is_same_v<decltype(d3), Tensor<>>);
 
 // ── matmul ───────────────────────────────────────────────────────────────────
-auto mm = Matmul(W, Transpose(M));                 // Tensor<3,4> × Tensor<4,5> → Tensor<3,5>
+auto mm = Matmul(W, Transpose(M));                 // Tensor<3,4> × Tensor<4,5> -> Tensor<3,5>
 static_assert(std::is_same_v<decltype(mm), Tensor<3, 5>>);
 
 // Einsum picks arbitrary axes — no Transpose needed:
@@ -921,11 +921,11 @@ static_assert(std::is_same_v<decltype(d4), Tensor<3, 5>>);  // same result, diff
 
 // ── any-rank generalization ──────────────────────────────────────────────────
 Tensor<4> x;
-auto Wx = ΣΠ<1>(W, x);                             // Tensor<3,4> × Tensor<4> → Tensor<3>
+auto Wx = ΣΠ<1>(W, x);                             // Tensor<3,4> × Tensor<4> -> Tensor<3>
 static_assert(std::is_same_v<decltype(Wx), Tensor<3>>);
 
 Tensor<3, 5, 4> W3;
-auto W3x = ΣΠ<1>(W3, x);                           // contract last 1 dim → Tensor<3,5>
+auto W3x = ΣΠ<1>(W3, x);                           // contract last 1 dim -> Tensor<3,5>
 static_assert(std::is_same_v<decltype(W3x), Tensor<3, 5>>);
 
 Tensor<5, 4, 2> K;
@@ -933,7 +933,7 @@ auto out = ΣΠ<2>(W3, K);                            // contract last 2 of W3 w
 static_assert(std::is_same_v<decltype(out), Tensor<3, 2>>);
 
 // ── outer product and full contraction: the two extremes ─────────────────────
-auto outer = Outer(u, v);                           // ΣΠ<0>: contract nothing → Tensor<3,3>
+auto outer = Outer(u, v);                           // ΣΠ<0>: contract nothing -> Tensor<3,3>
 static_assert(std::is_same_v<decltype(outer), Tensor<3, 3>>);
 
 float frob = Collapse<Mul, Add>(W, W);              // Frobenius inner product — tag form, no lambdas
@@ -1011,13 +1011,13 @@ Tensor<32, 10> logits;
 Tensor<10>     bias;
 
 // ── tag-param reductions — no init arg, no lambda ────────────────────────────
-auto col_sum = ReduceApply<0, Add>(logits);         // sum over batch → Tensor<10>
-auto row_max = ReduceApply<1, Max>(logits);         // max per sample → Tensor<32>
+auto col_sum = ReduceApply<0, Add>(logits);         // sum over batch -> Tensor<10>
+auto row_max = ReduceApply<1, Max>(logits);         // max per sample -> Tensor<32>
 static_assert(std::is_same_v<decltype(col_sum), Tensor<10>>);
 static_assert(std::is_same_v<decltype(row_max), Tensor<32>>);
 
 // ── Expand: dual of reduction ─────────────────────────────────────────────────
-auto stacked = Expand<0, 32>(bias);                 // Tensor<10> → Tensor<32, 10>
+auto stacked = Expand<0, 32>(bias);                 // Tensor<10> -> Tensor<32, 10>
 static_assert(std::is_same_v<decltype(stacked), Tensor<32, 10>>);
 
 // ── tag-param broadcast ───────────────────────────────────────────────────────
@@ -1034,8 +1034,8 @@ static_assert(std::is_same_v<decltype(centered), Tensor<32, 10>>);
 
 // ── higher-rank ───────────────────────────────────────────────────────────────
 Tensor<8, 16, 64> activations;
-auto per_token = ReduceApply<2, Add>(activations);  // → Tensor<8, 16>
-auto restored  = Expand<0, 8>(ReduceApply<0, Max>(activations)); // → Tensor<8, 16, 64>
+auto per_token = ReduceApply<2, Add>(activations);  // -> Tensor<8, 16>
+auto restored  = Expand<0, 8>(ReduceApply<0, Max>(activations)); // -> Tensor<8, 16, 64>
 static_assert(std::is_same_v<decltype(per_token), Tensor<8, 16>>);
 static_assert(std::is_same_v<decltype(restored),  Tensor<8, 16, 64>>);
 ```
@@ -1052,11 +1052,11 @@ static_assert(std::is_same_v<decltype(restored),  Tensor<8, 16, 64>>);
 Tensor<16, 64> seq;                                 // 16 tokens, 64-dim embeddings
 
 // compile-time gather: index must be known at compile time
-auto tok1 = TensorIndex<0, 1>(seq);                 // seq[1, :] → Tensor<64>
+auto tok1 = TensorIndex<0, 1>(seq);                 // seq[1, :] -> Tensor<64>
 
 // runtime gather: index is a runtime value
 size_t i = 5;
-auto tok5 = TensorGet<0>(seq, i);                   // seq[i, :] → Tensor<64>
+auto tok5 = TensorGet<0>(seq, i);                   // seq[i, :] -> Tensor<64>
 static_assert(std::is_same_v<decltype(tok5), Tensor<64>>);
 
 // runtime set: assign a slice directly
@@ -1071,7 +1071,7 @@ TensorIndexApply<0>(grad_seq, i, grad_tok,
 
 // higher-rank: gather along a middle axis
 Tensor<8, 16, 64> batch_seq;                        // batch × seq × embed
-auto col3 = TensorGet<1>(batch_seq, 3);             // batch_seq[:, 3, :] → Tensor<8, 64>
+auto col3 = TensorGet<1>(batch_seq, 3);             // batch_seq[:, 3, :] -> Tensor<8, 64>
 static_assert(std::is_same_v<decltype(col3), Tensor<8, 64>>);
 ```
 
@@ -1086,15 +1086,15 @@ Everything above composes into a complete training step — contractions, reduct
 ```cpp
 // ── 2-layer feed-forward network (single sample, raw tensors) ────────────────
 Tensor<784>      x;                                 // input: flattened 28×28 image
-Tensor<128, 784> W1;  Tensor<128> b1;               // layer 1: 784 → 128
-Tensor<10,  128> W2;  Tensor<10>  b2;               // layer 2: 128 → 10
+Tensor<128, 784> W1;  Tensor<128> b1;               // layer 1: 784 -> 128
+Tensor<10,  128> W2;  Tensor<10>  b2;               // layer 2: 128 -> 10
 float            lr = 0.01f;
 
 // ── forward ──────────────────────────────────────────────────────────────────
-auto z1 = ΣΠ<1>(W1, x) + b1;                       // Tensor<128,784> × Tensor<784> + Tensor<128> → Tensor<128>
+auto z1 = ΣΠ<1>(W1, x) + b1;                       // Tensor<128,784> × Tensor<784> + Tensor<128> -> Tensor<128>
 auto a1 = z1.map([](float v) {
-    return v > 0.f ? v : 0.f; });                   // ReLU → Tensor<128>
-auto z2 = ΣΠ<1>(W2, a1) + b2;                      // Tensor<10,128> × Tensor<128> + Tensor<10> → Tensor<10>
+    return v > 0.f ? v : 0.f; });                   // ReLU -> Tensor<128>
+auto z2 = ΣΠ<1>(W2, a1) + b2;                      // Tensor<10,128> × Tensor<128> + Tensor<10> -> Tensor<10>
 
 // softmax output (two BroadcastReduce calls — stable, parallel, one line each):
 auto exps  = BroadcastReduce<0, Compose<Exp, Sub>, Max>(z2);
@@ -1108,11 +1108,11 @@ Tensor<10> target;                                  // one-hot label
 auto dz2 = probs.zip(target,                       // softmax + CEL combined gradient = pred − target
     [](float p, float t) { return p - t; });
 
-auto dW2 = Outer(dz2, a1);                         // Tensor<10> ⊗ Tensor<128> → Tensor<10, 128>
-auto da1 = ΣΠ<1>(Transpose(W2), dz2);              // Tensor<128,10> × Tensor<10> → Tensor<128>
+auto dW2 = Outer(dz2, a1);                         // Tensor<10> ⊗ Tensor<128> -> Tensor<10, 128>
+auto da1 = ΣΠ<1>(Transpose(W2), dz2);              // Tensor<128,10> × Tensor<10> -> Tensor<128>
 auto dz1 = da1 * z1.map([](float v) {
-    return v > 0.f ? 1.f : 0.f; });                // ⊙ relu' → Tensor<128>
-auto dW1 = Outer(dz1, x);                          // Tensor<128> ⊗ Tensor<784> → Tensor<128, 784>
+    return v > 0.f ? 1.f : 0.f; });                // ⊙ relu' -> Tensor<128>
+auto dW1 = Outer(dz1, x);                          // Tensor<128> ⊗ Tensor<784> -> Tensor<128, 784>
 
 static_assert(std::is_same_v<decltype(dW2), Tensor<10, 128>>);
 static_assert(std::is_same_v<decltype(dW1), Tensor<128, 784>>);
@@ -1501,225 +1501,362 @@ All Adam hyperparameters and per-network bias-correction state in one place. TTN
 
 ---
 
+## [BlockSequence.hpp](src/BlockSequence.hpp): The Sequence Core
+
+The unified sequential core shared by `TrainableTensorNetwork` and `ComposeBlocks`. Owns a `std::tuple` of
+`ConcreteBlock`s and a mutable activation cache. Satisfies `ConcreteBlock` itself, so a
+`BlockSequence` can nest inside any other block (e.g. as an arm of
+`Parallel`). Also, in compliance with the `ConcreteBlock` `concept`, exposes an explicit activation API (`ForwardAll`,
+`BackwardFrom`, etc.) for top-level use by
+`TrainableTensorNetwork`.
+
+### `class BlockSequence<ConcreteBlock... Blocks>`
+
+- ***BlockSequence*** - [
+  `template<ConcreteBlock... Blocks> class BlockSequence`](src/BlockSequence.hpp)
+    - Unified sequential core: wraps a shape-compliant chain of `ConcreteBlock`s and provides both the
+      `ConcreteBlock` interface (for nesting) and the explicit activation API (for top-level training)
+
+- ***BlockSequence::check_connected()*** - [
+  `static constexpr bool BlockSequence::check_connected()`](src/BlockSequence.hpp)
+    - Immediate `static_assert` function to ensure that `ConcreteBlock... Blocks` have compliant shapes:
+      `std::is_same_v<typename std::tuple_element_t<Is, BlockTuple>::OutputTensor, typename std::tuple_element_t<Is + 1, BlockTuple>::InputTensor> && ...)`
+
+- ***BlockSequence::BlockSequence*** - [`BlockSequence::BlockSequence()`](src/BlockSequence.hpp)
+    - Default construct `mBlocks` and `mActs`
+
+### Type Aliases and Public Members
+
+- ***BlockSequence::NumBlocks*** - [`BlockSequence::NumBlocks`](src/BlockSequence.hpp)
+    - `static constexpr size_t NumBlocks = sizeof...(Blocks)`
+
+- ***BlockSequence::BlockTuple*** - [`using BlockSequence::BlockTuple`](src/BlockSequence.hpp)
+    - Type alias for `std::tuple<Blocks...>`
+
+- ***BlockSequence::InputTensor*** - [`BlockSequence::InputTensor`](src/BlockSequence.hpp)
+    - Extract `InputTensor` type from first element of `BlockTuple`
+
+- ***BlockSequence::OutputTensor*** - [`BlockSequence::OutputTensor`](src/BlockSequence.hpp)
+    - Extract `OutputTensor` type from last element of `BlockTuple`
+
+- ***BlockSequence::InSize*** - [`BlockSequence::InSize`](src/BlockSequence.hpp)
+    - Convenience member for total size of `InputTensor` type
+
+- ***BlockSequence::OutSize*** - [`BlockSequence::OutSize`](src/BlockSequence.hpp)
+    - Convenience member for total size of `OutputTensor` type
+
+- ***BlockSequence::TotalParamCount*** - [
+  `static constexpr size_t BlockSequence::TotalParamCount`](src/BlockSequence.hpp)
+    - Sum of parameter counts of all elements of `Blocks...`
+
+- ***BlockSequence::block*** - [
+  `template<size_t I> const auto &BlockSequence::block() const`](src/BlockSequence.hpp)
+    - Get a `const &` to the `I`-th `ConcreteBlock` in `BlockSequence::mBlocks`
+
+- ***BlockSequence::ActivationsTuple*** - [
+  `using BlockSequence::ActivationsTuple`](src/BlockSequence.hpp)
+    - Type alias around `TensorTupleBuilder<Blocks...>::type`
+
+- ***BlockSequence::Activations*** - [
+  `using BlockSequence::Activations`](src/BlockSequence.hpp)
+    - Access-safe `ActivationsWrap` wrapper around `ActivationsTuple`
+
+- ***BlockSequence::BatchedActivationsTuple*** - [
+  `template<size_t Batch> using BlockSequence::BatchedActivationsTuple`](src/BlockSequence.hpp)
+    - Type alias around `BatchedTensorTupleBuilder<Batch, Blocks...>::type`
+
+- ***BlockSequence::BatchedActivations*** - [
+  `template<size_t Batch> using BlockSequence::BatchedActivations`](src/BlockSequence.hpp)
+    - Access-safe `ActivationsWrap` wrapper around `BatchedActivationsTuple`
+
+### Private Members
+
+- ***BlockSequence::mBlocks*** - [`BlockSequence::mBlocks`](src/BlockSequence.hpp)
+    - Default-constructed `BlockTuple` containing actual `ConcreteBlock` objects
+
+- ***BlockSequence::mActs*** - [`mutable BlockSequence::mActs`](src/BlockSequence.hpp)
+    - Mutable `ActivationsTuple` cache used by the `ConcreteBlock` interface (`Forward`/`Backward`) so that
+      `BlockSequence` can be used as a nested block without the caller managing activations
+
+### Inference
+
+- ***BlockSequence::ForwardAll*** - [
+  `[[nodiscard]] Activations BlockSequence::ForwardAll(const InputTensor &x) const`](src/BlockSequence.hpp)
+    - Forward pass returning full `ActivationsWrap Activations` object
+    - Calls `BlockSequence::forward_impl` on `InputTensor &x`
+
+- ***BlockSequence::Forward*** - [
+  `[[nodiscard]] OutputTensor BlockSequence::Forward(const InputTensor &x) const`](src/BlockSequence.hpp)
+    - Forward pass returning `OutputTensor`
+    - Delegates to `ForwardAll` and extracts back element
+    - Satisfies `ConcreteBlock` interface; uses `mActs` cache so a caller can follow with `Backward`
+
+- ***BlockSequence::forward_impl*** - [
+  `template<size_t I = 0> void BlockSequence::forward_impl(ActivationsTuple &A) const`](src/BlockSequence.hpp)
+    - Private implementation; recursively fills `ActivationsTuple &A` by calling each
+      `ConcreteBlock::Forward` in order and storing result
+
+- ***BlockSequence::BatchedForwardAll*** - [
+  `template<size_t Batch> [[nodiscard]] BatchedActivations<Batch> BlockSequence::BatchedForwardAll(const PrependBatch<Batch, InputTensor>::type &X) const`](src/BlockSequence.hpp)
+    - Batched forward pass returning full `ActivationsWrap BatchedActivations` object
+
+- ***BlockSequence::BatchedForward*** - [
+  `template<size_t Batch> [[nodiscard]] PrependBatch<Batch, OutputTensor>::type BlockSequence::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const`](src/BlockSequence.hpp)
+    - Batched forward pass returning `PrependBatch<Batch, OutputTensor>`; extracted from back of `BatchedForwardAll`
+    - Satisfies `ConcreteBlock` interface
+
+- ***BlockSequence::batched_forward_impl*** - [
+  `template<size_t Batch, size_t I = 0> void BlockSequence::batched_forward_impl(BatchedActivationsTuple<Batch> &A) const`](src/BlockSequence.hpp)
+    - Private implementation; recursively fills `BatchedActivationsTuple &A` by calling each
+      `ConcreteBlock::BatchedForward` in order
+
+### Backward
+
+- ***BlockSequence::BackwardFrom*** - [
+  `template<size_t I, typename Delta> void BlockSequence::BackwardFrom(const Activations &A, const Delta &grad)`](src/BlockSequence.hpp)
+    - Start the backward sweep at activation index `I` (rather than always `NumBlocks`)
+    - Flexible primitive to backpropagate from anywhere, provided the correctly-shaped gradient coming in
+
+- ***BlockSequence::BackwardAll*** - [
+  `void BlockSequence::BackwardAll(const Activations &A, const OutputTensor &grad)`](src/BlockSequence.hpp)
+    - Delegates to `BackwardFrom<NumBlocks>` - full backward from output to input
+    - Gradients are accumulated into `ConcreteBlock` `Param` members
+
+- ***BlockSequence::Backward*** - [
+  `InputTensor BlockSequence::Backward(const OutputTensor &delta, const OutputTensor &, const InputTensor &)`](src/BlockSequence.hpp)
+    - Uses cached `mActs` to run `backward_impl` and returns
+      `InputTensor` gradient for the first block
+
+- ***BlockSequence::backward_impl*** - [
+  `template<size_t I, typename Delta> requires IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple>> auto BlockSequence::backward_impl(const ActivationsTuple &A, const Delta &delta)`](src/BlockSequence.hpp)
+    - Starts with `Delta` (derivative of loss w.r.t. activation `I`), recurses down to `I == 1`, returning
+      `InputTensor` gradient
+    - At each `I`, calls `ConcreteBlock::Backward(delta, A[I], A[I-1])` or
+      `ConcreteBlock::Backward(gradient wrt this block's output, this block's output, this block's input / previous block's output)`
+
+- ***BlockSequence::BatchedBackwardFrom*** - [
+  `template<size_t Batch, size_t I, typename Delta> void BlockSequence::BatchedBackwardFrom(const BatchedActivations<Batch> &A, const Delta &grad)`](src/BlockSequence.hpp)
+    - Batched counterpart to `BackwardFrom` - start batched backward sweep at activation index `I`
+
+- ***BlockSequence::BatchedBackwardAll*** - [
+  `template<size_t Batch> void BlockSequence::BatchedBackwardAll(const BatchedActivations<Batch> &A, const PrependBatch<Batch, OutputTensor>::type &grad)`](src/BlockSequence.hpp)
+    - Delegates to `BatchedBackwardFrom<Batch, NumBlocks>` - full batched backward from output to input
+
+- ***BlockSequence::BatchedBackward*** - [
+  `template<size_t Batch> PrependBatch<Batch, InputTensor>::type BlockSequence::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta, const PrependBatch<Batch, OutputTensor>::type &, const PrependBatch<Batch, InputTensor>::type &a_prev)`](src/BlockSequence.hpp)
+    - Re-runs `BatchedForward` from
+      `a_prev` to reconstruct activation cache, then runs `batched_backward_impl`, returning batched
+      `InputTensor` gradient
+
+- ***BlockSequence::batched_backward_impl*** - [
+  `template<size_t Batch, size_t I, typename Delta> requires IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, BatchedActivationsTuple<Batch>>> auto BlockSequence::batched_backward_impl(const BatchedActivationsTuple<Batch> &A, const Delta &delta)`](src/BlockSequence.hpp)
+    - Same logic as `backward_impl` but calls `ConcreteBlock::BatchedBackward` at each step
+
+- ***BlockSequence::ZeroGrad*** - [`void BlockSequence::ZeroGrad()`](src/BlockSequence.hpp)
+    - Calls `ZeroAllGrads` on each `ConcreteBlock`'s `all_params()`
+
+### Serialization and Snapshot
+
+- ***BlockSequence::Save*** - [
+  `void BlockSequence::Save(const std::string &path) const`](src/BlockSequence.hpp)
+    - Calls `SaveAll` on each `ConcreteBlock::all_params()`, which calls `Tensor` binary serialization
+
+- ***BlockSequence::Load*** - [
+  `void BlockSequence::Load(const std::string &path)`](src/BlockSequence.hpp)
+    - Calls `LoadAll` on each `ConcreteBlock::all_params()`, which calls `Tensor` binary deserialization
+
+- ***BlockSequence::Snap*** - [
+  `[[nodiscard]] SnapshotMap BlockSequence::Snap() const`](src/BlockSequence.hpp)
+    - Creates and fills a `SnapshotMap` (see [`Snapshot.hpp`](src/Snapshot.hpp)), calling `peek()` on any
+      `PeekableBlock`s in `mBlocks`
+
+---
+
 ## [TrainableTensorNetwork.hpp](src/TrainableTensorNetwork.hpp): The Network
 
-The top-level network class and the `NetworkBuilder` factory. Owns all blocks in a
-`std::tuple` and one `AdamState` instance. Orchestrates forward/backward passes; drives `ZeroGrad`, `Update`, `Save`,
-`Load` on every block via `all_params()` — no block implements these directly.
+Thin wrapper around `BlockSequence<Blocks...>` that adds an
+`AdamState` and the loss-aware training API. All forward/backward/serialization calls delegate to the inner
+`BlockSequence mSeq_`. Only `Update`, `TrainStep`, `BatchTrainStep`, `Fit`, `BatchFit`, and `RunEpoch` are
+`TrainableTensorNetwork`-exclusive.
 
 ### `class TrainableTensorNetwork<ConcreteBlock... Blocks>`
 
 - ***TrainableTensorNetwork*** - [
-  `template<ConcreteBlock... Blocks> class TrainableTensorNetwork`](src/TrainableTensorNetwork.hpp)
-    - Capstone object of the library
-    - Wrap `std::tuple` of shape-compliant `ConcreteBlock`s in a network API that enables and/or enforces:
-        - `Forward` and `BatchedForward`
-        - `Backward` and `BatchedBackward`
-        - `Update`, `ZeroGrad`, `TrainStep` and `BatchedTrainStep`, `Fit` and `BatchFit`
-        - `snap` (snapshot of activations)
-        - `Save` and `Load` serialization
+  `template<ConcreteBlock... Blocks> class TrainableTensorNetwork::TrainableTensorNetwork`](src/TrainableTensorNetwork.hpp)
+    - Capstone object of the library; owns a `BlockSequence<Blocks...> mSeq_` and an `AdamState mAdam_`
+    - All type aliases (`InputTensor`, `OutputTensor`,
+      `Activations`, etc.) and inference/backward/serialization methods delegate directly to `mSeq_`
+    - Exclusively owns the optimizer state and loss-parameterized training entry points
 
-- ***TrainableTensorNetwork::check_connected()*** - [
-  `static constexpr bool TrainableTensorNetwork::check_connected()`](src/TrainableTensorNetwork.hpp)
-    - Immediate `static_assert` function to ensure that `ConcreteBlock... Blocks` have compliant shapes:
-      -
-      `std::is_same_v<typename std::tuple_element_t<Is, BlockTuple>::OutputTensor, typename std::tuple_element_t<Is + 1, BlockTuple>::InputTensor> && ...)`
+### Private Types and Members
+
+- ***TrainableTensorNetwork::Seq*** - [`using TrainableTensorNetwork::Seq`](src/TrainableTensorNetwork.hpp)
+    - `using Seq = BlockSequence<Blocks...>` - internal shorthand for the inner sequence type
+
+- ***TrainableTensorNetwork::mSeq_*** - [`Seq TrainableTensorNetwork::mSeq_`](src/TrainableTensorNetwork.hpp)
+    - The inner `BlockSequence<Blocks...>` that owns all blocks and activation caches
+
+- ***TrainableTensorNetwork::mAdam_*** - [`AdamState TrainableTensorNetwork::mAdam_`](src/TrainableTensorNetwork.hpp)
+    - `AdamState` instance; stepped once per `Update` call
 
 ### Type Aliases and Public Members
 
-- ***TrainableTensorNetwork::BlockTuple*** - [`TrainableTensorNetwork::BlockTuple`](src/TrainableTensorNetwork.hpp)
-    - `using BlockTuple = std::tuple<Blocks...>`
-    - NOTE: not a `std::tuple` of `Blocks...` *objects* but *types*
+- ***TrainableTensorNetwork::InputTensor*** - [
+  `using TrainableTensorNetwork::InputTensor`](src/TrainableTensorNetwork.hpp)
+    - Delegates to `BlockSequence::InputTensor`
 
-- ***TrainableTensorNetwork::InputTensor*** - [`TrainableTensorNetwork::InputTensor`](src/TrainableTensorNetwork.hpp)
-    - Extract `InputTensor` type from first element of `BlockTuple`
+- ***TrainableTensorNetwork::OutputTensor*** - [
+  `using TrainableTensorNetwork::OutputTensor`](src/TrainableTensorNetwork.hpp)
+    - Delegates to `BlockSequence::OutputTensor`
 
-- ***TrainableTensorNetwork::OutputTensor*** - [`TrainableTensorNetwork::OutputTensor`](src/TrainableTensorNetwork.hpp)
-    - Extract `OutputTensor` type from last element of `BlockTuple`
+- ***TrainableTensorNetwork::InSize*** - [
+  `static constexpr size_t TrainableTensorNetwork::InSize`](src/TrainableTensorNetwork.hpp)
+    - Delegates to `BlockSequence::InSize`
 
-- ***TrainableTensorNetwork::InSize*** - [`TrainableTensorNetwork::InSize`](src/TrainableTensorNetwork.hpp)
-    - Convenience member for total size of `InputTensor` type
+- ***TrainableTensorNetwork::OutSize*** - [
+  `static constexpr size_t TrainableTensorNetwork::OutSize`](src/TrainableTensorNetwork.hpp)
+    - Delegates to `BlockSequence::OutSize`
 
-- ***TrainableTensorNetwork::OutSize*** - [`TrainableTensorNetwork::OutSize`](src/TrainableTensorNetwork.hpp)
-    - Convenience member for total size of `OutputTensor` type
+- ***TrainableTensorNetwork::NumBlocks*** - [
+  `static constexpr size_t TrainableTensorNetwork::NumBlocks`](src/TrainableTensorNetwork.hpp)
+    - Delegates to `BlockSequence::NumBlocks`
 
 - ***TrainableTensorNetwork::TotalParamCount*** - [
   `static constexpr size_t TrainableTensorNetwork::TotalParamCount`](src/TrainableTensorNetwork.hpp)
-    - Sum of parameter counts of all elements of `Blocks...`
-
-- ***TrainableTensorNetwork::block*** - [
-  `template<size_t I> const auto &TrainableTensorNetwork::block() const`](src/TrainableTensorNetwork.hpp)
-    - Get a `const &` to the `I`-th `ConcreteBlock` in `TrainableTensorNetwork::mBlocks`
-
-- ***TrainableTensorNetwork::ActivationsTuple*** - [
-  `using TrainableTensorNetwork::ActivationsTuple`](src/TrainableTensorNetwork.hpp)
-    - Type alias around `TensorTupleBuilder<Blocks...>::type`
+    - Delegates to `BlockSequence::TotalParamCount`
 
 - ***TrainableTensorNetwork::Activations*** - [
   `using TrainableTensorNetwork::Activations`](src/TrainableTensorNetwork.hpp)
-    - Access-safe `ActivationsWrap` wrapper around `ActivationsTuple`
-
-
-- ***TrainableTensorNetwork::BatchedActivationsTuple*** - [
-  `template<size_t Batch> using TrainableTensorNetwork::BatchedActivationsTuple`](src/TrainableTensorNetwork.hpp)
-    - Type alias around `BatchedTensorTupleBuilder<Blocks...>::type`
+    - Delegates to `BlockSequence::Activations`
 
 - ***TrainableTensorNetwork::BatchedActivations*** - [
   `template<size_t Batch> using TrainableTensorNetwork::BatchedActivations`](src/TrainableTensorNetwork.hpp)
-    - Access-safe `ActivationsWrap` wrapper around `BatchedActivationsTuple`
+    - Delegates to `BlockSequence::BatchedActivations<Batch>`
 
-- ***TrainableTensorNetwork::TrainableTensorNetwork*** - [
-  `TrainableTensorNetwork::TrainableTensorNetwork`](src/TrainableTensorNetwork.hpp)
+- ***TrainableTensorNetwork::TrainableTensorNetwork()*** - [
+  `TrainableTensorNetwork::TrainableTensorNetwork()`](src/TrainableTensorNetwork.hpp)
     - Default constructor `= default`
 
-### Private Members
-
-- ***TrainableTensorNetwork::mBlocks*** - [`TrainableTensorNetwork::mBlocks`](src/TrainableTensorNetwork.hpp)
-    - Default-constructed `BlockTuple` type containing actual `ConcreteBlock` values
+- ***TrainableTensorNetwork::block*** - [
+  `template<size_t I> const auto &TrainableTensorNetwork::block() const`](src/TrainableTensorNetwork.hpp)
+    - Delegates to `BlockSequence::block<I>()`
 
 ### Inference
 
 - ***TrainableTensorNetwork::ForwardAll*** - [
   `[[nodiscard]] Activations TrainableTensorNetwork::ForwardAll(const InputTensor &x) const`](src/TrainableTensorNetwork.hpp)
-    - Forward pass of the network, returning full `ActivationsWrap Activations` object
-        - Calls `TrainableTensorNetwork::forward_impl` on `InputTensor &x`
+    - Delegates to `BlockSequence::ForwardAll`
 
 - ***TrainableTensorNetwork::Forward*** - [
   `[[nodiscard]] OutputTensor TrainableTensorNetwork::Forward(const InputTensor &x) const`](src/TrainableTensorNetwork.hpp)
-    - Forward pass of the network, returning `OutputTensor` extracted from the back of result of
-      `TrainableTensorNetwork::ForwardAll`
-
-- ***TrainableTensorNetwork::forward_impl*** - [
-  `template<size_t I = 0> void TrainableTensorNetwork::forward_impl(ActivationsTuple &A) const`](src/TrainableTensorNetwork.hpp)
-    - Private implementation of forward pass of network, fills `ActivationsTuple &A`
-        - Recursively iterates through `TrainableTensorNetwork::mBlocks`, assigning results of mandated
-          `ConcreteBlock::Forward` to corresponding entries of `ActivationsTuple &A`
+    - Delegates to `BlockSequence::Forward`
 
 - ***TrainableTensorNetwork::BatchedForwardAll*** - [
   `template<size_t Batch> [[nodiscard]] BatchedActivations<Batch> TrainableTensorNetwork::BatchedForwardAll(const PrependBatch<Batch, InputTensor>::type &X) const`](src/TrainableTensorNetwork.hpp)
-    - Batched forward pass of the network, returning full `ActivationsWrap BatchedActivations` object
-        - Calls `TrainableTensorNetwork::forward_impl` on `const PrependBatch<Batch, InputTensor>::type &X`
+    - Delegates to `BlockSequence::BatchedForwardAll<Batch>`
 
 - ***TrainableTensorNetwork::BatchedForward*** - [
-  `template<size_t Batch> [[nodiscard]] PrependBatch<Batch, OutputTensor>::type TrainableTensorNetwork::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X)`](src/TrainableTensorNetwork.hpp)
-    - Batched forward pass of the network, returning
-      `PrependBatch<Batch, OutputTensor>` extracted from the back of result of
-      `TrainableTensorNetwork::BatchedForwardAll`
+  `template<size_t Batch> [[nodiscard]] PrependBatch<Batch, OutputTensor>::type TrainableTensorNetwork::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const`](src/TrainableTensorNetwork.hpp)
+    - Delegates to `BlockSequence::BatchedForward<Batch>`
 
+### Backward
 
-- ***TrainableTensorNetwork::batched_forward_impl*** - [
-  `template<size_t Batch, size_t I = 0> void TrainableTensorNetwork::batched_forward_impl(BatchedActivationsTuple<Batch> &A) const`](src/TrainableTensorNetwork.hpp)
-    - Private implementation of batched forward pass of network, fills `BatchedActivationsTuple &A`
-        - Recursively iterates through `TrainableTensorNetwork::mBlocks`, assigning results of mandated
-          `ConcreteBlock::BatchedForward` to corresponding entries of `BatchedActivationsTuple &A`
-
-### Training
+- ***TrainableTensorNetwork::BackwardFrom*** - [
+  `template<size_t I, typename Delta> void TrainableTensorNetwork::BackwardFrom(const Activations &A, const Delta &grad)`](src/TrainableTensorNetwork.hpp)
+    - Delegates to `BlockSequence::BackwardFrom<I>`
 
 - ***TrainableTensorNetwork::BackwardAll*** - [
   `void TrainableTensorNetwork::BackwardAll(const Activations &A, const OutputTensor &grad)`](src/TrainableTensorNetwork.hpp)
-    - Calls `TrainableTensorNetwork::backward_impl`, which backpropagates gradient via `ConcreteBlock::Backward` calls
-    - Gradients are assumed stored and managed by `ConcreteBlock`s with `Param` members
+    - Delegates to `BlockSequence::BackwardAll`
 
-- ***TrainableTensorNetwork::backward_impl*** - [
-  `template<size_t I, typename Delta> requires IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple> > void TrainableTensorNetwork::backward_impl(const ActivationsTuple &A, const Delta &delta)`](src/TrainableTensorNetwork.hpp)
-    - Starts with `Delta` `Tensor`, the derivative of the `Loss` with respect to the `OutputTensor`
-        - `Delta` satisfies:
-            - `IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple> >`
-    - `I` starts at `NumBlocks` and recurses down until `I == 1`
-    - At each `I`, the `I - 1`-th `ConcreteBlock`'s gradient takes into account that this block outputs the
-      `I`-th activation in an `ActivationsTuple`, having taken the `I - 1`-th activation from `ActivationsTuple`
+- ***TrainableTensorNetwork::BatchedBackwardFrom*** - [
+  `template<size_t Batch, size_t I, typename Delta> void TrainableTensorNetwork::BatchedBackwardFrom(const BatchedActivations<Batch> &A, const Delta &grad)`](src/TrainableTensorNetwork.hpp)
+    - Delegates to `BlockSequence::BatchedBackwardFrom<Batch, I>`
 
 - ***TrainableTensorNetwork::BatchedBackwardAll*** - [
-  `template<size_t Batch> void TrainableTensoeNetwork::BatchedBackwardAll(const BatchedActivations<Batch> &A, const PrependBatch<Batch, OutputTensor>::type &grad)`](src/TrainableTensorNetwork.hpp)
-    - Calls `TrainableTensorNetwork::batched_backward_impl`, which backpropagates gradient via
-      `ConcreteBlock::BatchedBackward` calls
-    - Gradients are assumed stored and managed by `ConcreteBlock`s with `Param` members
-
-
-- ***TrainableTensorNetwork::batched_backward_impl*** - [
-  `template<size_t Batch, size_t I, typename Delta> requires IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, BatchedActivationsTuple<Batch> > > void TrainableTensorNetwork::batched_backward_impl(const BatchedActivationsTuple<Batch> &A, const Delta &delta)`](src/TrainableTensorNetwork.hpp)
-    - Starts with `Delta` batched-prepended `Tensor`, the batched derivatives of the
-      `Loss` with respect to the batch-prepended `OutputTensor`
-    - Same logic as `TrainableTensorNetwork::backward_impl` but calling `ConcreteBlock::BatchedBackward` instead
-
-- ***TrainableTensorNetwork::Update*** - [
-  `void TrainableTensorNetwork::Update(float lr)`](src/TrainableTensorNetwork.hpp)
-    - Calls `mAdam_.step()`, calls `UpdateAll` on each `ConcreteBlock`'s `all_params()`, passing `mAdam_` and `lr`
+  `template<size_t Batch> void TrainableTensorNetwork::BatchedBackwardAll(const BatchedActivations<Batch> &A, const PrependBatch<Batch, OutputTensor>::type &grad)`](src/TrainableTensorNetwork.hpp)
+    - Delegates to `BlockSequence::BatchedBackwardAll<Batch>`
 
 - ***TrainableTensorNetwork::ZeroGrad*** - [`void TrainableTensorNetwork::ZeroGrad()`](src/TrainableTensorNetwork.hpp)
-    - Calls `ZeroAllGrads` on each `ConcreteBlock`'s `all_params()`
+    - Delegates to `BlockSequence::ZeroGrad`
 
+### Optimizer
+
+- ***TrainableTensorNetwork::Update*** - [
+  `void TrainableTensorNetwork::Update(const float lr)`](src/TrainableTensorNetwork.hpp)
+    - Calls `mAdam_.step()`, then `UpdateAll` (from [`NetworkUtil.hpp`](src/NetworkUtil.hpp)) on
+      `mSeq_.all_params()` with `mAdam_` and `lr`
+
+### Training
 
 - ***TrainableTensorNetwork::TrainStep*** - [
   `void TrainableTensorNetwork::TrainStep(const InputTensor &x, const OutputTensor &grad, const float lr)`](src/TrainableTensorNetwork.hpp)
-    - Inference -> ZeroGrad -> BackwardAll -> Update
-    - Assumes `grad` is `dLoss/dOutputTensor`
+    - `ForwardAll` -> `ZeroGrad` -> `BackwardAll` -> `Update`
+    - `grad` is `dLoss/dOutputTensor`, computed externally
 
-- ***TrainableTensorNetwork::BatchedTrainStep*** - [
+- ***TrainableTensorNetwork::BatchTrainStep*** - [
   `template<size_t Batch> void TrainableTensorNetwork::BatchTrainStep(const PrependBatch<Batch, InputTensor>::type &X, const PrependBatch<Batch, OutputTensor>::type &grad, const float lr)`](src/TrainableTensorNetwork.hpp)
-    - Batched Inference -> ZeroGrad -> BatchedBackwardAll -> Update
-    - Assumes `grad` is batched `dLoss/dOutputTensor`
-
+    - Batched `ForwardAll` -> `ZeroGrad` -> `BatchedBackwardAll` -> `Update`
+    - `grad` is batched `dLoss/dOutputTensor`, computed externally
 
 - ***TrainableTensorNetwork::Fit*** - [
   `template<typename Loss> float TrainableTensorNetwork::Fit(const InputTensor &x, const OutputTensor &target, const float lr)`](src/TrainableTensorNetwork.hpp)
     - Parameterized by `Loss` (satisfying
-      `LossFunction<Loss, OutputTensor>`), runs Inference, calculates loss, then backpropagates and updates like
-      `TrainStep`
+      `LossFunction<Loss, OutputTensor>`)
+    - Computes loss and grad internally, then runs
+      `TrainStep`-equivalent; returns loss value
 
 - ***TrainableTensorNetwork::BatchFit*** - [
   `template<typename Loss, size_t Batch> float TrainableTensorNetwork::BatchFit(const PrependBatch<Batch, InputTensor>::type &X, const PrependBatch<Batch, OutputTensor>::type &Y, const float lr)`](src/TrainableTensorNetwork.hpp)
-    - Parameterized by `Loss` (satisfying
-      `LossFunction<Loss, OutputTensor>`), runs Batched Inference, calculates loss, then batch backpropagates and updates like
-      `TrainStep`
+    - Batched counterpart to
+      `Fit`
+    - Averages per-sample gradients across the batch before backpropagating, returns mean loss
 
 - ***TrainableTensorNetwork::RunEpoch*** - [
   `template<typename Loss, size_t Batch, size_t N, size_t... InDims, size_t... OutDims> float TrainableTensorNetwork::RunEpoch(const Tensor<N, InDims...> &X_data, const Tensor<N, OutDims...> &Y_data, std::mt19937 &rng, const float lr)`](src/TrainableTensorNetwork.hpp)
     - Run one full epoch: `Steps = N / Batch` rounds of `BatchFit`, returning average loss per step
     - `X_data` and `Y_data` must already be in network shape (`Tensor<InDims...> == InputTensor`,
-      `Tensor<OutDims...> == OutputTensor`); enforced by `static_assert`
-    - Samples `Batch` indices per step from `[0, N)` using `rng`, applied to both `X_data` and
-      `Y_data` in the same loop to keep them in sync
+      `Tensor<OutDims...> == OutputTensor`), enforced by `static_assert`
+    - Creates temporary batch `Tensor<Batch, InDims...>`/`Tensor<Batch, OutDims...>` pairs where all `Batch` indices
+    -
+    - and samples `Batch` indices per step from `[0, N)` using `rng`, applied to both `Tensor`s in the same loop
 
 ### Serialization and Snapshot
 
 - ***TrainableTensorNetwork::Save*** - [
   `void TrainableTensorNetwork::Save(const std::string &path) const`](src/TrainableTensorNetwork.hpp)
-    - Calls `SaveAll` on each `ConcreteBlock::all_params()`, which calls `Tensor` binary serialization function
+    - Delegates to `BlockSequence::Save`
 
 - ***TrainableTensorNetwork::Load*** - [
   `void TrainableTensorNetwork::Load(const std::string &path)`](src/TrainableTensorNetwork.hpp)
-    - Calls `LoadAll` on each `ConcreteBlock::all_params()`, which calls `Tensor` binary serialization function
+    - Delegates to `BlockSequence::Load`
 
 - ***TrainableTensorNetwork::Snap*** - [
   `[[nodiscard]] SnapshotMap TrainableTensorNetwork::Snap() const`](src/TrainableTensorNetwork.hpp)
-    - Create and fill `SnapshotMap` for each block, calling `peek()` for any `PeekableBlock`s
+    - Delegates to `BlockSequence::Snap`
 
 ---
 
-## [BlockComposition.hpp](src/BlockComposition.hpp): Network Creation, Composition, CompositeBlock object
+## [BlockComposition.hpp](src/BlockComposition.hpp): Network Creation and Composition
 
-### CompositeBlock
+### `struct ComposeBlocks<typename... Recipes>`
 
-- ***CompositeBlock*** - [`template<ConcreteBlock... Blocks> class CompositeBlock`](src/BlockComposition.hpp)
-    - Created by `ComposeBlocks`, which takes in `Block` (recipe) objects, to stitch their inner
-      `ConcreteBlock`s into a new composite `ConcreteBlock`, which satisfies `concept` to join a
-      `TrainableTensorNetwork`
-    - Essentially a thin sub-`TrainableTensorNetwork`
-    - Very useful for `Parallel` (and its descendents), which calls `Forward` on two
-      `ConcreteBlock`s and sums their result
+- ***ComposeBlocks*** - [`template<typename... Recipes> struct ComposeBlocks`](src/BlockComposition.hpp)
+    - `Block` recipe that takes a variadic list of `Block` recipes, resolves them into concrete blocks via
+      `BuildChain`, and produces a `BlockSequence<Bs...>` as its `Resolve` type
+    - The resulting `BlockSequence` satisfies `ConcreteBlock`, so a `ComposeBlocks` can be nested inside `Parallel`,
+      `Residual`, or any other composite block
 
+### Network Combination and Building
 
 - ***CombineNetworks*** - [
-  `template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB> struct CombineNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> >`](src/BlockComposition.hpp)
-    - Unpacks two `ConcreteBlock...` arg lists into new `TrainableTensorNetwork` composed of the two respective sets of
-      `ConcreteBlock`s
-    - Asserts
-      `std::is_same_v<typename TrainableTensorNetwork<BlocksA...>::OutputTensor, typename TrainableTensorNetwork<BlocksB...>::InputTensor>`
+  `template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB> struct CombineNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...>>`](src/BlockComposition.hpp)
+    - Unpacks two `ConcreteBlock...` arg lists into a new `TrainableTensorNetwork` composed of both sets
+    - Asserts `std::is_same_v<OutputTensor of A, InputTensor of B>`
 
 - ***NetworkBuilder*** - [`template<typename In, typename... Recipes> struct NetworkBuilder`](src/BlockComposition.hpp)
-    - Takes in variadic arg list of `Block` recipes (including `Input` as the first), flattens and opens up
-      `Block`s into a `BlockTuple` of `ConcreteBlock`s, and defines a `TrainableTensorNetwork` type
+    - Takes an `Input<Dims...>` and a variadic list of `Block` recipes; resolves them via `BuildChain` into a
+      `TrainableTensorNetwork` type alias at `NetworkBuilder::type`
 
 ## [Snapshot.hpp](src/Snapshot.hpp): Activation Snapshots
 
@@ -1727,9 +1864,6 @@ Runtime-typed storage for capturing named activation tensors. `SnapshotEntry` ho
 `float` copy — erasing the compile-time type so snapshots can be stored in a uniform `SnapshotMap` (
 `unordered_map<string, SnapshotEntry>`). Used by visualization and debugging tools.
 
-- ***snap_add*** — [
-  `template<size_t... Dims> void snap_add(SnapshotMap& out, const std::string& key, const Tensor<Dims...>& t)`](src/Snapshot.hpp)
-    - #########
 
 --- 
 
