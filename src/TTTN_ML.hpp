@@ -123,7 +123,7 @@ namespace TTTN {
     class SoftmaxBlock;
 
     // @doc: template<size_t Axis, size_t... Dims> class SoftmaxBlock<Axis, Tensor<Dims...> >
-    /** Class representing the concrete block of a  `Softmax` layer in a `TrainableTensorNetwork`, satisfying the `ConcreteBlock` `concept` */
+    /** Class representing the concrete block of a  `Softmax` layer in a `TrainableTensorNetwork`, satisfying the `Block` `concept` */
     template<size_t Axis, size_t... Dims>
     class SoftmaxBlock<Axis, Tensor<Dims...> > {
     public:
@@ -175,7 +175,7 @@ namespace TTTN {
 
     // @doc: template<size_t Axis> struct SoftmaxLayer
     /**
-     * `Block`-compliant recipe struct to create `ConcreteBlock SoftmaxBlock`
+     * `BlockRecipe`-compliant recipe struct to create `Block SoftmaxBlock`
      * Pass in `Axis` of normalization and `Tensor` type whose shape will be preserved from input to output will be deduced
      */
     template<size_t Axis>

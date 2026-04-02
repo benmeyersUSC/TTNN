@@ -30,7 +30,7 @@ namespace TTTN {
 
 
     // @doc: template<typename TensorT> struct Param
-    /** `struct` layer around a `ConcreteBlock` to abstract away management, Adam updates */
+    /** `struct` layer around a `Block` to abstract away management, Adam updates */
     template<typename TensorT>
     struct Param {
         TensorT value{};
@@ -153,8 +153,8 @@ namespace TTTN {
 
     // @doc: template<typename T> concept PeekableBlock
     /**
-     * Opt-in `concept` for `ConcreteBlock`s to be able to expose their internal activations to an owning `TrainableTensorNetwork`
-     * Compliant `ConcreteBlock`s must implement `void peek(SnapshotMap& m, const std::string& s)`
+     * Opt-in `concept` for `Block`s to be able to expose their internal activations to an owning `TrainableTensorNetwork`
+     * Compliant `Block`s must implement `void peek(SnapshotMap& m, const std::string& s)`
      */
     template<typename T>
     concept PeekableBlock = requires(const T &t, SnapshotMap &m, const std::string &s)
@@ -163,16 +163,16 @@ namespace TTTN {
     };
 
 
-    // @doc: template<typename T> concept ConcreteBlock
+    // @doc: template<typename T> concept Block
     /**
-     * Any block in a `TrainableTensorNetwork` must satisfy `ConcreteBlock`:
+     * Any block in a `TrainableTensorNetwork` must satisfy `Block`:
      * Defined `InputTensor` and `OutputTensor` types which are `Tensor` objects
      * `OutputTensor Forward(InputTensor)`
      * `InputTensor Backward(OutputTensor, OutputTensor, InputTensor)`
      * `auto all_params()` and `auto all_params() const`
      * `TrainableTensorNetwork` blocks need not belong to a specific hierarchy; just satisfy this `concept`
      */
-    template<typename T> concept ConcreteBlock =
+    template<typename T> concept Block =
             requires { typename T::InputTensor; } &&
             requires { typename T::OutputTensor; } &&
             IsTensor<typename T::InputTensor> &&
@@ -187,18 +187,6 @@ namespace TTTN {
                 { ct.all_params() }; // const: Save
             };
 
-    // // @doc: template<typename B> concept Block
-    // /**
-    //  * Declarable recipe to define a `ConcreteBlock` in a `TrainableTensorNetwork` template argument list
-    //  * `Block`s must define an `OutputTensor` type and alias a `ConcreteBlock` as `Resolve`
-    //  * `Block` argument lists passed to `NetworkBuilder` will be resolved into full `ConcreteBlock`s with chained `InputTensor` attributes
-    //  */
-    // template<typename B>
-    // concept Block =
-    //         requires { typename B::OutputTensor; } &&
-    //         IsTensor<typename B::OutputTensor> &&
-    //         ConcreteBlock<typename B::template Resolve<typename B::OutputTensor> >;
-    //
 
     // @doc: template<typename TupleT> class ActivationsWrap
     /**
@@ -255,7 +243,7 @@ namespace TTTN {
     // @doc: template<typename Last> struct TensorTupleBuilder<Last>
     /**
      * Recursively build `std::tuple` of `Tensor` objects representing intermediate activations of the network, wrapped by `ActivationsWrap`
-     * Base case: one single `ConcreteBlock` left, whose `InputTensor` and `OutputTensor` are wrapped in a `std::tuple`
+     * Base case: one single `Block` left, whose `InputTensor` and `OutputTensor` are wrapped in a `std::tuple`
      */
     template<typename Last>
     struct TensorTupleBuilder<Last> {
@@ -282,7 +270,7 @@ namespace TTTN {
     // @doc: template<size_t Batch, typename Last> struct BatchedTensorTupleBuilder<Batch, Last>
     /**
      * For `Batched` functions and use-cases, create a `Batched` version of a `std::tuple` of activations by passing `PrependBatch<Batch, ...>` on all `Tensor`s that `TensorTupleBuilder` adds raw
-     * Base case: one single `ConcreteBlock` left, whose `InputTensor` and `OutputTensor` are wrapped in `PrependBatch<Batch, ...>` and then in a `std::tuple`
+     * Base case: one single `Block` left, whose `InputTensor` and `OutputTensor` are wrapped in `PrependBatch<Batch, ...>` and then in a `std::tuple`
      */
     template<size_t Batch, typename Last>
     struct BatchedTensorTupleBuilder<Batch, Last> {

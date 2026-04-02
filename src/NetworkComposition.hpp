@@ -2,50 +2,50 @@
 #include "TrainableTensorNetwork.hpp"
 
 namespace TTTN {
-    // @doc: template<typename B> concept Block
+    // @doc: template<typename B> concept BlockRecipe
     /**
-     * Declarable recipe to define a `ConcreteBlock` in a `TrainableTensorNetwork` template argument list
-     * `Block`s must define an `OutputTensor` type and alias a `ConcreteBlock` as `Resolve`
-     * `Block` argument lists passed to `NetworkBuilder` will be resolved into full `ConcreteBlock`s with chained `InputTensor` attributes
+     * Declarable recipe to define a `Block` in a `TrainableTensorNetwork` template argument list
+     * `BlockRecipe`s must define an `OutputTensor` type and alias a `Block` as `Resolve`
+     * `BlockRecipe` argument lists passed to `NetworkBuilder` will be resolved into full `Block`s with chained `InputTensor` attributes
      */
     template<typename B>
-    concept Block =
+    concept BlockRecipe =
             requires { typename B::OutputTensor; } &&
             IsTensor<typename B::OutputTensor> &&
-            ConcreteBlock<typename B::template Resolve<typename B::OutputTensor> >;
+            Block<typename B::template Resolve<typename B::OutputTensor> >;
 
     // @doc: template<typename Tuple> struct ConcretesToSequence
     /**
-     * Specialization: `template<ConcreteBlock... Bs> struct ConcretesToSequence<std::tuple<Bs...>>`
-     * Unpacks a `std::tuple<ConcreteBlock...>` into `BlockSequence<Bs...>`
+     * Specialization: `template<Block... Bs> struct ConcretesToSequence<std::tuple<Bs...>>`
+     * Unpacks a `std::tuple<Block...>` into `BlockSequence<Bs...>`
      * Used by `ComposeBlocks::ResolveImpl`
      */
     template<typename Tuple>
     struct ConcretesToSequence;
 
-    template<ConcreteBlock... Bs>
-    struct ConcretesToSequence<std::tuple<Bs...>> {
+    template<Block... Bs>
+    struct ConcretesToSequence<std::tuple<Bs...> > {
         using type = BlockSequence<Bs...>;
     };
 
     // @doc: template<typename Tuple> struct ConcretesToNetwork
     /**
-     * Specialization: `template<ConcreteBlock... Bs> struct ConcretesToNetwork<std::tuple<Bs...>>`
-     * Unpacks a `std::tuple<ConcreteBlock...>` into `TrainableTensorNetwork<Bs...>`
+     * Specialization: `template<Block... Bs> struct ConcretesToNetwork<std::tuple<Bs...>>`
+     * Unpacks a `std::tuple<Block...>` into `TrainableTensorNetwork<Bs...>`
      * Used by `NetworkBuilder`
      */
     template<typename Tuple>
     struct ConcretesToNetwork;
 
-    template<ConcreteBlock... Bs>
-    struct ConcretesToNetwork<std::tuple<Bs...>> {
+    template<Block... Bs>
+    struct ConcretesToNetwork<std::tuple<Bs...> > {
         using type = TrainableTensorNetwork<Bs...>;
     };
 
-    // @doc: template<typename... Recipes> requires (Block<Recipes> && ...) struct ComposeBlocks
-    /** Struct containing `ResolveChain` methods (several specializations) which unpack variadic lists of `Block`s into a `BlockSequence` type, saved in `ComposeBlocks::type` */
+    // @doc: template<typename... Recipes> requires (BlockRecipe<Recipes> && ...) struct ComposeBlocks
+    /** Struct containing `ResolveChain` methods (several specializations) which unpack variadic lists of `BlockRecipe`s into a `BlockSequence` type, saved in `ComposeBlocks::type` */
     template<typename... Recipes>
-        requires (Block<Recipes> && ...)
+        requires (BlockRecipe<Recipes> && ...)
     struct ComposeBlocks {
         template<typename In, typename... Rs>
         struct ResolveChain;
@@ -53,9 +53,9 @@ namespace TTTN {
 
         // @doc: template<typename In, typename Last> struct ComposeBlocks::ResolveChain<In, Last>
         /**
-         * Wraps a variadic list of `Block`s into a `std::tuple` of `ConcreteBlock`s
-         * Used exclusively in `ResolveImpl` to turn unpack `Block` recipes into a `BlockSequence`
-         * Base case, resolving the last `Block`'s `OutputTensor` by passing in the penultimate `Block`'s `OutputTensor` and wrapping `Resolved` in a `std::tuple`
+         * Wraps a variadic list of `BlockRecipe`s into a `std::tuple` of `Block`s
+         * Used exclusively in `ResolveImpl` to unpack `BlockRecipe`s into a `BlockSequence`
+         * Base case, resolving the last `BlockRecipe`'s `OutputTensor` by passing in the penultimate `BlockRecipe`'s `OutputTensor` and wrapping `Resolved` in a `std::tuple`
          */
         template<typename In, typename Last>
         struct ResolveChain<In, Last> {
@@ -66,8 +66,8 @@ namespace TTTN {
 
         // @doc: template<typename In, typename First, typename... Rest> struct ComposeBlocks::ResolveChain<In, First, Rest...>
         /**
-         * Wraps a variadic list of `Block`s into a `std::tuple` of `ConcreteBlock`s
-         * Used exclusively in `ResolveImpl` to turn unpack `Block` recipes into a `BlockSequence`
+         * Wraps a variadic list of `BlockRecipe`s into a `std::tuple` of `Block`s
+         * Used exclusively in `ResolveImpl` to unpack `BlockRecipe`s into a `BlockSequence`
          * Recursive case, resolving `First` by passing in `In` (starts as `IsTensor<InputT>` in `ResolveImpl`), then defines `Tail` by recursing on `Resolve`, finally wrapping `Resolved` and `Tail` in `std::tuple_cat`
          */
         template<typename In, typename First, typename... Rest>
@@ -86,7 +86,7 @@ namespace TTTN {
 
         // @doc: template<typename Last> struct ComposeBlocks::LastOutputTensor<Last>
         /**
-         * Custom last-in-variadic getter, assuming that template args are `Block` recipes, recursing until the `Last` is reached and finally grabbing `Last::OutputTensor`
+         * Custom last-in-variadic getter, assuming that template args are `BlockRecipe`s, recursing until the `Last` is reached and finally grabbing `Last::OutputTensor`
          * Base case: `type = Last::OutputTensor`
          */
         template<typename Last>
@@ -96,7 +96,7 @@ namespace TTTN {
 
         // @doc: template<typename First, typename... Rest> struct ComposeBlocks::LastOutputTensor<First, Rest...>
         /**
-         * Custom last-in-variadic getter, assuming that template args are `Block` recipes, recursing until the `Last` is reached and finally grabbing `Last::OutputTensor`
+         * Custom last-in-variadic getter, assuming that template args are `BlockRecipe`s, recursing until the `Last` is reached and finally grabbing `Last::OutputTensor`
          * Recursive case: `type = LastOutputTensor<Rest...>::type`
          */
         template<typename First, typename... Rest>
@@ -105,13 +105,13 @@ namespace TTTN {
         };
 
         // @doc: using ComposeBlocks::OutputTensor
-        /** Type alias for `OutputTensor` of last `Block` in `Recipes...` */
+        /** Type alias for `OutputTensor` of last `BlockRecipe` in `Recipes...` */
         using OutputTensor = LastOutputTensor<Recipes...>::type;
 
         // @doc: template<typename InputT> requires IsTensor<InputT> struct ComposeBlocks::ResolveImpl
         /**
          * Implementation helper to take in `IsTensor<InputT>` and `Recipes...`
-         * Runs `ResolveChain` to get a `std::tuple` of `ConcreteBlock`s, then calls `ConcretesToSequence` to produce `BlockSequence`, stored in `type`
+         * Runs `ResolveChain` to get a `std::tuple` of `Block`s, then calls `ConcretesToSequence` to produce `BlockSequence`, stored in `type`
          */
         template<typename InputT> requires IsTensor<InputT>
         struct ResolveImpl {
@@ -121,7 +121,7 @@ namespace TTTN {
         };
 
         // @doc: template<typename InputT> requires IsTensor<InputT> using ComposeBlocks::Resolve
-        /** Culmination: in compliance with `Block`, `ComposeBlocks::Resolve` takes in `IsTensor<InputT>` and resolves to a `ConcreteBlock<BlockSequence>` */
+        /** Culmination: in compliance with `BlockRecipe`, `ComposeBlocks::Resolve` takes in `IsTensor<InputT>` and resolves to a `Block<BlockSequence>` */
         template<typename InputT> requires IsTensor<InputT>
         using Resolve = ResolveImpl<InputT>::type;
     };
@@ -130,12 +130,12 @@ namespace TTTN {
     template<typename NetA, typename NetB>
     struct ComposeNetworks;
 
-    // @doc: template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB> struct ComposeNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> >
+    // @doc: template<Block... BlocksA, Block... BlocksB> struct ComposeNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> >
     /**
      * `static_assert` that `std::is_same_v< typename TrainableTensorNetwork<BlocksA...>::OutputTensor, typename TrainableTensorNetwork<BlocksB...>::InputTensor>`
      * Simple unpack: `type = TrainableTensorNetwork<BlocksA..., BlocksB...>`
      */
-    template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB>
+    template<Block... BlocksA, Block... BlocksB>
     struct ComposeNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> > {
         static_assert(
             std::is_same_v<
@@ -146,33 +146,33 @@ namespace TTTN {
     };
 
 
-    template<typename In, Block... Recipes>
+    template<typename In, BlockRecipe... Recipes>
     struct BuildChain;
 
-    // @doc: template<typename Prev, Block Last> struct BuildChain<Prev, Last>
+    // @doc: template<typename Prev, BlockRecipe Last> struct BuildChain<Prev, Last>
     /**
-     * Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
+     * Build `std::tuple` of `Block`s from a variadic argument list of `BlockRecipe`s
      * Base case for recursive `BuildChain`
      */
-    template<typename Prev, Block Last>
+    template<typename Prev, BlockRecipe Last>
     struct BuildChain<Prev, Last> {
         using type = std::tuple<typename Last::template Resolve<typename Prev::OutputTensor> >;
     };
 
-    // @doc: template<typename Prev, Block Next, Block... Rest> struct BuildChain<Prev, Next, Rest...>
+    // @doc: template<typename Prev, BlockRecipe Next, BlockRecipe... Rest> struct BuildChain<Prev, Next, Rest...>
     /**
-     * Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
+     * Build `std::tuple` of `Block`s from a variadic argument list of `BlockRecipe`s
      * Recursive case: `std::tuple_cat` of
-     * first `Block`'s `ConcreteBlock` as given by its `Resolve` member
-     * next `Block`s' `ConcreteBlock`s
+     * first `BlockRecipe`'s `Block` as given by its `Resolve` member
+     * next `BlockRecipe`s' `Block`s
      * Used by `ApplyBuildChain`
      */
-    template<typename Prev, Block Next, Block... Rest>
+    template<typename Prev, BlockRecipe Next, BlockRecipe... Rest>
     struct BuildChain<Prev, Next, Rest...> {
-        // get next's ConcreteBlock
+        // get next's Block
         using Resolved = Next::template Resolve<typename Prev::OutputTensor>;
 
-        // recurse down, grabbing next's ConcreteBlock
+        // recurse down, grabbing next's Block
         using type = decltype(std::tuple_cat(
             std::declval<std::tuple<Resolved> >(),
             std::declval<typename BuildChain<Resolved, Rest...>::type>()
@@ -181,7 +181,7 @@ namespace TTTN {
 
     // @doc: template<size_t... Dims> struct Input
     /**
-     * `Block` type which begins and allows a variadic argument list of `Block`s to be processed by `BuildChain` via `ApplyBuildChain`
+     * `BlockRecipe` type which begins and allows a variadic argument list of `BlockRecipe`s to be processed by `BuildChain` via `ApplyBuildChain`
      * Defines `OutputTensor = Tensor<Dims...>` to begin chain
      */
     template<size_t... Dims>
@@ -193,24 +193,24 @@ namespace TTTN {
     template<typename In, typename Tuple>
     struct ApplyBuildChain;
 
-    // @doc: template<typename In, Block... Rs> struct ApplyBuildChain<In, std::tuple<Rs...> >
+    // @doc: template<typename In, BlockRecipe... Rs> struct ApplyBuildChain<In, std::tuple<Rs...> >
     /**
-     * Expects an `Block<Input>` first and a trailing variadic list of `Block`s passes them to `BuildChain`
-     * Used in `NetworkBuilder` to define `BlockTuple`, a `TrainableTensorNetwork`'s tuple of `ConcreteBlock`s
+     * Expects an `BlockRecipe<Input>` first and a trailing variadic list of `BlockRecipe`s passes them to `BuildChain`
+     * Used in `NetworkBuilder` to define `BlockTuple`, a `TrainableTensorNetwork`'s tuple of `Block`s
      */
-    template<typename In, Block... Rs>
+    template<typename In, BlockRecipe... Rs>
     struct ApplyBuildChain<In, std::tuple<Rs...> > {
         using type = BuildChain<In, Rs...>::type;
     };
 
 
-    // @doc: template<typename In, typename... Recipes> requires requires { typename In::OutputTensor; } && IsTensor<typename In::OutputTensor> && (Block<Recipes> && ...) struct NetworkBuilder
+    // @doc: template<typename In, typename... Recipes> requires requires { typename In::OutputTensor; } && IsTensor<typename In::OutputTensor> && (BlockRecipe<Recipes> && ...) struct NetworkBuilder
     /**
-     * Takes variadic list of `Block...` recipes and create a `TrainableTensorNetwork`
-     * Calls `ApplyBuildChain` to get a `std::tuple` of `ConcreteBlock`s, then calls `ConcretesToNetwork`
+     * Takes variadic list of `BlockRecipe`s and creates a `TrainableTensorNetwork`
+     * Calls `ApplyBuildChain` to get a `std::tuple` of `Block`s, then calls `ConcretesToNetwork`
      */
     template<typename In, typename... Recipes> requires
-        requires { typename In::OutputTensor; } && IsTensor<typename In::OutputTensor> && (Block<Recipes> && ...)
+        requires { typename In::OutputTensor; } && IsTensor<typename In::OutputTensor> && (BlockRecipe<Recipes> && ...)
     struct NetworkBuilder {
         using BlockTuple = ApplyBuildChain<In, std::tuple<Recipes...> >::type;
         using type = ConcretesToNetwork<BlockTuple>::type;

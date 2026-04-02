@@ -4,13 +4,13 @@
 #include "TTTN_ML.hpp"
 
 namespace TTTN {
-    // @doc: template<ConcreteBlock... Blocks> class TrainableTensorNetwork::TrainableTensorNetwork
+    // @doc: template<Block... Blocks> class TrainableTensorNetwork::TrainableTensorNetwork
     /**
      * Capstone object of the library; owns a `BlockSequence<Blocks...> mSeq_` and an `AdamState mAdam_`
      * All type aliases (`InputTensor`, `OutputTensor`, `Activations`, etc.) and inference/backward/serialization methods delegate directly to `mSeq_`
      * Exclusively owns the optimizer state and loss-parameterized training entry points
      */
-    template<ConcreteBlock... Blocks>
+    template<Block... Blocks>
     class TrainableTensorNetwork {
         static_assert(sizeof...(Blocks) >= 1, "Need at least one block");
 

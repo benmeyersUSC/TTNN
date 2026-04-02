@@ -4,9 +4,9 @@
 #include "NetworkUtil.hpp"
 
 namespace TTTN {
-    // @doc: template<ConcreteBlock... Blocks> class BlockSequence
-    /** Unified sequential core: wraps a shape-compliant chain of `ConcreteBlock`s and provides both the `ConcreteBlock` interface (for nesting) and the explicit activation API (for top-level training) */
-    template<ConcreteBlock... Blocks>
+    // @doc: template<Block... Blocks> class BlockSequence
+    /** Unified sequential core: wraps a shape-compliant chain of `Block`s and provides both the `Block` interface (for nesting) and the explicit activation API (for top-level training) */
+    template<Block... Blocks>
     class BlockSequence {
         static_assert(sizeof...(Blocks) >= 1, "BlockSequence needs at least one block");
 
@@ -23,7 +23,7 @@ namespace TTTN {
         using BlockTuple = std::tuple<Blocks...>;
 
         // @doc: static constexpr bool BlockSequence::check_connected()
-        /** Immediate `static_assert` function to ensure that `ConcreteBlock... Blocks` have compliant shapes: `std::is_same_v<typename std::tuple_element_t<Is, BlockTuple>::OutputTensor, typename std::tuple_element_t<Is + 1, BlockTuple>::InputTensor> && ...)` */
+        /** Immediate `static_assert` function to ensure that `Block... Blocks` have compliant shapes: `std::is_same_v<typename std::tuple_element_t<Is, BlockTuple>::OutputTensor, typename std::tuple_element_t<Is + 1, BlockTuple>::InputTensor> && ...)` */
         static constexpr bool check_connected() {
             if constexpr (N == 1) return true;
             else
@@ -72,15 +72,15 @@ namespace TTTN {
 
     private:
         // @doc: BlockSequence::mBlocks
-        /** Default-constructed `BlockTuple` containing actual `ConcreteBlock` objects */
+        /** Default-constructed `BlockTuple` containing actual `Block` objects */
         BlockTuple mBlocks;
         // @doc: mutable BlockSequence::mActs
-        /** Mutable `ActivationsTuple` cache used by the `ConcreteBlock` interface (`Forward`/`Backward`) so that `BlockSequence` can be used as a nested block without the caller managing activations */
+        /** Mutable `ActivationsTuple` cache used by the `Block` interface (`Forward`/`Backward`) so that `BlockSequence` can be used as a nested block without the caller managing activations */
         mutable ActivationsTuple mActs{};
 
 
         // @doc: template<size_t I = 0> void BlockSequence::forward_impl(ActivationsTuple &A) const
-        /** Private implementation; recursively fills `ActivationsTuple &A` by calling each `ConcreteBlock::Forward` in order and storing result */
+        /** Private implementation; recursively fills `ActivationsTuple &A` by calling each `Block::Forward` in order and storing result */
         template<size_t I = 0>
         void forward_impl(ActivationsTuple &A) const {
             if constexpr (I < N) {
@@ -92,7 +92,7 @@ namespace TTTN {
         // @doc: template<size_t I, typename Delta> requires IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple>> auto BlockSequence::backward_impl(const ActivationsTuple &A, const Delta &delta)
         /**
          * Starts with `Delta` (derivative of loss w.r.t. activation `I`), recurses down to `I == 1`, returning `InputTensor` gradient
-         * At each `I`, calls `ConcreteBlock::Backward(delta, A[I], A[I-1])` or `ConcreteBlock::Backward(gradient wrt this block's output, this block's output, this block's input / previous block's output)`
+         * At each `I`, calls `Block::Backward(delta, A[I], A[I-1])` or `Block::Backward(gradient wrt this block's output, this block's output, this block's input / previous block's output)`
          */
         template<size_t I, typename Delta> requires
             IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple> >
@@ -107,7 +107,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch, size_t I = 0> void BlockSequence::batched_forward_impl(BatchedActivationsTuple<Batch> &A) const
-        /** Private implementation; recursively fills `BatchedActivationsTuple &A` by calling each `ConcreteBlock::BatchedForward` in order */
+        /** Private implementation; recursively fills `BatchedActivationsTuple &A` by calling each `Block::BatchedForward` in order */
         template<size_t Batch, size_t I = 0>
         void batched_forward_impl(BatchedActivationsTuple<Batch> &A) const {
             if constexpr (I < N) {
@@ -117,7 +117,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch, size_t I, typename Delta> requires IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, BatchedActivationsTuple<Batch>>> auto BlockSequence::batched_backward_impl(const BatchedActivationsTuple<Batch> &A, const Delta &delta)
-        /** Same logic as `backward_impl` but calls `ConcreteBlock::BatchedBackward` at each step */
+        /** Same logic as `backward_impl` but calls `Block::BatchedBackward` at each step */
         template<size_t Batch, size_t I, typename Delta> requires
             IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, BatchedActivationsTuple<Batch> > >
         auto batched_backward_impl(const BatchedActivationsTuple<Batch> &A, const Delta &delta) {
@@ -133,7 +133,7 @@ namespace TTTN {
         BlockSequence() = default;
 
         // @doc: template<size_t I> const auto &BlockSequence::block() const
-        /** Get a `const &` to the `I`-th `ConcreteBlock` in `BlockSequence::mBlocks` */
+        /** Get a `const &` to the `I`-th `Block` in `BlockSequence::mBlocks` */
         template<size_t I>
         const auto &block() const { return std::get<I>(mBlocks); }
 
@@ -154,7 +154,7 @@ namespace TTTN {
         /**
          * Forward pass returning `OutputTensor`
          * Delegates to `ForwardAll` and extracts back element
-         * Satisfies `ConcreteBlock` interface; uses `mActs` cache so a caller can follow with `Backward`
+         * Satisfies `Block` interface; uses `mActs` cache so a caller can follow with `Backward`
          */
         [[nodiscard]] OutputTensor Forward(const InputTensor &x) const {
             std::get<0>(mActs) = x;
@@ -171,7 +171,7 @@ namespace TTTN {
         // @doc: template<size_t Batch> [[nodiscard]] PrependBatch<Batch, OutputTensor>::type BlockSequence::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const
         /**
          * Batched forward pass returning `PrependBatch<Batch, OutputTensor>`; extracted from back of `BatchedForwardAll`
-         * Satisfies `ConcreteBlock` interface
+         * Satisfies `Block` interface
          */
         template<size_t Batch>
         [[nodiscard]] PrependBatch<Batch, OutputTensor>::type
@@ -222,7 +222,7 @@ namespace TTTN {
         // @doc: void BlockSequence::BackwardAll(const Activations &A, const OutputTensor &grad)
         /**
          * Delegates to `BackwardFrom<NumBlocks>` - full backward from output to input
-         * Gradients are accumulated into `ConcreteBlock` `Param` members
+         * Gradients are accumulated into `Block` `Param` members
          */
         void BackwardAll(const Activations &A, const OutputTensor &grad) {
             BackwardFrom<N>(A, grad);
@@ -256,7 +256,7 @@ namespace TTTN {
 
 
         // @doc: void BlockSequence::ZeroGrad()
-        /** Calls `ZeroAllGrads` on each `ConcreteBlock`'s `all_params()` */
+        /** Calls `ZeroAllGrads` on each `Block`'s `all_params()` */
         void ZeroGrad() {
             [&]<size_t... Is>(std::index_sequence<Is...>) {
                 (ZeroAllGrads(std::get<Is>(mBlocks).all_params()), ...);
@@ -265,7 +265,7 @@ namespace TTTN {
 
 
         // @doc: [[nodiscard]] SnapshotMap BlockSequence::Snap() const
-        /** Calls `SaveAll` on each `ConcreteBlock::all_params()`, which calls `Tensor` binary serialization */
+        /** Calls `SaveAll` on each `Block::all_params()`, which calls `Tensor` binary serialization */
         [[nodiscard]] SnapshotMap Snap() const {
             SnapshotMap out;
             [&]<size_t... Is>(std::index_sequence<Is...>) {
@@ -282,7 +282,7 @@ namespace TTTN {
 
 
         // @doc: void BlockSequence::Save(const std::string &path) const
-        /** Calls `SaveAll` on each `ConcreteBlock::all_params()`, which calls `Tensor` binary serialization */
+        /** Calls `SaveAll` on each `Block::all_params()`, which calls `Tensor` binary serialization */
         void Save(const std::string &path) const {
             std::ofstream f(path, std::ios::binary);
             if (!f) {
@@ -294,7 +294,7 @@ namespace TTTN {
         }
 
         // @doc: void BlockSequence::Load(const std::string &path)
-        /** Calls `LoadAll` on each `ConcreteBlock::all_params()`, which calls `Tensor` binary deserialization */
+        /** Calls `LoadAll` on each `Block::all_params()`, which calls `Tensor` binary deserialization */
         void Load(const std::string &path) {
             std::ifstream f(path, std::ios::binary);
             if (!f) {

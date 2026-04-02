@@ -186,7 +186,7 @@ Replace the parallel CPU dispatch (
 15. [Snapshot.hpp: Activation Snapshots](#snapshothpp--activation-snapshots)
 16. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
 17. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
-18. [MoreNets.hpp: More helper ConcreteBlock types](#morenetshpp)
+18. [MoreNets.hpp: More helper Block types](#morenetshpp)
 19. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
 
 ---
@@ -1216,7 +1216,7 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 - ***SoftmaxBlock*** - [
   `template<size_t Axis, size_t... Dims> class SoftmaxBlock<Axis, Tensor<Dims...> >`](src/TTTN_ML.hpp)
     - Class representing the concrete block of a  `Softmax` layer in a `TrainableTensorNetwork`, satisfying the
-      `ConcreteBlock` `concept`
+      `Block` `concept`
 
 - ***SoftmaxBlock::Forward*** — [`OutputTensor SoftmaxBlock::Forward(const InputTensor &x) const`](src/TTTN_ML.hpp)
     - Calls `Softmax<Axis>(x)`
@@ -1240,7 +1240,7 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 
 
 - ***SoftmaxLayer*** - [`template<size_t Axis> struct SoftmaxLayer`](src/TTTN_ML.hpp)
-    - `Block`-compliant recipe struct to create `ConcreteBlock SoftmaxBlock`
+    - `BlockRecipe`-compliant recipe struct to create `Block SoftmaxBlock`
     - Pass in `Axis` of normalization and
       `Tensor` type whose shape will be preserved from input to output will be deduced
 
@@ -1314,8 +1314,8 @@ Defines the foundational block concepts that gate the type system and the `Activ
 
 ### Concepts
 
-- ***ConcreteBlock*** - [`template<typename T> concept ConcreteBlock`](src/NetworkUtil.hpp)
-    - Any block in a `TrainableTensorNetwork` must satisfy `ConcreteBlock`:
+- ***Block*** - [`template<typename T> concept Block`](src/NetworkUtil.hpp)
+    - Any block in a `TrainableTensorNetwork` must satisfy `Block`:
         - Defined `InputTensor` and `OutputTensor` types which are `Tensor` objects
         - `OutputTensor Forward(InputTensor)`
         - `InputTensor Backward(OutputTensor, OutputTensor, InputTensor)`
@@ -1323,9 +1323,9 @@ Defines the foundational block concepts that gate the type system and the `Activ
     - `TrainableTensorNetwork` blocks need not belong to a specific hierarchy; just satisfy this `concept`
 
 - ***PeekableBlock*** - [`template<typename T> concept PeekableBlock`](src/NetworkUtil.hpp)
-    - Opt-in `concept` for `ConcreteBlock`s to be able to expose their internal activations to an owning
+    - Opt-in `concept` for `Block`s to be able to expose their internal activations to an owning
       `TrainableTensorNetwork`
-    - Compliant `ConcreteBlock`s must implement `void peek(SnapshotMap& m, const std::string& s)`
+    - Compliant `Block`s must implement `void peek(SnapshotMap& m, const std::string& s)`
 
 
 - ***ActivationsWrap*** - [`template<typename TupleT> class ActivationsWrap`](src/NetworkUtil.hpp)
@@ -1363,7 +1363,7 @@ Defines the foundational block concepts that gate the type system and the `Activ
 - ***TensorTupleBuilder*** - [`template<typename Last> struct TensorTupleBuilder<Last>`](src/NetworkUtil.hpp)
     - Recursively build `std::tuple` of
       `Tensor` objects representing intermediate activations of the network, wrapped by `ActivationsWrap`
-    - Base case: one single `ConcreteBlock` left, whose `InputTensor` and `OutputTensor` are wrapped in a `std::tuple`
+    - Base case: one single `Block` left, whose `InputTensor` and `OutputTensor` are wrapped in a `std::tuple`
 
 - ***TensorTupleBuilder*** - [
   `template<typename First, typename... Rest> struct TensorTupleBuilder<First, Rest...>`](src/NetworkUtil.hpp)
@@ -1376,7 +1376,7 @@ Defines the foundational block concepts that gate the type system and the `Activ
   `template<size_t Batch, typename Last> struct BatchedTensorTupleBuilder<Batch, Last>`](src/NetworkUtil.hpp)
     - For `Batched` functions and use-cases, create a `Batched` version of a `std::tuple` of activations by passing
       `PrependBatch<Batch, ...>` on all `Tensor`s that `TensorTupleBuilder` adds raw
-    - Base case: one single `ConcreteBlock` left, whose `InputTensor` and `OutputTensor` are wrapped in
+    - Base case: one single `Block` left, whose `InputTensor` and `OutputTensor` are wrapped in
       `PrependBatch<Batch, ...>` and then in a `std::tuple`
 
 - ***BatchedTensorTupleBuilder*** - [
@@ -1414,7 +1414,7 @@ All Adam hyperparameters and per-network bias-correction state in one place. TTN
 | `TensorT v`     | `{}`    | `value`'s second Adam moment |
 
 - ***struct Param*** - [`template<typename TensorT> struct Param`](src/NetworkUtil.hpp)
-    - `struct` layer around a `ConcreteBlock` to abstract away management, Adam updates
+    - `struct` layer around a `Block` to abstract away management, Adam updates
 
 - ***Param::Size*** - [`static constexpr size_t Param::Size`](src/NetworkUtil.hpp)
     - Size of parameter `Tensor`
@@ -1476,22 +1476,22 @@ All Adam hyperparameters and per-network bias-correction state in one place. TTN
 ## [BlockSequence.hpp](src/BlockSequence.hpp): The Sequence Core
 
 The unified sequential core shared by `TrainableTensorNetwork` and `ComposeBlocks`. Owns a `std::tuple` of
-`ConcreteBlock`s and a mutable activation cache. Satisfies `ConcreteBlock` itself, so a
+`Block`s and a mutable activation cache. Satisfies `Block` itself, so a
 `BlockSequence` can nest inside any other block (e.g. as an arm of
-`Parallel`). Also, in compliance with the `ConcreteBlock` `concept`, exposes an explicit activation API (`ForwardAll`,
+`Parallel`). Also, in compliance with the `Block` `concept`, exposes an explicit activation API (`ForwardAll`,
 `BackwardFrom`, etc.) for top-level use by
 `TrainableTensorNetwork`.
 
-### `class BlockSequence<ConcreteBlock... Blocks>`
+### `class BlockSequence<Block... Blocks>`
 
 - ***BlockSequence*** - [
-  `template<ConcreteBlock... Blocks> class BlockSequence`](src/BlockSequence.hpp)
-    - Unified sequential core: wraps a shape-compliant chain of `ConcreteBlock`s and provides both the
-      `ConcreteBlock` interface (for nesting) and the explicit activation API (for top-level training)
+  `template<Block... Blocks> class BlockSequence`](src/BlockSequence.hpp)
+    - Unified sequential core: wraps a shape-compliant chain of `Block`s and provides both the
+      `Block` interface (for nesting) and the explicit activation API (for top-level training)
 
 - ***BlockSequence::check_connected()*** - [
   `static constexpr bool BlockSequence::check_connected()`](src/BlockSequence.hpp)
-    - Immediate `static_assert` function to ensure that `ConcreteBlock... Blocks` have compliant shapes:
+    - Immediate `static_assert` function to ensure that `Block... Blocks` have compliant shapes:
       `std::is_same_v<typename std::tuple_element_t<Is, BlockTuple>::OutputTensor, typename std::tuple_element_t<Is + 1, BlockTuple>::InputTensor> && ...)`
 
 - ***BlockSequence::BlockSequence*** - [`BlockSequence::BlockSequence()`](src/BlockSequence.hpp)
@@ -1523,7 +1523,7 @@ The unified sequential core shared by `TrainableTensorNetwork` and `ComposeBlock
 
 - ***BlockSequence::block*** - [
   `template<size_t I> const auto &BlockSequence::block() const`](src/BlockSequence.hpp)
-    - Get a `const &` to the `I`-th `ConcreteBlock` in `BlockSequence::mBlocks`
+    - Get a `const &` to the `I`-th `Block` in `BlockSequence::mBlocks`
 
 - ***BlockSequence::ActivationsTuple*** - [
   `using BlockSequence::ActivationsTuple`](src/BlockSequence.hpp)
@@ -1544,10 +1544,10 @@ The unified sequential core shared by `TrainableTensorNetwork` and `ComposeBlock
 ### Private Members
 
 - ***BlockSequence::mBlocks*** - [`BlockSequence::mBlocks`](src/BlockSequence.hpp)
-    - Default-constructed `BlockTuple` containing actual `ConcreteBlock` objects
+    - Default-constructed `BlockTuple` containing actual `Block` objects
 
 - ***BlockSequence::mActs*** - [`mutable BlockSequence::mActs`](src/BlockSequence.hpp)
-    - Mutable `ActivationsTuple` cache used by the `ConcreteBlock` interface (`Forward`/`Backward`) so that
+    - Mutable `ActivationsTuple` cache used by the `Block` interface (`Forward`/`Backward`) so that
       `BlockSequence` can be used as a nested block without the caller managing activations
 
 ### Inference
@@ -1561,12 +1561,12 @@ The unified sequential core shared by `TrainableTensorNetwork` and `ComposeBlock
   `[[nodiscard]] OutputTensor BlockSequence::Forward(const InputTensor &x) const`](src/BlockSequence.hpp)
     - Forward pass returning `OutputTensor`
     - Delegates to `ForwardAll` and extracts back element
-    - Satisfies `ConcreteBlock` interface; uses `mActs` cache so a caller can follow with `Backward`
+    - Satisfies `Block` interface; uses `mActs` cache so a caller can follow with `Backward`
 
 - ***BlockSequence::forward_impl*** - [
   `template<size_t I = 0> void BlockSequence::forward_impl(ActivationsTuple &A) const`](src/BlockSequence.hpp)
     - Private implementation; recursively fills `ActivationsTuple &A` by calling each
-      `ConcreteBlock::Forward` in order and storing result
+      `Block::Forward` in order and storing result
 
 - ***BlockSequence::BatchedForwardAll*** - [
   `template<size_t Batch> [[nodiscard]] BatchedActivations<Batch> BlockSequence::BatchedForwardAll(const PrependBatch<Batch, InputTensor>::type &X) const`](src/BlockSequence.hpp)
@@ -1575,12 +1575,12 @@ The unified sequential core shared by `TrainableTensorNetwork` and `ComposeBlock
 - ***BlockSequence::BatchedForward*** - [
   `template<size_t Batch> [[nodiscard]] PrependBatch<Batch, OutputTensor>::type BlockSequence::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const`](src/BlockSequence.hpp)
     - Batched forward pass returning `PrependBatch<Batch, OutputTensor>`; extracted from back of `BatchedForwardAll`
-    - Satisfies `ConcreteBlock` interface
+    - Satisfies `Block` interface
 
 - ***BlockSequence::batched_forward_impl*** - [
   `template<size_t Batch, size_t I = 0> void BlockSequence::batched_forward_impl(BatchedActivationsTuple<Batch> &A) const`](src/BlockSequence.hpp)
     - Private implementation; recursively fills `BatchedActivationsTuple &A` by calling each
-      `ConcreteBlock::BatchedForward` in order
+      `Block::BatchedForward` in order
 
 ### Backward
 
@@ -1592,7 +1592,7 @@ The unified sequential core shared by `TrainableTensorNetwork` and `ComposeBlock
 - ***BlockSequence::BackwardAll*** - [
   `void BlockSequence::BackwardAll(const Activations &A, const OutputTensor &grad)`](src/BlockSequence.hpp)
     - Delegates to `BackwardFrom<NumBlocks>` - full backward from output to input
-    - Gradients are accumulated into `ConcreteBlock` `Param` members
+    - Gradients are accumulated into `Block` `Param` members
 
 - ***BlockSequence::Backward*** - [
   `InputTensor BlockSequence::Backward(const OutputTensor &delta, const OutputTensor &, const InputTensor &)`](src/BlockSequence.hpp)
@@ -1603,8 +1603,8 @@ The unified sequential core shared by `TrainableTensorNetwork` and `ComposeBlock
   `template<size_t I, typename Delta> requires IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple>> auto BlockSequence::backward_impl(const ActivationsTuple &A, const Delta &delta)`](src/BlockSequence.hpp)
     - Starts with `Delta` (derivative of loss w.r.t. activation `I`), recurses down to `I == 1`, returning
       `InputTensor` gradient
-    - At each `I`, calls `ConcreteBlock::Backward(delta, A[I], A[I-1])` or
-      `ConcreteBlock::Backward(gradient wrt this block's output, this block's output, this block's input / previous block's output)`
+    - At each `I`, calls `Block::Backward(delta, A[I], A[I-1])` or
+      `Block::Backward(gradient wrt this block's output, this block's output, this block's input / previous block's output)`
 
 - ***BlockSequence::BatchedBackwardFrom*** - [
   `template<size_t Batch, size_t I, typename Delta> void BlockSequence::BatchedBackwardFrom(const BatchedActivations<Batch> &A, const Delta &grad)`](src/BlockSequence.hpp)
@@ -1622,20 +1622,20 @@ The unified sequential core shared by `TrainableTensorNetwork` and `ComposeBlock
 
 - ***BlockSequence::batched_backward_impl*** - [
   `template<size_t Batch, size_t I, typename Delta> requires IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, BatchedActivationsTuple<Batch>>> auto BlockSequence::batched_backward_impl(const BatchedActivationsTuple<Batch> &A, const Delta &delta)`](src/BlockSequence.hpp)
-    - Same logic as `backward_impl` but calls `ConcreteBlock::BatchedBackward` at each step
+    - Same logic as `backward_impl` but calls `Block::BatchedBackward` at each step
 
 - ***BlockSequence::ZeroGrad*** - [`void BlockSequence::ZeroGrad()`](src/BlockSequence.hpp)
-    - Calls `ZeroAllGrads` on each `ConcreteBlock`'s `all_params()`
+    - Calls `ZeroAllGrads` on each `Block`'s `all_params()`
 
 ### Serialization and Snapshot
 
 - ***BlockSequence::Save*** - [
   `void BlockSequence::Save(const std::string &path) const`](src/BlockSequence.hpp)
-    - Calls `SaveAll` on each `ConcreteBlock::all_params()`, which calls `Tensor` binary serialization
+    - Calls `SaveAll` on each `Block::all_params()`, which calls `Tensor` binary serialization
 
 - ***BlockSequence::Load*** - [
   `void BlockSequence::Load(const std::string &path)`](src/BlockSequence.hpp)
-    - Calls `LoadAll` on each `ConcreteBlock::all_params()`, which calls `Tensor` binary deserialization
+    - Calls `LoadAll` on each `Block::all_params()`, which calls `Tensor` binary deserialization
 
 - ***BlockSequence::Snap*** - [
   `[[nodiscard]] SnapshotMap BlockSequence::Snap() const`](src/BlockSequence.hpp)
@@ -1651,10 +1651,10 @@ Thin wrapper around `BlockSequence<Blocks...>` that adds an
 `BlockSequence mSeq_`. Only `Update`, `TrainStep`, `BatchTrainStep`, `Fit`, `BatchFit`, and `RunEpoch` are
 `TrainableTensorNetwork`-exclusive.
 
-### `class TrainableTensorNetwork<ConcreteBlock... Blocks>`
+### `class TrainableTensorNetwork<Block... Blocks>`
 
 - ***TrainableTensorNetwork*** - [
-  `template<ConcreteBlock... Blocks> class TrainableTensorNetwork::TrainableTensorNetwork`](src/TrainableTensorNetwork.hpp)
+  `template<Block... Blocks> class TrainableTensorNetwork::TrainableTensorNetwork`](src/TrainableTensorNetwork.hpp)
     - Capstone object of the library; owns a `BlockSequence<Blocks...> mSeq_` and an `AdamState mAdam_`
     - All type aliases (`InputTensor`, `OutputTensor`,
       `Activations`, etc.) and inference/backward/serialization methods delegate directly to `mSeq_`
@@ -1811,107 +1811,112 @@ Thin wrapper around `BlockSequence<Blocks...>` that adds an
 
 ## [NetworkComposition.hpp](src/NetworkComposition.hpp): Network Creation and Composition
 
-Defines the `Block` recipe concept, the chain-resolution machinery, tuple-unpacking primitives, and composition
-helpers for creating and combining `TrainableTensorNetwork`s.
+Defines the
+`BlockRecipe` concept, the chain-resolution machinery, tuple-unpacking primitives, and composition helpers for creating and combining
+`TrainableTensorNetwork`s.
 
-### Block Concept and Chain Resolution
+### BlockRecipe Concept and Chain Resolution
 
-- ***Block*** - [`template<typename B> concept Block`](src/NetworkComposition.hpp)
-    - Declarable recipe to define a `ConcreteBlock` in a `TrainableTensorNetwork` template argument list
-    - `Block`s must define an `OutputTensor` type and alias a `ConcreteBlock` as `Resolve`
-    - `Block` argument lists passed to `NetworkBuilder` will be resolved into full `ConcreteBlock`s with chained
+- ***BlockRecipe*** - [`template<typename B> concept BlockRecipe`](src/NetworkComposition.hpp)
+    - Declarable recipe to define a `Block` in a `TrainableTensorNetwork` template argument list
+    - `BlockRecipe`s must define an `OutputTensor` type and alias a `Block` as `Resolve`
+    - `BlockRecipe` argument lists passed to `NetworkBuilder` will be resolved into full `Block`s with chained
       `InputTensor` attributes
 
-- ***BuildChain*** - [`template<typename Prev, Block Last> struct BuildChain<Prev, Last>`](src/NetworkComposition.hpp)
-    - Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
+- ***BuildChain*** - [
+  `template<typename Prev, BlockRecipe Last> struct BuildChain<Prev, Last>`](src/NetworkComposition.hpp)
+    - Build `std::tuple` of `Block`s from a variadic argument list of `BlockRecipe`s
     - Base case for recursive `BuildChain`
 
 - ***BuildChain*** - [
-  `template<typename Prev, Block Next, Block... Rest> struct BuildChain<Prev, Next, Rest...>`](src/NetworkComposition.hpp)
-    - Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
+  `template<typename Prev, BlockRecipe Next, BlockRecipe... Rest> struct BuildChain<Prev, Next, Rest...>`](src/NetworkComposition.hpp)
+    - Build `std::tuple` of `Block`s from a variadic argument list of `BlockRecipe`s
     - Recursive case: `std::tuple_cat` of
-        - first `Block`'s `ConcreteBlock` as given by its `Resolve` member
-        - next `Block`s' `ConcreteBlock`s
+        - first `BlockRecipe`'s `Block` as given by its `Resolve` member
+        - next `BlockRecipe`s' `Block`s
     - Used by `ApplyBuildChain`
 
 - ***Input*** - [`template<size_t... Dims> struct Input`](src/NetworkComposition.hpp)
-    - `Block` type which begins and allows a variadic argument list of `Block`s to be processed by `BuildChain` via
+    - `BlockRecipe` type which begins and allows a variadic argument list of `BlockRecipe`s to be processed by
+      `BuildChain` via
       `ApplyBuildChain`
     - Defines `OutputTensor = Tensor<Dims...>` to begin chain
 
 - ***ApplyBuildChain*** - [
-  `template<typename In, Block... Rs> struct ApplyBuildChain<In, std::tuple<Rs...> >`](src/NetworkComposition.hpp)
-    - Expects an `Block<Input>` first and a trailing variadic list of `Block`s passes them to `BuildChain`
-    - Used in `NetworkBuilder` to define `BlockTuple`, a `TrainableTensorNetwork`'s tuple of `ConcreteBlock`s
+  `template<typename In, BlockRecipe... Rs> struct ApplyBuildChain<In, std::tuple<Rs...> >`](src/NetworkComposition.hpp)
+    - Expects an `BlockRecipe<Input>` first and a trailing variadic list of `BlockRecipe`s passes them to `BuildChain`
+    - Used in `NetworkBuilder` to define `BlockTuple`, a `TrainableTensorNetwork`'s tuple of `Block`s
 
 ### Tuple-Unpacking Primitives
 
 - ***ConcretesToSequence*** - [`template<typename Tuple> struct ConcretesToSequence`](src/NetworkComposition.hpp)
-    - Specialization: `template<ConcreteBlock... Bs> struct ConcretesToSequence<std::tuple<Bs...>>`
-    - Unpacks a `std::tuple<ConcreteBlock...>` into `BlockSequence<Bs...>`
+    - Specialization: `template<Block... Bs> struct ConcretesToSequence<std::tuple<Bs...>>`
+    - Unpacks a `std::tuple<Block...>` into `BlockSequence<Bs...>`
     - Used by `ComposeBlocks::ResolveImpl`
 
 - ***ConcretesToNetwork*** - [`template<typename Tuple> struct ConcretesToNetwork`](src/NetworkComposition.hpp)
-    - Specialization: `template<ConcreteBlock... Bs> struct ConcretesToNetwork<std::tuple<Bs...>>`
-    - Unpacks a `std::tuple<ConcreteBlock...>` into `TrainableTensorNetwork<Bs...>`
+    - Specialization: `template<Block... Bs> struct ConcretesToNetwork<std::tuple<Bs...>>`
+    - Unpacks a `std::tuple<Block...>` into `TrainableTensorNetwork<Bs...>`
     - Used by `NetworkBuilder`
 
 ### `struct ComposeBlocks`
 
-Extremely useful `Block` recipe, taking in a variadic template list of *other* `Block` recipes and creating a
-`ConcreteBlock<BlockSequence>` from them via `ConcretesToSequence`
+Extremely useful `BlockRecipe`, taking in a variadic template list of *other* `BlockRecipe`s and creating a
+`Block<BlockSequence>` from them via `ConcretesToSequence`
 
 - ***ComposeBlocks*** - [
-  `template<typename... Recipes> requires (Block<Recipes> && ...) struct ComposeBlocks`](src/NetworkComposition.hpp)
-    - Struct containing `ResolveChain` methods (several specializations) which unpack variadic lists of `Block`s into a
+  `template<typename... Recipes> requires (BlockRecipe<Recipes> && ...) struct ComposeBlocks`](src/NetworkComposition.hpp)
+    - Struct containing `ResolveChain` methods (several specializations) which unpack variadic lists of
+      `BlockRecipe`s into a
       `BlockSequence` type, saved in `ComposeBlocks::type`
 
 - ***ComposeBlocks::ResolveChain*** - [
   `template<typename In, typename Last> struct ComposeBlocks::ResolveChain<In, Last>`](src/NetworkComposition.hpp)
-    - Wraps a variadic list of `Block`s into a `std::tuple` of `ConcreteBlock`s
-    - Used exclusively in `ResolveImpl` to turn unpack `Block` recipes into a `BlockSequence`
-    - Base case, resolving the last `Block`'s `OutputTensor` by passing in the penultimate `Block`'s
+    - Wraps a variadic list of `BlockRecipe`s into a `std::tuple` of `Block`s
+    - Used exclusively in `ResolveImpl` to unpack `BlockRecipe`s into a `BlockSequence`
+    - Base case, resolving the last `BlockRecipe`'s `OutputTensor` by passing in the penultimate `BlockRecipe`'s
       `OutputTensor` and wrapping `Resolved` in a `std::tuple`
 
 - ***ComposeBlocks::ResolveChain*** - [
   `template<typename In, typename First, typename... Rest> struct ComposeBlocks::ResolveChain<In, First, Rest...>`](src/NetworkComposition.hpp)
-    - Wraps a variadic list of `Block`s into a `std::tuple` of `ConcreteBlock`s
-    - Used exclusively in `ResolveImpl` to turn unpack `Block` recipes into a `BlockSequence`
+    - Wraps a variadic list of `BlockRecipe`s into a `std::tuple` of `Block`s
+    - Used exclusively in `ResolveImpl` to unpack `BlockRecipe`s into a `BlockSequence`
     - Recursive case, resolving `First` by passing in `In` (starts as `IsTensor<InputT>` in `ResolveImpl`), then defines
       `Tail` by recursing on `Resolve`, finally wrapping `Resolved` and `Tail` in `std::tuple_cat`
 
 - ***ComposeBlocks::LastOutputTensor*** - [
   `template<typename Last> struct ComposeBlocks::LastOutputTensor<Last>`](src/NetworkComposition.hpp)
-    - Custom last-in-variadic getter, assuming that template args are `Block` recipes, recursing until the
+    - Custom last-in-variadic getter, assuming that template args are `BlockRecipe`s, recursing until the
       `Last` is reached and finally grabbing `Last::OutputTensor`
     - Base case: `type = Last::OutputTensor`
 
 - ***ComposeBlocks::LastOutputTensor*** - [
   `template<typename First, typename... Rest> struct ComposeBlocks::LastOutputTensor<First, Rest...>`](src/NetworkComposition.hpp)
-    - Custom last-in-variadic getter, assuming that template args are `Block` recipes, recursing until the
+    - Custom last-in-variadic getter, assuming that template args are `BlockRecipe`s, recursing until the
       `Last` is reached and finally grabbing `Last::OutputTensor`
     - Recursive case: `type = LastOutputTensor<Rest...>::type`
 
 - ***ComposeBlocks::OutputTensor*** - [`using ComposeBlocks::OutputTensor`](src/NetworkComposition.hpp)
-    - Type alias for `OutputTensor` of last `Block` in `Recipes...`
+    - Type alias for `OutputTensor` of last `BlockRecipe` in `Recipes...`
 
 - ***ComposeBlocks::ResolveImpl*** - [
   `template<typename InputT> requires IsTensor<InputT> struct ComposeBlocks::ResolveImpl`](src/NetworkComposition.hpp)
     - Implementation helper to take in `IsTensor<InputT>` and `Recipes...`
-    - Runs `ResolveChain` to get a `std::tuple` of `ConcreteBlock`s, then calls `ConcretesToSequence` to produce
+    - Runs `ResolveChain` to get a `std::tuple` of `Block`s, then calls `ConcretesToSequence` to produce
       `BlockSequence`, stored in `type`
 
 - ***ComposeBlocks::Resolve*** - [
   `template<typename InputT> requires IsTensor<InputT> using ComposeBlocks::Resolve`](src/NetworkComposition.hpp)
-    - Culmination: in compliance with `Block`, `ComposeBlocks::Resolve` takes in `IsTensor<InputT>` and resolves to a
-      `ConcreteBlock<BlockSequence>`
+    - Culmination: in compliance with `BlockRecipe`, `ComposeBlocks::Resolve` takes in
+      `IsTensor<InputT>` and resolves to a
+      `Block<BlockSequence>`
 
 ### `struct ComposeNetworks`
 
-Thin convenience wrapper to take `ConcreteBlock...` lists from two `TrainableTensorNetwork`s and fuse them into one.
+Thin convenience wrapper to take `Block...` lists from two `TrainableTensorNetwork`s and fuse them into one.
 
-- ***ConcreteBlock*** - [
-  `template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB> struct ComposeNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> >`](src/NetworkComposition.hpp)
+- ***Block*** - [
+  `template<Block... BlocksA, Block... BlocksB> struct ComposeNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> >`](src/NetworkComposition.hpp)
     - `static_assert` that `std::is_same_v<
     typename TrainableTensorNetwork<BlocksA...>::OutputTensor,
     typename TrainableTensorNetwork<BlocksB...>::InputTensor>`
@@ -1919,15 +1924,15 @@ Thin convenience wrapper to take `ConcreteBlock...` lists from two `TrainableTen
 
 ### `struct NetworkBuilder`
 
-Key builder helper to take variadic list of `Block...` recipes and create a
+Key builder helper to take variadic list of `BlockRecipe`s and create a
 `TrainableTensorNetwork` from them. Preferred way to define a
 `TrainableTensorNetwork` type because sizes can be written in `PyTorch` and
 `TensorFlow` style, only writing output sizes, with intermediate connections deduced (here, at compile-time!).
 
 - ***NetworkBuilder*** - [
-  `template<typename In, typename... Recipes> requires requires { typename In::OutputTensor; } && IsTensor<typename In::OutputTensor> && (Block<Recipes> && ...) struct NetworkBuilder`](src/NetworkComposition.hpp)
-    - Takes variadic list of `Block...` recipes and create a `TrainableTensorNetwork`
-    - Calls `ApplyBuildChain` to get a `std::tuple` of `ConcreteBlock`s, then calls `ConcretesToNetwork`
+  `template<typename In, typename... Recipes> requires requires { typename In::OutputTensor; } && IsTensor<typename In::OutputTensor> && (BlockRecipe<Recipes> && ...) struct NetworkBuilder`](src/NetworkComposition.hpp)
+    - Takes variadic list of `BlockRecipe`s and creates a `TrainableTensorNetwork`
+    - Calls `ApplyBuildChain` to get a `std::tuple` of `Block`s, then calls `ConcretesToNetwork`
 
 ## [Snapshot.hpp](src/Snapshot.hpp): Activation Snapshots
 
@@ -1939,7 +1944,7 @@ Runtime-typed storage for capturing named activation tensors. `SnapshotEntry` ho
 
 - ***SnapshotEntry***  - [`struct SnapshotEntry`](src/Snapshot.hpp)
     - `struct` to hold `data` and `shape` from `PeekableBlock`s' activation snapshots
-  
+
 - ***SnapshotEntry::shape*** - [`@doc: std::vector<size_t> SnapshotEntry::shape`](src/Snapshot.hpp)
     - `std::vector<size_t>` to hold an activation `Tensor`'s shape
 
@@ -1949,19 +1954,20 @@ Runtime-typed storage for capturing named activation tensors. `SnapshotEntry` ho
 - ***SnapshotEntry*** - [`[[nodiscard]] size_t SnapshotEntry::total() const    `](src/Snapshot.hpp)
     - Getter for total size
 
-- ***SnapshotEntry*** - [`[[nodiscard]] size_t SnapshotEntry::rows(const size_t outer_axis = 0) const`](src/Snapshot.hpp)
+- ***SnapshotEntry*** - [
+  `[[nodiscard]] size_t SnapshotEntry::rows(const size_t outer_axis = 0) const`](src/Snapshot.hpp)
     - Getter for number of rows
 
 - ***SnapshotEntry*** - [`[[nodiscard]] size_t SnapshotEntry::cols() const`](src/Snapshot.hpp)
     - Getter for number of columns
 
 
-
 - ***SnapshotMap*** - [`using SnapshotMap`](src/Snapshot.hpp)
     - Type alias for `std::unordered_map<std::string, SnapshotEntry>`
 
 
-- ***snap_add*** - [`template<size_t... Dims> void snap_add(SnapshotMap &out, const std::string &key, const Tensor<Dims...> &t)`](src/Snapshot.hpp)
+- ***snap_add*** - [
+  `template<size_t... Dims> void snap_add(SnapshotMap &out, const std::string &key, const Tensor<Dims...> &t)`](src/Snapshot.hpp)
     - Take a `Tensor`, a `std::string` key, and an existing `SnapshotMap` and add the `Tensor` as a `SnapshotEntry`
 
 --- 
@@ -1982,12 +1988,9 @@ The concrete fully-connected block. `W = Tensor<OutDims..., InDims...>`, `b = Te
 
 ---
 
-### `struct DenseMD<typename OutT, ActivationOp Act_>` *(Block recipe)*
-
-
+### `struct DenseMD<typename OutT, ActivationOp Act_>` *(BlockRecipe)*
 
 ### `template<size_t N, ActivationOp Act_> using Dense`
-
 
 ---
 
@@ -2002,19 +2005,15 @@ Implements scaled dot-product multi-head self-attention over sequences of arbitr
 
 ### `struct TensorFirstDim<typename T>`
 
-
 ---
 
-### `struct MHAttention<size_t Heads, size_t... EmbDims>` *(Block recipe)*
-
-
+### `struct MHAttention<size_t Heads, size_t... EmbDims>` *(BlockRecipe)*
 
 ---
 
 ## [MoreNets.hpp](src/MoreNets.hpp) -- Helper Block types
 
 ---
-
 
 ## [DataIO.hpp](src/DataIO.hpp) -- Data Loading and Batching
 
