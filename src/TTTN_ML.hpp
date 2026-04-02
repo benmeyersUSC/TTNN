@@ -10,7 +10,7 @@ namespace TTTN {
 
     // @doc: struct ReLU
     /**
-     * `ActivationOp` for ***Rectified Linear Unit*** (***ReLU***)
+     * `ActivationOp` for ***Rectified Linear Unit*** (`ReLU`)
      * `operator()` -> `[0, infinity)`
      * `prime` -> `1.0f || 0.0f`
      */
@@ -21,7 +21,7 @@ namespace TTTN {
 
     // @doc: Sigmoid
     /**
-     * `ActivationOp` for ***Sigmoid***
+     * `ActivationOp` for `Sigmoid`
      * `operator()` -> `[0, 1.0f]`
      * `prime` -> `(0.0f, 0.25f]`
      */
@@ -32,7 +32,7 @@ namespace TTTN {
 
     // @doc: Tanh
     /**
-     * `ActivationOp` for ***Hyperbolic Tangent*** (***Tanh***)
+     * `ActivationOp` for ***Hyperbolic Tangent*** (`Tanh`)
      * `operator()` -> `[-1.0f, 1.0f]`
      * `prime` -> `(0.0f, 1.0f]`
      */
@@ -43,7 +43,7 @@ namespace TTTN {
 
     // @doc: Linear
     /**
-     * `ActivationOp` for ***Linear*** (no activation)
+     * `ActivationOp` for `Linear` (no activation)
      * `operator()` -> `(-infinity, infinity)`
      * `prime` -> `(-infinity, infinity)`
      */
@@ -89,7 +89,7 @@ namespace TTTN {
 
     // @doc: template<size_t Axis, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...> &x)
     /**
-     * Given an `Axis` on which to normalize, perform ***Softmax*** normalization
+     * Given an `Axis` on which to normalize, perform `Softmax` normalization
      * Elegantly calls `BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(x))` to first map to `a = e^(x - max)` and then to `b = a / sum(a)`
      * Shape-preserving
      */
@@ -203,7 +203,7 @@ namespace TTTN {
 
 
     // @doc: struct MSE
-    /** `LossFunction` struct for ***Mean Squared Error*** (***MSE***) */
+    /** `LossFunction` struct for ***Mean Squared Error*** (`MSE`) */
     struct MSE {
         // @doc: template<size_t... Dims> static Tensor<> MSE::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
         /**
@@ -217,7 +217,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t... Dims> static Tensor<Dims...> MSE::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
-        /** Derivative of ***MSE*** loss - `2(pred - target) / Tensor<Dims...>::Size` (standard power rule derivative, scaled by how many elements composed the original sum) */
+        /** Derivative of `MSE` loss - `2(pred - target) / Tensor<Dims...>::Size` (standard power rule derivative, scaled by how many elements composed the original sum) */
         template<size_t... Dims>
         static Tensor<Dims...> Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             constexpr float inv = 2.f / static_cast<float>(Tensor<Dims...>::Size);
@@ -228,7 +228,7 @@ namespace TTTN {
 
     // @doc: struct BinaryCEL
     /**
-     * `LossFunction` struct for ***Binary Cross Entropy Loss*** (***BinaryCEL***)
+     * `LossFunction` struct for ***Binary Cross Entropy Loss*** (`BinaryCEL`)
      * Helper for binary cases, but is just a specialization of `struct CEL`
      */
     struct BinaryCEL {
@@ -254,7 +254,7 @@ namespace TTTN {
 
 
     // @doc: struct CEL
-    /** `LossFunction` struct for ***Cross Entropy Loss*** (***CEL***) */
+    /** `LossFunction` struct for ***Cross Entropy Loss*** (`CEL`) */
     struct CEL {
         // @doc: template<size_t... Dims> static Tensor<> CEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
         /**

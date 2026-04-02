@@ -182,11 +182,12 @@ Replace the parallel CPU dispatch (
 11. [NetworkUtil.hpp: Concepts, Types, and Utilities](#networkutilhpp--concepts-types-and-utilities)
 12. [TrainableTensorNetwork.hpp: The Network](#trainabletensornetworkhpp--the-network)
 13. [Params.hpp: Parameter Storage and Optimizer](#paramshpp--parameter-storage-and-optimizer)
-14. [BlockComposition.hpp: Sequential Block Composition](#BlockCompositionhpp--sequential-block-composition)
+14. [NetworkComposition.hpp: Sequential Block Composition](#BlockCompositionhpp--sequential-block-composition)
 15. [Snapshot.hpp: Activation Snapshots](#snapshothpp--activation-snapshots)
 16. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
 17. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
-18. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
+18. [MoreNets.hpp: More helper ConcreteBlock types](#morenetshpp)
+19. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
 
 ---
 
@@ -805,35 +806,35 @@ All contractions eventually become a `BatchInnerContraction`, which takes in fou
 
 - ***BatchInnerContract*** - [
   `template<size_t M, size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, const float init, Map map, Reduce reduce)`](src/TensorContract.hpp)'s core primitive; all contraction routes through here
-    - Core primitive: all contractions become ***BatchInnerContract***
-    - See ***BatchContractionKernel*** for more details on implementation
+    - Core primitive: all contractions become `BatchInnerContract`
+    - See `BatchContractionKernel` for more details on implementation
 
 - ***BatchInnerContract*** - [
   `template<size_t M, size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - Tag-parameter specialization of ***BatchInnerContract***; calls ***BatchInnerContract***
+    - Tag-parameter specialization of `BatchInnerContract`; calls `BatchInnerContract`
 
 - ***BatchInnerContract*** - [
   `template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float /*init*/, Mul, Add)`](src/TensorContract.hpp)
-    - Specialized version of generalized ***BatchInnerContract*** for `Map=Mul` and `Reduce=Add` (most common use-case)
+    - Specialized version of generalized `BatchInnerContract` for `Map=Mul` and `Reduce=Add` (most common use-case)
     - Uses `Apple Accelerate`'s
       `cblas_sgemm` function to unlock aggressive vectorization optimization for matrix multiplication
     - Extensive commenting in code
 
 - ***BatchΣΠ*** - [
   `template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - Convenience wrapper for sum of product specialization of ***BatchInnerContract***
+    - Convenience wrapper for sum of product specialization of `BatchInnerContract`
 
 - ***BatchSigmaPi*** - [
   `template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchSigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - ASCII overload of ***BatchΣΠ***
+    - ASCII overload of `BatchΣΠ`
 
 - ***InnerContract*** - [
   `template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)`](src/TensorContract.hpp)
-    - Convenience wrapper for non-batched calls to generalized ***BatchInnerContract***
+    - Convenience wrapper for non-batched calls to generalized `BatchInnerContract`
 
 - ***InnerContract*** - [
   `template<size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - tag-param specialization of ***InnerContract***
+    - tag-param specialization of `InnerContract`
 
 - ***ΣΠ*** - [
   `template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
@@ -841,26 +842,26 @@ All contractions eventually become a `BatchInnerContraction`, which takes in fou
 
 - ***SigmaPi*** - [
   `template<size_t N, size_t... ADims, size_t... BDims> auto SigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - ASCII convenience wrapper for ***ΣΠ***
+    - ASCII convenience wrapper for `ΣΠ`
 
 - ***Contract*** - [
   `template<AxisList AAxes, AxisList BAxes, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto Contract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)`](src/TensorContract.hpp)
-    - Convenience wrapper for ***BatchContract*** (and
-      ***BatchInnerContract***) for non-Batched, arbitrary-axes contractions
+    - Convenience wrapper for `BatchContract` (and
+      `BatchInnerContract`) for non-Batched, arbitrary-axes contractions
     - Second-most general function in [TensorContract.hpp](src/TensorContract.hpp)
 
 - ***Contract*** - [
   `template<AxisList AAxes, AxisList BAxes, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto Contract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - tag-param specialization of ***Contract***
+    - tag-param specialization of `Contract`
 
 - ***Einsum*** [
   `template<size_t I, size_t J, size_t... ADims, size_t... BDims> auto Einsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - Variant of ***ΣΠ*** for single-axis sum of product contractions (specified by `I` and `J` for `A` and
+    - Variant of `ΣΠ` for single-axis sum of product contractions (specified by `I` and `J` for `A` and
       `B`, respectively)
 
 - ***BatchEinsum*** - [
   `template<AxisList ABatchAxes, AxisList BBatchAxes, size_t I, size_t J, size_t... ADims, size_t... BDims> auto BatchEinsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - Batch version of ***Einsum***
+    - Batch version of `Einsum`
 
 - ***Dot*** - [`template<size_t N> auto Dot(const Tensor<N> &A, const Tensor<N> &B)`](src/TensorContract.hpp)
     - Convenience wrapper for sum of product full-rank contraction (dot product) of two Rank-1 `Tensor`s
@@ -868,7 +869,7 @@ All contractions eventually become a `BatchInnerContraction`, which takes in fou
 - ***Matmul*** - [
   `template<size_t M, size_t K, size_t N> auto Matmul(const Tensor<M, K> &A, const Tensor<K, N> &B)`](src/TensorContract.hpp)
     - Convenience wrapper for sum of product contraction (matrix multiplication) of two Rank-2 `Tensor`s
-    - NOTE: expects Axis 1 of `A` to be contracted with Axis 0 of `B`, per ***Matmul*** convention
+    - NOTE: expects Axis 1 of `A` to be contracted with Axis 0 of `B`, per `Matmul` convention
 
 - ***Outer*** - [
   `template<size_t... ADims, size_t... BDims> auto Outer(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
@@ -880,12 +881,12 @@ All contractions eventually become a `BatchInnerContraction`, which takes in fou
     - Arbitrary `Align` (specified by `Batch` and `Contract` axes), arbitrary `Map` (to zip aligned elements of `A` and
       `B`), arbitrary `Reduce` (to fold down `Map` results along contracted axes)
     - Utilizes right-alignment convention of contracted axes (explained more in [
-      ***BC_Permute***](src/TensorContract.hpp) docs and code) and
+      `BC_Permute`](src/TensorContract.hpp) docs and code) and
       ***tiling*** to utilize vectorization of contiguous reads and computations
 
 - ***BatchContract*** - [
   `template<AxisList ABatchAxes, AxisList BBatchAxes, AxisList AContractAxes, AxisList BContractAxes, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto BatchContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - Tag-param specialization of ***BatchContract***
+    - Tag-param specialization of `BatchContract`
 
 
 - ***Collapse*** - [
@@ -896,7 +897,7 @@ All contractions eventually become a `BatchInnerContraction`, which takes in fou
 
 - ***Collapse*** - [
   `template<typename M, typename R, size_t... Dims> requires FloatBinaryOp<M> && FloatBinaryOp<R> && std::default_initializable<M> && std::default_initializable<R> && requires { { R::identity } -> std::convertible_to<float>; } float Collapse(const Tensor<Dims...> &A, const Tensor<Dims...> &B)`](src/TensorContract.hpp)
-    - Tag-param specialization of ***Collapse***
+    - Tag-param specialization of `Collapse`
 
 ```cpp
 Tensor<3> u, v;
@@ -1160,22 +1161,22 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
         - `constexpr float prime(float a)`
 
 - ***ReLU*** - [`struct ReLU`](src/TTTN_ML.hpp)
-    - `ActivationOp` for ***Rectified Linear Unit*** (***ReLU***)
+    - `ActivationOp` for ***Rectified Linear Unit*** (`ReLU`)
     - `operator()` -> `[0, infinity)`
     - `prime` -> `1.0f || 0.0f`
 
 - ***Sigmoid*** - [`struct Sigmoid`](src/TTTN_ML.hpp)
-    - `ActivationOp` for ***Sigmoid***
+    - `ActivationOp` for `Sigmoid`
     - `operator()` -> `[0, 1.0f]`
     - `prime` -> `(0.0f, 0.25f]`
 
 - ***Tanh*** - [`struct Tanh`](src/TTTN_ML.hpp)
-    - `ActivationOp` for ***Hyperbolic Tangent*** (***Tanh***)
+    - `ActivationOp` for ***Hyperbolic Tangent*** (`Tanh`)
     - `operator()` -> `[-1.0f, 1.0f]`
     - `prime` -> `(0.0f, 1.0f]`
 
 - ***Liner*** - [`struct Linear`](src/TTTN_ML.hpp)
-    - `ActivationOp` for ***Linear*** (no activation)
+    - `ActivationOp` for `Linear` (no activation)
     - `operator()` -> `(-infinity, infinity)`
     - `prime` -> `(-infinity, infinity)`
 
@@ -1199,7 +1200,7 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 
 - ***Softmax*** — [
   `template<size_t Axis, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...> &x)`](src/TTTN_ML.hpp)
-    - Given an `Axis` on which to normalize, perform ***Softmax*** normalization
+    - Given an `Axis` on which to normalize, perform `Softmax` normalization
     - Elegantly calls
       `BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(x))` to first map to
       `a = e^(x - max)` and then to `b = a / sum(a)`
@@ -1256,7 +1257,7 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 #### `struct MSE`
 
 - ***MSE*** - [`struct MSE`](src/TTTN_ML.hpp)
-    - `LossFunction` struct for ***Mean Squared Error*** (***MSE***)
+    - `LossFunction` struct for ***Mean Squared Error*** (`MSE`)
 
 - ***MSE::Loss*** - [
   `template<size_t... Dims> static Tensor<> MSE::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
@@ -1265,14 +1266,14 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 
 - ***MSE::Grad*** - [
   `template<size_t... Dims> static Tensor<Dims...> MSE::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
-    - Derivative of ***MSE*** loss
+    - Derivative of `MSE` loss
     -
   `2(pred - target) / Tensor<Dims...>::Size` (standard power rule derivative, scaled by how many elements composed the original sum)
 
 #### `struct BinaryCEL`
 
 - ***BinaryCEL*** - [`struct BinaryCEL`](src/TTTN_ML.hpp)
-    - `LossFunction` struct for ***Binary Cross Entropy Loss*** (***BinaryCEL***)
+    - `LossFunction` struct for ***Binary Cross Entropy Loss*** (`BinaryCEL`)
     - Helper for binary cases, but is just a specialization of `struct CEL`
 
 - ***BinaryCEL::Loss*** - [
@@ -1286,7 +1287,7 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 #### `struct CEL`
 
 - ***CEL*** - [`struct CEL`](src/TTTN_ML.hpp)
-    - `LossFunction` struct for ***Cross Entropy Loss*** (***CEL***)
+    - `LossFunction` struct for ***Cross Entropy Loss*** (`CEL`)
 
 - ***CEL::Loss*** - [
   `template<size_t... Dims> static Tensor<> CEL::Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)`](src/TTTN_ML.hpp)
@@ -1309,8 +1310,7 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 
 ## [NetworkUtil.hpp](src/NetworkUtil.hpp): Concepts, Types, and Utilities
 
-Defines the two block concepts that gate the type system, the chain-resolution machinery used by
-`NetworkBuilder`, and the `ActivationsWrap` safety wrapper.
+Defines the foundational block concepts that gate the type system and the `ActivationsWrap` safety wrapper.
 
 ### Concepts
 
@@ -1322,39 +1322,11 @@ Defines the two block concepts that gate the type system, the chain-resolution m
         - `auto all_params()` and `auto all_params() const`
     - `TrainableTensorNetwork` blocks need not belong to a specific hierarchy; just satisfy this `concept`
 
-- ***Block*** - [`template<typename B> concept Block`](src/NetworkUtil.hpp)
-    - Declarable recipe to define a `ConcreteBlock` in a `TrainableTensorNetwork` template argument list
-    - `Block`s must define an `OutputTensor` type and alias a `ConcreteBlock` as `Resolve`
-    - `Block` argument lists passed to `NetworkBuilder` will be resolved into full `ConcreteBlock`s with chained
-      `InputTensor` attributes
-
 - ***PeekableBlock*** - [`template<typename T> concept PeekableBlock`](src/NetworkUtil.hpp)
     - Opt-in `concept` for `ConcreteBlock`s to be able to expose their internal activations to an owning
       `TrainableTensorNetwork`
     - Compliant `ConcreteBlock`s must implement `void peek(SnapshotMap& m, const std::string& s)`
 
-
-- ***BuildChain*** - [`template<typename Prev, Block Last> struct BuildChain<Prev, Last>`](src/NetworkUtil.hpp)
-    - Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
-    - Base case for recursive `BuildChain`
-
-- ***BuildChain*** - [
-  `template<typename Prev, Block Next, Block... Rest> struct BuildChain<Prev, Next, Rest...>`](src/NetworkUtil.hpp)
-    - Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
-    - Recursive case: `std::tuple_cat` of
-        - first `Block`'s `ConcreteBlock` as given by its `Resolve` member
-        - next `Block`s' `ConcreteBlock`s
-    - Used by `ApplyBuildChain`
-
-- ***Input*** - [`template<size_t... Dims> struct Input`](src/NetworkUtil.hpp)
-    - `Block` type which begins and allows a variadic argument list of `Block`s to be processed by `BuildChain` via
-      `ApplyBuildChain`
-    - Defines `OutputTensor = Tensor<Dims...>` to begin chain
-
-- ***ApplyBuildChain*** - [
-  `template<typename In, Block... Rs> struct ApplyBuildChain<In, std::tuple<Rs...> >`](src/NetworkUtil.hpp)
-    - Expects an `Block<Input>` first and a trailing variadic list of `Block`s passes them to `BuildChain`
-    - Used in `NetworkBuilder` to define `BlockTuple`, a `TrainableTensorNetwork`'s tuple of `ConcreteBlock`s
 
 - ***ActivationsWrap*** - [`template<typename TupleT> class ActivationsWrap`](src/NetworkUtil.hpp)
     - Wrapper around a `std::tuple` of `Tensor`s representing intermediate activations of a `TrainableTensorNetwork`
@@ -1837,26 +1809,125 @@ Thin wrapper around `BlockSequence<Blocks...>` that adds an
 
 ---
 
-## [BlockComposition.hpp](src/BlockComposition.hpp): Network Creation and Composition
+## [NetworkComposition.hpp](src/NetworkComposition.hpp): Network Creation and Composition
 
-### `struct ComposeBlocks<typename... Recipes>`
+Defines the `Block` recipe concept, the chain-resolution machinery, tuple-unpacking primitives, and composition
+helpers for creating and combining `TrainableTensorNetwork`s.
 
-- ***ComposeBlocks*** - [`template<typename... Recipes> struct ComposeBlocks`](src/BlockComposition.hpp)
-    - `Block` recipe that takes a variadic list of `Block` recipes, resolves them into concrete blocks via
-      `BuildChain`, and produces a `BlockSequence<Bs...>` as its `Resolve` type
-    - The resulting `BlockSequence` satisfies `ConcreteBlock`, so a `ComposeBlocks` can be nested inside `Parallel`,
-      `Residual`, or any other composite block
+### Block Concept and Chain Resolution
 
-### Network Combination and Building
+- ***Block*** - [`template<typename B> concept Block`](src/NetworkComposition.hpp)
+    - Declarable recipe to define a `ConcreteBlock` in a `TrainableTensorNetwork` template argument list
+    - `Block`s must define an `OutputTensor` type and alias a `ConcreteBlock` as `Resolve`
+    - `Block` argument lists passed to `NetworkBuilder` will be resolved into full `ConcreteBlock`s with chained
+      `InputTensor` attributes
 
-- ***CombineNetworks*** - [
-  `template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB> struct CombineNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...>>`](src/BlockComposition.hpp)
-    - Unpacks two `ConcreteBlock...` arg lists into a new `TrainableTensorNetwork` composed of both sets
-    - Asserts `std::is_same_v<OutputTensor of A, InputTensor of B>`
+- ***BuildChain*** - [`template<typename Prev, Block Last> struct BuildChain<Prev, Last>`](src/NetworkComposition.hpp)
+    - Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
+    - Base case for recursive `BuildChain`
 
-- ***NetworkBuilder*** - [`template<typename In, typename... Recipes> struct NetworkBuilder`](src/BlockComposition.hpp)
-    - Takes an `Input<Dims...>` and a variadic list of `Block` recipes; resolves them via `BuildChain` into a
-      `TrainableTensorNetwork` type alias at `NetworkBuilder::type`
+- ***BuildChain*** - [
+  `template<typename Prev, Block Next, Block... Rest> struct BuildChain<Prev, Next, Rest...>`](src/NetworkComposition.hpp)
+    - Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
+    - Recursive case: `std::tuple_cat` of
+        - first `Block`'s `ConcreteBlock` as given by its `Resolve` member
+        - next `Block`s' `ConcreteBlock`s
+    - Used by `ApplyBuildChain`
+
+- ***Input*** - [`template<size_t... Dims> struct Input`](src/NetworkComposition.hpp)
+    - `Block` type which begins and allows a variadic argument list of `Block`s to be processed by `BuildChain` via
+      `ApplyBuildChain`
+    - Defines `OutputTensor = Tensor<Dims...>` to begin chain
+
+- ***ApplyBuildChain*** - [
+  `template<typename In, Block... Rs> struct ApplyBuildChain<In, std::tuple<Rs...> >`](src/NetworkComposition.hpp)
+    - Expects an `Block<Input>` first and a trailing variadic list of `Block`s passes them to `BuildChain`
+    - Used in `NetworkBuilder` to define `BlockTuple`, a `TrainableTensorNetwork`'s tuple of `ConcreteBlock`s
+
+### Tuple-Unpacking Primitives
+
+- ***ConcretesToSequence*** - [`template<typename Tuple> struct ConcretesToSequence`](src/NetworkComposition.hpp)
+    - Specialization: `template<ConcreteBlock... Bs> struct ConcretesToSequence<std::tuple<Bs...>>`
+    - Unpacks a `std::tuple<ConcreteBlock...>` into `BlockSequence<Bs...>`
+    - Used by `ComposeBlocks::ResolveImpl`
+
+- ***ConcretesToNetwork*** - [`template<typename Tuple> struct ConcretesToNetwork`](src/NetworkComposition.hpp)
+    - Specialization: `template<ConcreteBlock... Bs> struct ConcretesToNetwork<std::tuple<Bs...>>`
+    - Unpacks a `std::tuple<ConcreteBlock...>` into `TrainableTensorNetwork<Bs...>`
+    - Used by `NetworkBuilder`
+
+### `struct ComposeBlocks`
+
+Extremely useful `Block` recipe, taking in a variadic template list of *other* `Block` recipes and creating a
+`ConcreteBlock<BlockSequence>` from them via `ConcretesToSequence`
+
+- ***ComposeBlocks*** - [
+  `template<typename... Recipes> requires (Block<Recipes> && ...) struct ComposeBlocks`](src/NetworkComposition.hpp)
+    - Struct containing `ResolveChain` methods (several specializations) which unpack variadic lists of `Block`s into a
+      `BlockSequence` type, saved in `ComposeBlocks::type`
+
+- ***ComposeBlocks::ResolveChain*** - [
+  `template<typename In, typename Last> struct ComposeBlocks::ResolveChain<In, Last>`](src/NetworkComposition.hpp)
+    - Wraps a variadic list of `Block`s into a `std::tuple` of `ConcreteBlock`s
+    - Used exclusively in `ResolveImpl` to turn unpack `Block` recipes into a `BlockSequence`
+    - Base case, resolving the last `Block`'s `OutputTensor` by passing in the penultimate `Block`'s
+      `OutputTensor` and wrapping `Resolved` in a `std::tuple`
+
+- ***ComposeBlocks::ResolveChain*** - [
+  `template<typename In, typename First, typename... Rest> struct ComposeBlocks::ResolveChain<In, First, Rest...>`](src/NetworkComposition.hpp)
+    - Wraps a variadic list of `Block`s into a `std::tuple` of `ConcreteBlock`s
+    - Used exclusively in `ResolveImpl` to turn unpack `Block` recipes into a `BlockSequence`
+    - Recursive case, resolving `First` by passing in `In` (starts as `IsTensor<InputT>` in `ResolveImpl`), then defines
+      `Tail` by recursing on `Resolve`, finally wrapping `Resolved` and `Tail` in `std::tuple_cat`
+
+- ***ComposeBlocks::LastOutputTensor*** - [
+  `template<typename Last> struct ComposeBlocks::LastOutputTensor<Last>`](src/NetworkComposition.hpp)
+    - Custom last-in-variadic getter, assuming that template args are `Block` recipes, recursing until the
+      `Last` is reached and finally grabbing `Last::OutputTensor`
+    - Base case: `type = Last::OutputTensor`
+
+- ***ComposeBlocks::LastOutputTensor*** - [
+  `template<typename First, typename... Rest> struct ComposeBlocks::LastOutputTensor<First, Rest...>`](src/NetworkComposition.hpp)
+    - Custom last-in-variadic getter, assuming that template args are `Block` recipes, recursing until the
+      `Last` is reached and finally grabbing `Last::OutputTensor`
+    - Recursive case: `type = LastOutputTensor<Rest...>::type`
+
+- ***ComposeBlocks::OutputTensor*** - [`using ComposeBlocks::OutputTensor`](src/NetworkComposition.hpp)
+    - Type alias for `OutputTensor` of last `Block` in `Recipes...`
+
+- ***ComposeBlocks::ResolveImpl*** - [
+  `template<typename InputT> requires IsTensor<InputT> struct ComposeBlocks::ResolveImpl`](src/NetworkComposition.hpp)
+    - Implementation helper to take in `IsTensor<InputT>` and `Recipes...`
+    - Runs `ResolveChain` to get a `std::tuple` of `ConcreteBlock`s, then calls `ConcretesToSequence` to produce
+      `BlockSequence`, stored in `type`
+
+- ***ComposeBlocks::Resolve*** - [
+  `template<typename InputT> requires IsTensor<InputT> using ComposeBlocks::Resolve`](src/NetworkComposition.hpp)
+    - Culmination: in compliance with `Block`, `ComposeBlocks::Resolve` takes in `IsTensor<InputT>` and resolves to a
+      `ConcreteBlock<BlockSequence>`
+
+### `struct ComposeNetworks`
+
+Thin convenience wrapper to take `ConcreteBlock...` lists from two `TrainableTensorNetwork`s and fuse them into one.
+
+- ***ConcreteBlock*** - [
+  `template<ConcreteBlock... BlocksA, ConcreteBlock... BlocksB> struct ComposeNetworks<TrainableTensorNetwork<BlocksA...>, TrainableTensorNetwork<BlocksB...> >`](src/NetworkComposition.hpp)
+    - `static_assert` that `std::is_same_v<
+    typename TrainableTensorNetwork<BlocksA...>::OutputTensor,
+    typename TrainableTensorNetwork<BlocksB...>::InputTensor>`
+    - Simple unpack: `type = TrainableTensorNetwork<BlocksA..., BlocksB...>`
+
+### `struct NetworkBuilder`
+
+Key builder helper to take variadic list of `Block...` recipes and create a
+`TrainableTensorNetwork` from them. Preferred way to define a
+`TrainableTensorNetwork` type because sizes can be written in `PyTorch` and
+`TensorFlow` style, only writing output sizes, with intermediate connections deduced (here, at compile-time!).
+
+- ***NetworkBuilder*** - [
+  `template<typename In, typename... Recipes> requires requires { typename In::OutputTensor; } && IsTensor<typename In::OutputTensor> && (Block<Recipes> && ...) struct NetworkBuilder`](src/NetworkComposition.hpp)
+    - Takes variadic list of `Block...` recipes and create a `TrainableTensorNetwork`
+    - Calls `ApplyBuildChain` to get a `std::tuple` of `ConcreteBlock`s, then calls `ConcretesToNetwork`
 
 ## [Snapshot.hpp](src/Snapshot.hpp): Activation Snapshots
 
@@ -1864,6 +1935,34 @@ Runtime-typed storage for capturing named activation tensors. `SnapshotEntry` ho
 `float` copy — erasing the compile-time type so snapshots can be stored in a uniform `SnapshotMap` (
 `unordered_map<string, SnapshotEntry>`). Used by visualization and debugging tools.
 
+### `struct SnapShotEntry`
+
+- ***SnapshotEntry***  - [`struct SnapshotEntry`](src/Snapshot.hpp)
+    - `struct` to hold `data` and `shape` from `PeekableBlock`s' activation snapshots
+  
+- ***SnapshotEntry::shape*** - [`@doc: std::vector<size_t> SnapshotEntry::shape`](src/Snapshot.hpp)
+    - `std::vector<size_t>` to hold an activation `Tensor`'s shape
+
+- ***SnapshotEntry::data*** - [`@doc: std::vector<float> SnapshotEntry::data`](src/Snapshot.hpp)
+    - `std::vector<float>` to hold an activation `Tensor`'s data
+
+- ***SnapshotEntry*** - [`[[nodiscard]] size_t SnapshotEntry::total() const    `](src/Snapshot.hpp)
+    - Getter for total size
+
+- ***SnapshotEntry*** - [`[[nodiscard]] size_t SnapshotEntry::rows(const size_t outer_axis = 0) const`](src/Snapshot.hpp)
+    - Getter for number of rows
+
+- ***SnapshotEntry*** - [`[[nodiscard]] size_t SnapshotEntry::cols() const`](src/Snapshot.hpp)
+    - Getter for number of columns
+
+
+
+- ***SnapshotMap*** - [`using SnapshotMap`](src/Snapshot.hpp)
+    - Type alias for `std::unordered_map<std::string, SnapshotEntry>`
+
+
+- ***snap_add*** - [`template<size_t... Dims> void snap_add(SnapshotMap &out, const std::string &key, const Tensor<Dims...> &t)`](src/Snapshot.hpp)
+    - Take a `Tensor`, a `std::string` key, and an existing `SnapshotMap` and add the `Tensor` as a `SnapshotEntry`
 
 --- 
 
@@ -1880,32 +1979,15 @@ Implements the general multidimensional dense layer (`DenseMDBlock`) and its rec
 
 The concrete fully-connected block. `W = Tensor<OutDims..., InDims...>`, `b = Tensor<OutDims...>`.
 
-- ***DenseMDBlock*** — [`DenseMDBlock()`](src/Dense.hpp)
-    - Xavier-initializes `W`
-- ***Forward*** — [`OutputTensor Forward(const InputTensor& x) const`](src/Dense.hpp)
-    - #########
-- ***Backward*** — [
-  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Dense.hpp)
-    - #########
-- ***BatchedForward*** — [
-  `template<size_t Batch> Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...>& X) const`](src/Dense.hpp)
-    -
-- ***BatchedBackward*** — [`template<size_t Batch> Tensor<Batch, InDims...> BatchedBackward(...)`](src/Dense.hpp)
-  -
-- ***all_params*** — [`auto all_params()`](src/Dense.hpp)
-    - Returns `std::tie(W_, b_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this
 
 ---
 
 ### `struct DenseMD<typename OutT, ActivationOp Act_>` *(Block recipe)*
 
-- ***Resolve*** — [`template<typename InputT> using Resolve = DenseMDBlock<InputT, OutT, Act_>`](src/Dense.hpp)
-  -
+
 
 ### `template<size_t N, ActivationOp Act_> using Dense`
 
-- ***Dense*** — [`using Dense = DenseMD<Tensor<N>, Act_>`](src/Dense.hpp)
-    - `Dense<128, ReLU>`, `Dense<10, Sigmoid>`, `Dense<10>` (defaults to `Linear`)
 
 ---
 
@@ -1916,61 +1998,29 @@ Implements scaled dot-product multi-head self-attention over sequences of arbitr
 
 ### `class MultiHeadAttentionBlock<size_t SeqLen, size_t Heads, size_t... EmbDims>`
 
-`InputTensor = OutputTensor = Tensor<SeqLen, EmbDims...>`. Constraint: `EmbSize % Heads == 0`.
-
-- ***MultiHeadAttentionBlock*** — [`MultiHeadAttentionBlock()`](src/Attention.hpp)
-    - Xavier-initializes `WQ`, `WK`, `WV`, `WO`
-- ***Forward*** — [`OutputTensor Forward(const InputTensor& X) const`](src/Attention.hpp)
-    - #########
-- ***Backward*** — [
-  `InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)`](src/Attention.hpp)
-    - #########
-- ***BatchedForward*** — [
-  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(...)`](src/Attention.hpp)
-    - #########
-- ***BatchedBackward*** — [
-  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(...)`](src/Attention.hpp)
-    -
-- ***all_params*** — [`auto all_params()`](src/Attention.hpp)
-    - Returns `std::tie(WQ_, WK_, WV_, WO_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this
-
 ---
 
 ### `struct TensorFirstDim<typename T>`
 
-- ***value*** — [`static constexpr size_t value`](src/Attention.hpp)
-  -
 
 ---
 
 ### `struct MHAttention<size_t Heads, size_t... EmbDims>` *(Block recipe)*
 
-- ***Resolve*** — [
-  `template<typename InputT> using Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`](src/Attention.hpp)
-    -
+
 
 ---
+
+## [MoreNets.hpp](src/MoreNets.hpp) -- Helper Block types
+
+---
+
 
 ## [DataIO.hpp](src/DataIO.hpp) -- Data Loading and Batching
 
 Utilities for loading datasets from disk, drawing random mini-batches, and displaying terminal progress bars. Shapes are compile-time parameters: the type
 *is* the schema.
 
-### `class ProgressBar`
-
-Lightweight terminal progress bar. Construct with a total step count and optional label; call `tick()` each step.
-
-- ***ProgressBar*** — [`explicit ProgressBar(size_t total, std::string label = "")`](src/DataIO.hpp)
-  -
-
-- ***tick*** — [`void tick(const std::string& suffix = "", size_t n = 1)`](src/DataIO.hpp)
-    - Advances by `n` steps and redraws. `suffix` is printed to the right of the bar (e.g. `"loss=0.312"`).
-
-- ***set_label*** — [`void set_label(const std::string& label)`](src/DataIO.hpp)
-  -
-
-- ***reset*** — [`void reset()`](src/DataIO.hpp)
-  -
 
 ---
 

@@ -160,8 +160,8 @@ namespace TTTN {
 
     // @doc: template<size_t M, size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, const float init, Map map, Reduce reduce)
     /**
-     * Core primitive: all contractions become ***BatchInnerContract***
-     * See ***BatchContractionKernel*** for more details on implementation
+     * Core primitive: all contractions become `BatchInnerContract`
+     * See `BatchContractionKernel` for more details on implementation
      */
     template<size_t M, size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce>
     auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, const float init, Map map,
@@ -250,7 +250,7 @@ namespace TTTN {
 
     // @doc: template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float /*init*/, Mul, Add)
     /**
-     * Specialized version of generalized ***BatchInnerContract*** for `Map=Mul` and `Reduce=Add` (most common use-case)
+     * Specialized version of generalized `BatchInnerContract` for `Map=Mul` and `Reduce=Add` (most common use-case)
      * Uses `Apple Accelerate`'s `cblas_sgemm` function to unlock aggressive vectorization optimization for matrix multiplication
      * Extensive commenting in code
      */
@@ -289,7 +289,7 @@ namespace TTTN {
 
 
     // @doc: template<size_t M, size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** Tag-parameter specialization of ***BatchInnerContract***; calls ***BatchInnerContract*** */
+    /** Tag-parameter specialization of `BatchInnerContract`; calls `BatchInnerContract` */
     template<size_t M, size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires
         FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<
             Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; }
@@ -299,7 +299,7 @@ namespace TTTN {
 
 
     // @doc: template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** Convenience wrapper for sum of product specialization of ***BatchInnerContract*** */
+    /** Convenience wrapper for sum of product specialization of `BatchInnerContract` */
     template<size_t M, size_t N, size_t... ADims, size_t... BDims>
     auto BatchΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
         return BatchInnerContract<M, N, Mul, Add>(A, B);
@@ -307,21 +307,21 @@ namespace TTTN {
 
 
     // @doc: template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchSigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** ASCII overload of ***BatchΣΠ*** */
+    /** ASCII overload of `BatchΣΠ` */
     template<size_t M, size_t N, size_t... ADims, size_t... BDims>
     auto BatchSigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
         return BatchΣΠ<M, N>(A, B);
     }
 
     // @doc: template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)
-    /** Convenience wrapper for non-batched calls to generalized ***BatchInnerContract*** */
+    /** Convenience wrapper for non-batched calls to generalized `BatchInnerContract` */
     template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce>
     auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce) {
         return BatchInnerContract<0, N>(A, B, init, map, reduce);
     }
 
     // @doc: template<size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** tag-param specialization of ***InnerContract*** */
+    /** tag-param specialization of `InnerContract` */
     template<size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires
         FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<
             Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; }
@@ -337,7 +337,7 @@ namespace TTTN {
     }
 
     // @doc: template<size_t N, size_t... ADims, size_t... BDims> auto SigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** ASCII convenience wrapper for ***ΣΠ*** */
+    /** ASCII convenience wrapper for `ΣΠ` */
     template<size_t N, size_t... ADims, size_t... BDims>
     auto SigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
         return ΣΠ<N>(A, B);
@@ -346,7 +346,7 @@ namespace TTTN {
 
     // @doc: template<AxisList AAxes, AxisList BAxes, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto Contract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)
     /**
-     * Convenience wrapper for ***BatchContract*** (and ***BatchInnerContract***) for non-Batched, arbitrary-axes contractions
+     * Convenience wrapper for `BatchContract` (and `BatchInnerContract`) for non-Batched, arbitrary-axes contractions
      * Second-most general function in [TensorContract.hpp](src/TensorContract.hpp)
      */
     template<AxisList AAxes, AxisList BAxes, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce>
@@ -367,7 +367,7 @@ namespace TTTN {
     }
 
     // @doc: template<AxisList AAxes, AxisList BAxes, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto Contract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** tag-param specialization of ***Contract*** */
+    /** tag-param specialization of `Contract` */
     template<AxisList AAxes, AxisList BAxes, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires
         FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<
             Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; }
@@ -376,7 +376,7 @@ namespace TTTN {
     }
 
     // @doc: template<size_t I, size_t J, size_t... ADims, size_t... BDims> auto Einsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** Variant of ***ΣΠ*** for single-axis sum of product contractions (specified by `I` and `J` for `A` and `B`, respectively) */
+    /** Variant of `ΣΠ` for single-axis sum of product contractions (specified by `I` and `J` for `A` and `B`, respectively) */
     template<size_t I, size_t J, size_t... ADims, size_t... BDims>
     auto Einsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
         static_assert(
@@ -391,7 +391,7 @@ namespace TTTN {
     }
 
     // @doc: template<AxisList ABatchAxes, AxisList BBatchAxes, size_t I, size_t J, size_t... ADims, size_t... BDims> auto BatchEinsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** Batch version of ***Einsum*** */
+    /** Batch version of `Einsum` */
     template<AxisList ABatchAxes, AxisList BBatchAxes, size_t I, size_t J, size_t... ADims, size_t... BDims>
     auto BatchEinsum(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
         static_assert(
@@ -420,7 +420,7 @@ namespace TTTN {
     // @doc: template<size_t M, size_t K, size_t N> auto Matmul(const Tensor<M, K> &A, const Tensor<K, N> &B)
     /**
      * Convenience wrapper for sum of product contraction (matrix multiplication) of two Rank-2 `Tensor`s
-     * NOTE: expects Axis 1 of `A` to be contracted with Axis 0 of `B`, per ***Matmul*** convention
+     * NOTE: expects Axis 1 of `A` to be contracted with Axis 0 of `B`, per `Matmul` convention
      */
     template<size_t M, size_t K, size_t N>
     auto Matmul(const Tensor<M, K> &A, const Tensor<K, N> &B) {
@@ -509,7 +509,7 @@ namespace TTTN {
     }
 
     // @doc: template<AxisList ABatchAxes, AxisList BBatchAxes, AxisList AContractAxes, AxisList BContractAxes, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto BatchContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** Tag-param specialization of ***BatchContract*** */
+    /** Tag-param specialization of `BatchContract` */
     template<AxisList ABatchAxes, AxisList BBatchAxes, AxisList AContractAxes, AxisList BContractAxes, typename Map,
         typename Reduce, size_t... ADims, size_t... BDims> requires
         FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<
@@ -536,7 +536,7 @@ namespace TTTN {
     }
 
     // @doc: template<typename M, typename R, size_t... Dims> requires FloatBinaryOp<M> && FloatBinaryOp<R> && std::default_initializable<M> && std::default_initializable<R> && requires { { R::identity } -> std::convertible_to<float>; } float Collapse(const Tensor<Dims...> &A, const Tensor<Dims...> &B)
-    /** Tag-param specialization of ***Collapse*** */
+    /** Tag-param specialization of `Collapse` */
     template<typename M, typename R, size_t... Dims> requires
         FloatBinaryOp<M> && FloatBinaryOp<R> && std::default_initializable<M> && std::default_initializable<R> &&
         requires { { R::identity } -> std::convertible_to<float>; }

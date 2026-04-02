@@ -3,7 +3,7 @@
 #include "Snapshot.hpp"
 #include "TensorUtil.hpp"
 
-#include "BlockComposition.hpp"
+#include "NetworkComposition.hpp"
 #include "Dense.hpp"
 #include "Attention.hpp"
 #include "MoreNets.hpp"

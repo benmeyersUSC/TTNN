@@ -12,8 +12,8 @@ namespace TTTN {
         float beta1 = 0.9f;
         float beta2 = 0.999f;
         float eps = 1e-8f;
-        float mCorr = 1.f; // 1 / (1 - β1^t)
-        float vCorr = 1.f; // 1 / (1 - β2^t)
+        float mCorr = 1.f; // 1 / (1 - b1^t)
+        float vCorr = 1.f; // 1 / (1 - b2^t)
         int t = 0;
 
         // @doc: void AdamState::step()
@@ -187,76 +187,18 @@ namespace TTTN {
                 { ct.all_params() }; // const: Save
             };
 
-    // @doc: template<typename B> concept Block
-    /**
-     * Declarable recipe to define a `ConcreteBlock` in a `TrainableTensorNetwork` template argument list
-     * `Block`s must define an `OutputTensor` type and alias a `ConcreteBlock` as `Resolve`
-     * `Block` argument lists passed to `NetworkBuilder` will be resolved into full `ConcreteBlock`s with chained `InputTensor` attributes
-     */
-    template<typename B>
-    concept Block =
-            requires { typename B::OutputTensor; } &&
-            IsTensor<typename B::OutputTensor> &&
-            ConcreteBlock<typename B::template Resolve<typename B::OutputTensor> >;
-
-
-    template<typename In, Block... Recipes>
-    struct BuildChain;
-
-    // @doc: template<typename Prev, Block Last> struct BuildChain<Prev, Last>
-    /**
-     * Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
-     * Base case for recursive `BuildChain`
-     */
-    template<typename Prev, Block Last>
-    struct BuildChain<Prev, Last> {
-        using type = std::tuple<typename Last::template Resolve<typename Prev::OutputTensor> >;
-    };
-
-    // @doc: template<typename Prev, Block Next, Block... Rest> struct BuildChain<Prev, Next, Rest...>
-    /**
-     * Build `std::tuple` of `ConcreteBlock`s from a variadic argument list of `Block`s
-     * Recursive case: `std::tuple_cat` of
-     * first `Block`'s `ConcreteBlock` as given by its `Resolve` member
-     * next `Block`s' `ConcreteBlock`s
-     * Used by `ApplyBuildChain`
-     */
-    template<typename Prev, Block Next, Block... Rest>
-    struct BuildChain<Prev, Next, Rest...> {
-        // get next's ConcreteBlock
-        using Resolved = Next::template Resolve<typename Prev::OutputTensor>;
-
-        // recurse down, grabbing next's ConcreteBlock
-        using type = decltype(std::tuple_cat(
-            std::declval<std::tuple<Resolved> >(),
-            std::declval<typename BuildChain<Resolved, Rest...>::type>()
-        ));
-    };
-
-    // @doc: template<size_t... Dims> struct Input
-    /**
-     * `Block` type which begins and allows a variadic argument list of `Block`s to be processed by `BuildChain` via `ApplyBuildChain`
-     * Defines `OutputTensor = Tensor<Dims...>` to begin chain
-     */
-    template<size_t... Dims>
-    struct Input {
-        using OutputTensor = Tensor<Dims...>;
-    };
-
-
-    template<typename In, typename Tuple>
-    struct ApplyBuildChain;
-
-    // @doc: template<typename In, Block... Rs> struct ApplyBuildChain<In, std::tuple<Rs...> >
-    /**
-     * Expects an `Block<Input>` first and a trailing variadic list of `Block`s passes them to `BuildChain`
-     * Used in `NetworkBuilder` to define `BlockTuple`, a `TrainableTensorNetwork`'s tuple of `ConcreteBlock`s
-     */
-    template<typename In, Block... Rs>
-    struct ApplyBuildChain<In, std::tuple<Rs...> > {
-        using type = BuildChain<In, Rs...>::type;
-    };
-
+    // // @doc: template<typename B> concept Block
+    // /**
+    //  * Declarable recipe to define a `ConcreteBlock` in a `TrainableTensorNetwork` template argument list
+    //  * `Block`s must define an `OutputTensor` type and alias a `ConcreteBlock` as `Resolve`
+    //  * `Block` argument lists passed to `NetworkBuilder` will be resolved into full `ConcreteBlock`s with chained `InputTensor` attributes
+    //  */
+    // template<typename B>
+    // concept Block =
+    //         requires { typename B::OutputTensor; } &&
+    //         IsTensor<typename B::OutputTensor> &&
+    //         ConcreteBlock<typename B::template Resolve<typename B::OutputTensor> >;
+    //
 
     // @doc: template<typename TupleT> class ActivationsWrap
     /**
