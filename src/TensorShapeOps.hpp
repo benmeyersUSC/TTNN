@@ -179,4 +179,117 @@ namespace TTTN {
     struct TensorFirstDim<Tensor<D0, Rest...> > {
         static constexpr size_t value = D0;
     };
+
+    template<typename A, typename B>
+    struct ConcatSeqs;
+
+    // @doc: template<size_t... As, size_t... Bs> struct ConcatSeqs<std::integer_sequence<size_t, As...>, std::integer_sequence<size_t, Bs...> >
+    /** Given two `std::integer_sequence`s, concatenate their values into one `std::integer_sequence` */
+    template<size_t... As, size_t... Bs>
+    struct ConcatSeqs<std::integer_sequence<size_t, As...>, std::integer_sequence<size_t, Bs...> > {
+        using type = std::integer_sequence<size_t, As..., Bs...>;
+    };
+
+
+    template<typename Seq>
+    struct SeqToTensor;
+
+    // @doc: template<size_t... Ds> struct SeqToTensor<std::integer_sequence<size_t, Ds...> >
+    /** Given a `std::integer_sequence`, forward its values to a new `Tensor` type */
+    template<size_t... Ds>
+    struct SeqToTensor<std::integer_sequence<size_t, Ds...> > {
+        using type = Tensor<Ds...>;
+    };
+
+
+    template<typename Seq>
+    struct SeqProduct;
+
+    // @doc: template<> struct SeqProduct<std::integer_sequence<size_t> >
+    /**
+     * Fold a `std::integer_sequence` with multiplication to compute the product of all values
+     * Base case for empty sequence: `value = 1`
+     */
+    template<>
+    struct SeqProduct<std::integer_sequence<size_t> > {
+        static constexpr size_t value = 1;
+    };
+
+    // @doc: template<size_t D0, size_t... Rest> struct SeqProduct<std::integer_sequence<size_t, D0, Rest...> >
+    /**
+     * Fold a `std::integer_sequence` with multiplication to compute the product of all values
+     * Recursive case: `value = D0 * SeqProduct<std::integer_sequence<size_t, Rest...> >::value`
+     */
+    template<size_t D0, size_t... Rest>
+    struct SeqProduct<std::integer_sequence<size_t, D0, Rest...> > {
+        static constexpr size_t value = D0 * SeqProduct<std::integer_sequence<size_t, Rest...> >::value;
+    };
+
+
+    template<size_t N, typename Collected, typename Remaining>
+    struct SplitAtImpl;
+
+    // @doc: template<size_t... Collected, size_t... Remaining> struct SplitAtImpl<0, std::integer_sequence<size_t, Collected...>, std::integer_sequence<size_t, Remaining...> >
+    /**
+     * Recursive implementation of `SplitAt`
+     * Base case, `N == 0`: `Collected...` and `Rest...` are forwarded into `std::integer_sequence head, tail`
+     */
+    template<size_t... Collected, size_t... Remaining>
+    struct SplitAtImpl<0, std::integer_sequence<size_t, Collected...>, std::integer_sequence<size_t, Remaining...> > {
+        using head = std::integer_sequence<size_t, Collected...>;
+        using tail = std::integer_sequence<size_t, Remaining...>;
+    };
+
+    // @doc: template<size_t N, size_t... Collected, size_t D0, size_t... Rest> requires (N > 0) struct SplitAtImpl<N, std::integer_sequence<size_t, Collected...>, std::integer_sequence<size_t, D0, Rest...> >
+    /**
+     * Recursive implementation of `SplitAt`
+     * Recursive case: peel off leftmost value of `Rest...`, append to `Collected...`, call on `N - 1`
+     */
+    template<size_t N, size_t... Collected, size_t D0, size_t... Rest> requires (N > 0)
+    struct SplitAtImpl<N, std::integer_sequence<size_t, Collected...>, std::integer_sequence<size_t, D0, Rest...> > {
+        // peel leftmost value from Rest..., add to Collected, N--
+        using next = SplitAtImpl<N - 1,
+            std::integer_sequence<size_t, Collected..., D0>,
+            std::integer_sequence<size_t, Rest...> >;
+        using head = next::head;
+        using tail = next::tail;
+    };
+
+    // @doc: template<size_t N, size_t... Dims> struct SplitAt
+    /**
+     * Given axes `size_t... Dims` and `size_t N`, internally store `head` and `tail` `std::integer_sequence`s, where `head` contains the first `N` values of `Dims...` and `tail` the rest
+     * Useful to define weight `Tensor`
+     */
+    template<size_t N, size_t... Dims>
+    struct SplitAt {
+        using impl = SplitAtImpl<N,
+            std::integer_sequence<size_t>,
+            std::integer_sequence<size_t, Dims...> >;
+        using head = impl::head;
+        using tail = impl::tail;
+    };
+
+
+    template<size_t N, typename T>
+    struct PrependOnes;
+
+    // @doc: template<size_t... Dims> struct PrependOnes<0, Tensor<Dims...> >
+    /**
+     * Prepend `N` `1`s to a `size_t...Dims`, creating a new `Tensor` type
+     * Base case: `type = Tensor<Dims...>`
+     */
+    template<size_t... Dims>
+    struct PrependOnes<0, Tensor<Dims...> > {
+        using type = Tensor<Dims...>;
+    };
+
+    // @doc: template<size_t N, size_t... Dims> struct PrependOnes<N, Tensor<Dims...> >
+    /**
+     * Prepend `N` `1`s to a `size_t...Dims`, creating a new `Tensor` type
+     * Recursive case: `type = PrependOnes<N - 1, Tensor<1, Dims...> >::type`
+     */
+    template<size_t N, size_t... Dims>
+    struct PrependOnes<N, Tensor<Dims...> > {
+        using type = PrependOnes<N - 1, Tensor<1, Dims...> >::type;
+    };
 }

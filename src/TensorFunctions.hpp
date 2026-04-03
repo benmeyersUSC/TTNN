@@ -194,6 +194,22 @@ namespace TTTN {
         return Permute<Perm[I]...>(t);
     }
 
+    // @doc: template<auto Perm, size_t... I, size_t... Dims> decltype(auto) ConditionalPermute(const Tensor<Dims...> &t, std::index_sequence<I...>)
+    /**
+     * Zero-cost identity check: if `Perm` is the identity permutation (all `Perm[i] == i`), returns `t` as a `const&` with no allocation
+     * Otherwise falls back to `Permute`, returning a permuted copy
+     * Used internally by `Contract` and `BatchContract` to skip the permutation step when incoming tensors are already in minor-aligned layout
+     */
+    template<auto Perm, size_t... I, size_t... Dims>
+    decltype(auto) ConditionalPermute(const Tensor<Dims...> &t, std::index_sequence<I...>) {
+        // if requested permutation axes are all already in place, return const &
+        if constexpr (((Perm[I] == I) && ...))
+            return t;
+            // otherwise, call Permute and return copy
+        else
+            return Permute<Perm[I]...>(t);
+    }
+
 
     // @doc: template<size_t... NewDims, size_t... OldDims> Tensor<NewDims...> Reshape(const Tensor<OldDims...> &src)
     /**

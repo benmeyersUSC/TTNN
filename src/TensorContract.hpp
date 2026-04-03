@@ -22,7 +22,7 @@ namespace TTTN {
 
     // @doc: template<size_t Rank, AxisList BatchAxes, AxisList ContractAxes> struct BC_Permute
     /**
-     * Compile-time helper to generate permutation indices for a `Tensor`'s axes in `BatchInnerContract` form: `[Batch..., Free..., Contract...]`
+     * Compile-time helper to generate permutation indices for a `Tensor`'s axes in `BatchMinorContract` form: `[Batch..., Free..., Minor...]`
      * `static_assert`s that:
      * `Batch` and `Contract` axes are `disjoint`
      * no indices in `Batch` or `Contract` lists are greater than `Rank`
@@ -94,7 +94,7 @@ namespace TTTN {
     struct BatchedContractionKernel;
 
     // @doc: template<size_t M_Batched, size_t N_Contracted, size_t... A_Dims, size_t... B_Dims> struct BatchedContractionKernel<M_Batched, N_Contracted, Tensor<A_Dims...>, Tensor<B_Dims...> >
-    /** Unified contraction bookkeeping kernel, used compile-time compute convenient shapes and values used in two versions of `BatchInnerContract` (the functions through which every contraction operation are routed) */
+    /** Unified contraction bookkeeping kernel, used compile-time compute convenient shapes and values used in two versions of `BatchMinorContract` (the functions through which every contraction operation are routed) */
     template<size_t M_Batched, size_t N_Contracted, size_t... A_Dims, size_t... B_Dims>
     struct BatchedContractionKernel<M_Batched, N_Contracted, Tensor<A_Dims...>, Tensor<B_Dims...> > {
         static constexpr size_t Rank_A = sizeof...(A_Dims);
@@ -158,13 +158,13 @@ namespace TTTN {
     };
 
 
-    // @doc: template<size_t M, size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, const float init, Map map, Reduce reduce)
+    // @doc: template<size_t M, size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto BatchMinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, const float init, Map map, Reduce reduce)
     /**
-     * Core primitive: all contractions become `BatchInnerContract`
+     * Core primitive: all contractions become `BatchMinorContract`
      * See `BatchContractionKernel` for more details on implementation
      */
     template<size_t M, size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce>
-    auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, const float init, Map map,
+    auto BatchMinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, const float init, Map map,
                             Reduce reduce) {
         using K = BatchedContractionKernel<M, N, Tensor<ADims...>, Tensor<BDims...> >;
         using ResultType = K::ResultType;
@@ -248,15 +248,15 @@ namespace TTTN {
     }
 
 
-    // @doc: template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float /*init*/, Mul, Add)
+    // @doc: template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchMinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float /*init*/, Mul, Add)
     /**
-     * Specialized version of generalized `BatchInnerContract` for `Map=Mul` and `Reduce=Add` (most common use-case)
+     * Specialized version of generalized `BatchMinorContract` for `Map=Mul` and `Reduce=Add` (most common use-case)
      * Uses `Apple Accelerate`'s `cblas_sgemm` function to unlock aggressive vectorization optimization for matrix multiplication
      * Extensive commenting in code
      */
 
     template<size_t M, size_t N, size_t... ADims, size_t... BDims>
-    auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float /*init*/, Mul, Add) {
+    auto BatchMinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float /*init*/, Mul, Add) {
         using K = BatchedContractionKernel<M, N, Tensor<ADims...>, Tensor<BDims...> >;
         typename K::ResultType result;
         const float *a_ptr = A.data();
@@ -288,21 +288,21 @@ namespace TTTN {
     }
 
 
-    // @doc: template<size_t M, size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** Tag-parameter specialization of `BatchInnerContract`; calls `BatchInnerContract` */
+    // @doc: template<size_t M, size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto BatchMinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
+    /** Tag-parameter specialization of `BatchMinorContract`; calls `BatchMinorContract` */
     template<size_t M, size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires
         FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<
             Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; }
-    auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
-        return BatchInnerContract<M, N>(A, B, Reduce::identity, Map{}, Reduce{});
+    auto BatchMinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
+        return BatchMinorContract<M, N>(A, B, Reduce::identity, Map{}, Reduce{});
     }
 
 
     // @doc: template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** Convenience wrapper for sum of product specialization of `BatchInnerContract` */
+    /** Convenience wrapper for sum of product specialization of `BatchMinorContract` */
     template<size_t M, size_t N, size_t... ADims, size_t... BDims>
     auto BatchΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
-        return BatchInnerContract<M, N, Mul, Add>(A, B);
+        return BatchMinorContract<M, N, Mul, Add>(A, B);
     }
 
 
@@ -313,27 +313,27 @@ namespace TTTN {
         return BatchΣΠ<M, N>(A, B);
     }
 
-    // @doc: template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)
-    /** Convenience wrapper for non-batched calls to generalized `BatchInnerContract` */
+    // @doc: template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto MinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)
+    /** Convenience wrapper for non-batched calls to generalized `BatchMinorContract` */
     template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce>
-    auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce) {
-        return BatchInnerContract<0, N>(A, B, init, map, reduce);
+    auto MinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce) {
+        return BatchMinorContract<0, N>(A, B, init, map, reduce);
     }
 
-    // @doc: template<size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
-    /** tag-param specialization of `InnerContract` */
+    // @doc: template<size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto MinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
+    /** tag-param specialization of `MinorContract` */
     template<size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires
         FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<
             Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; }
-    auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
-        return BatchInnerContract<0, N, Map, Reduce>(A, B);
+    auto MinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
+        return BatchMinorContract<0, N, Map, Reduce>(A, B);
     }
 
     // @doc: template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
     /** Convenience wrapper for non-batched sum of products contraction */
     template<size_t N, size_t... ADims, size_t... BDims>
     auto ΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B) {
-        return InnerContract<N, Mul, Add>(A, B);
+        return MinorContract<N, Mul, Add>(A, B);
     }
 
     // @doc: template<size_t N, size_t... ADims, size_t... BDims> auto SigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
@@ -346,7 +346,7 @@ namespace TTTN {
 
     // @doc: template<AxisList AAxes, AxisList BAxes, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto Contract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)
     /**
-     * Convenience wrapper for `BatchContract` (and `BatchInnerContract`) for non-Batched, arbitrary-axes contractions
+     * Convenience wrapper for `BatchContract` (and `BatchMinorContract`) for non-Batched, arbitrary-axes contractions
      * Second-most general function in [TensorContract.hpp](src/TensorContract.hpp)
      */
     template<AxisList AAxes, AxisList BAxes, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce>
@@ -360,10 +360,10 @@ namespace TTTN {
         using PermA = BC_Permute<ARank, AxisList<>{}, AAxes>;
         using PermB = BC_Permute<BRank, AxisList<>{}, BAxes>;
 
-        auto permutedA = PermuteFromArray<PermA::value>(A, std::make_index_sequence<ARank>{});
-        auto permutedB = PermuteFromArray<PermB::value>(B, std::make_index_sequence<BRank>{});
+        auto&& permutedA = ConditionalPermute<PermA::value>(A, std::make_index_sequence<ARank>{});
+        auto&& permutedB = ConditionalPermute<PermB::value>(B, std::make_index_sequence<BRank>{});
 
-        return InnerContract<N>(permutedA, permutedB, init, map, reduce);
+        return MinorContract<N>(permutedA, permutedB, init, map, reduce);
     }
 
     // @doc: template<AxisList AAxes, AxisList BAxes, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto Contract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)
@@ -500,10 +500,10 @@ namespace TTTN {
         using PermA = BC_Permute<A_Rank, ABatchAxes, AContractAxes>;
         using PermB = BC_Permute<B_Rank, BBatchAxes, BContractAxes>;
 
-        auto permA = PermuteFromArray<PermA::value>(A, std::make_index_sequence<A_Rank>{});
-        auto permB = PermuteFromArray<PermB::value>(B, std::make_index_sequence<B_Rank>{});
+        auto&& permA = ConditionalPermute<PermA::value>(A, std::make_index_sequence<A_Rank>{});
+        auto&& permB = ConditionalPermute<PermB::value>(B, std::make_index_sequence<B_Rank>{});
 
-        return BatchInnerContract<BatchSize, InnerSize>(
+        return BatchMinorContract<BatchSize, InnerSize>(
             permA, permB, init, map, reduce
         );
     }

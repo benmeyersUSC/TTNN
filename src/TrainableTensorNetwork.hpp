@@ -125,9 +125,9 @@ namespace TTTN {
 
         // @doc: void TrainableTensorNetwork::Update(const float lr)
         /**
-         * `BatchInnerContract` form is part conventional and part performance-informed:
+         * `BatchMinorContract` form is part conventional and part performance-informed:
          * `Batch` being left-aligned adopts common convention for `Tensor` shapes in ML
-         * `Inner` being right-aligned departs from the original conventional configuration in which `Inner` means `A`'s rightmost and `B`'s leftmost axes. The reason for right-alignment of contracted axes is that `Tensor`s in `TTTN` are backed by ***row-major*** `float` arrays. This means that in the backing array, the only sets of values which are stored contiguously are those in the right-most axes. To maximize vectorization optimizations for `Reduce ∘ zipWith(Map)` operations, we want the loops over contracted indices to be traversing contiguous memory. Detailed comments on this subject are resident in the code.
+         * `Minor` (contracted) axes being right-aligned reflects that `Tensor`s in `TTTN` are backed by ***row-major*** `float` arrays. Only the rightmost (minor) axes are stored contiguously in memory. To maximize vectorization optimizations for `Reduce ∘ zipWith(Map)` operations, we want the loops over contracted indices to be traversing contiguous memory. Detailed comments on this subject are resident in the code.
          */
         void Update(const float lr) {
             mAdam_.step();

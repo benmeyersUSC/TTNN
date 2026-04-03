@@ -54,7 +54,7 @@ Used in my [AlphaToe](https://github.com/benmeyersUSC/AlphaToe) library.
         - `C[i, j] = Σ_k (A[i, k] * B[k, j])`
 - In [`TTTN`](src/TTTN.hpp), we have:
   ```cpp
-    auto C = InnerContract<N, Mul, Add>(A, B);  // Map=Mul, Reduce=Add
+    auto C = MinorContract<N, Mul, Add>(A, B);  // Map=Mul, Reduce=Add
     ```
 
     - Different contractions on the same type:
@@ -68,7 +68,7 @@ Used in my [AlphaToe](https://github.com/benmeyersUSC/AlphaToe) library.
           ```
         - **Max product** (no identity for Max over products — use lambda form)
           ```cpp
-          auto C = InnerContract<1>(A, B,
+          auto C = MinorContract<1>(A, B,
               -std::numeric_limits<float>::infinity(),
               Mul{},
               Max{});
@@ -414,7 +414,7 @@ The primary data structure. `Dims...` encodes the full shape at compile time, in
 
 - **`FloatUnaryOp`** — `std::regular_invocable<F, float>` with return type `float`. Used by `Tensor::map`, `Map`.
 - **`FloatBinaryOp`** — `std::regular_invocable<F, float, float>` with return type `float`. Used by `ReduceApply`,
-  `BroadcastApply`, `BroadcastReduce`, `InnerContract`, `Contract`, `Collapse`, `TensorIndexApply`.
+  `BroadcastApply`, `BroadcastReduce`, `MinorContract`, `Contract`, `Collapse`, `TensorIndexApply`.
 
 ---
 
@@ -520,6 +520,50 @@ Shape-only metaprogramming — no data, no runtime. Purely compile-time type-lev
 - ***TensorFirstDim*** - [
   `template<size_t D0, size_t... Rest> struct TensorFirstDim<Tensor<D0, Rest...> >`](src/TensorShapeOps.hpp)
     - Get the first axis size from a `Tensor`
+
+- ***ConcatSeqs*** - [
+  `template<size_t... As, size_t... Bs> struct ConcatSeqs<std::integer_sequence<size_t, As...>, std::integer_sequence<size_t, Bs...> >`](src/TensorShapeOps.hpp)
+    - Given two `std::integer_sequence`s, concatenate their values into one `std::integer_sequence`
+
+- ***SeqToTensor*** - [
+  `template<size_t... Ds> struct SeqToTensor<std::integer_sequence<size_t, Ds...> >`](src/TensorShapeOps.hpp)
+    - Given a `std::integer_sequence`, forward its values to a new `Tensor` type
+
+- ***SeqProduct*** - [
+  `template<> struct SeqProduct<std::integer_sequence<size_t> >`](src/TensorShapeOps.hpp)
+    - Fold a `std::integer_sequence` with multiplication to compute the product of all values
+    - Base case for empty sequence: `value = 1`
+
+- ***SeqProduct*** - [
+  `template<size_t D0, size_t... Rest> struct SeqProduct<std::integer_sequence<size_t, D0, Rest...> >`](src/TensorShapeOps.hpp)
+    - Fold a `std::integer_sequence` with multiplication to compute the product of all values
+    - Recursive case: `value = D0 * SeqProduct<std::integer_sequence<size_t, Rest...> >::value`
+
+- ***SplitAt*** - [
+  `template<size_t N, size_t... Dims> struct SplitAt`](src/TensorShapeOps.hpp)
+    - Given axes `size_t... Dims` and `size_t N`, internally store `head` and `tail` `std::integer_sequence`s, where
+      `head` contains the first `N` values of `Dims...` and `tail` the rest
+    - Useful to define weight `Tensor`
+
+- ***SplitAtImpl*** - [
+  `template<size_t... Collected, size_t... Remaining> struct SplitAtImpl<0, std::integer_sequence<size_t, Collected...>, std::integer_sequence<size_t, Remaining...> >`](src/TensorShapeOps.hpp)
+    - Recursive implementation of `SplitAt`
+    - Base case, `N == 0`: `Collected...` and `Rest...` are forwarded into `std::integer_sequence head, tail`
+
+- ***SplitAtImpl*** - [
+  `template<size_t N, size_t... Collected, size_t D0, size_t... Rest> requires (N > 0) struct SplitAtImpl<N, std::integer_sequence<size_t, Collected...>, std::integer_sequence<size_t, D0, Rest...> >`](src/TensorShapeOps.hpp)
+    - Recursive implementation of `SplitAt`
+    - Recursive case: peel off leftmost value of `Rest...`, append to `Collected...`, call on `N - 1`
+
+- ***PrependOnes*** - [
+  `template<size_t... Dims> struct PrependOnes<0, Tensor<Dims...> >`](src/TensorShapeOps.hpp)
+    - Prepend `N` `1`s to a `size_t...Dims`, creating a new `Tensor` type
+    - Base case: `type = Tensor<Dims...>`
+
+- ***PrependOnes*** - [
+  `template<size_t N, size_t... Dims> struct PrependOnes<N, Tensor<Dims...> >`](src/TensorShapeOps.hpp)
+    - Prepend `N` `1`s to a `size_t...Dims`, creating a new `Tensor` type
+    - Recursive case: `type = PrependOnes<N - 1, Tensor<1, Dims...> >::type`
 
 ---
 
@@ -629,6 +673,14 @@ Default-constructible callable structs satisfying `FloatBinaryOp` or
     - Takes a `std::array<size_t, Rank>` representing requested permutation ordering and unpacks them with a
       `std::index_sequence` into a call to `Permute`
     - Returns a `Tensor` of new permuted shape
+
+- ***ConditionalPermute*** - [
+  `template<auto Perm, size_t... I, size_t... Dims> decltype(auto) ConditionalPermute(const Tensor<Dims...> &t, std::index_sequence<I...>)`](src/TensorFunctions.hpp)
+    - Zero-cost identity check: if `Perm` is the identity permutation (all `Perm[i] == i`), returns `t` as a
+      `const&` with no allocation
+    - Otherwise falls back to `Permute`, returning a permuted copy
+    - Used internally by `Contract` and
+      `BatchContract` to skip the permutation step when incoming tensors are already in minor-aligned layout
 
 
 - ***Reshape*** - [
@@ -770,10 +822,10 @@ Tensor contraction is the unified `Reduce ∘ zipWith(Map) ∘ Align` operation 
 `for batch in Batches: {use A[batch] and B[batch]}`. This necessary for things like **multi-headed attention** in *
 *Transformers**.
 
-All contractions eventually become a `BatchInnerContraction`, which takes in four arrays of axes: `A`'s `Batch` and
+All contractions eventually become a `BatchMinorContraction`, which takes in four arrays of axes: `A`'s `Batch` and
 `Contract` axes and `B`'s `Batch` and `Contract` axes. Non-batched `Contract` calls become
 `Batch=0` calls to the former. `Dot`, `Matmul`, `ΣΠ`, `Outer`, and other variants all have
-`Batch` versions, but, again are all wrappers around `BatchInnerContraction`.
+`Batch` versions, but, again are all wrappers around `BatchMinorContraction`.
 
 - ***AxisList*** - [`template<size_t... Axes> struct AxisList`](src/TensorContract.hpp)
     - Necessary wrapper around variadic `size_t` axis packs used in `Contract` and `BatchContract` to specify specific
@@ -783,58 +835,56 @@ All contractions eventually become a `BatchInnerContraction`, which takes in fou
 
 - ***BC_Permute*** - [
   `template<size_t Rank, AxisList BatchAxes, AxisList ContractAxes> struct BC_Permute`](src/TensorContract.hpp)
-    - Compile-time helper to generate permutation indices for a `Tensor`'s axes in `BatchInnerContract` form:
-      `[Batch..., Free..., Contract...]`
+    - Compile-time helper to generate permutation indices for a `Tensor`'s axes in `BatchMinorContract` form:
+      `[Batch..., Free..., Minor...]`
     - `static_assert`s that:
         - `Batch` and `Contract` axes are `disjoint`
         - no indices in `Batch` or `Contract` lists are greater than `Rank`
         - `Batch` and `Contract` axes have no duplicates
     - Intended to allow for `Permute`-`Contract` fusion, obviating many calls (in [
       `TrainableTensorNetwork`](src/TrainableTensorNetwork.hpp) blocks, for example) which allocate temporary `Tensor`s
-    - `BatchInnerContract` form is part conventional and part performance-informed:
+    - `BatchMinorContract` form is part conventional and part performance-informed:
         - `Batch` being left-aligned adopts common convention for `Tensor` shapes in ML
-        - `Inner` being right-aligned departs from the original conventional configuration in which `Inner` means
-          `A`'s rightmost and `B`'s leftmost axes. The reason for right-alignment of contracted axes is that
-          `Tensor`s in `TTTN` are backed by ***row-major***
-          `float` arrays. This means that in the backing array, the only sets of values which are stored contiguously are those in the right-most axes. To maximize vectorization optimizations for
+        - `Minor` (contracted) axes being right-aligned reflects that `Tensor`s in `TTTN` are backed by ***row-major***
+          `float` arrays. Only the rightmost (minor) axes are stored contiguously in memory. To maximize vectorization optimizations for
           `Reduce ∘ zipWith(Map)` operations, we want the loops over contracted indices to be traversing contiguous memory. Detailed comments on this subject are resident in the code.
 
 - ***BatchedContractionKernel*** — [
   `template<size_t M_Batched, size_t N_Contracted, size_t... A_Dims, size_t... B_Dims> struct BatchedContractionKernel<M_Batched, N_Contracted, Tensor<A_Dims...>, Tensor<B_Dims...> >`](src/TensorContract.hpp)
     - Unified contraction bookkeeping kernel, used compile-time compute convenient shapes and values used in two versions of
-      `BatchInnerContract` (the functions through which every contraction operation are routed)
+      `BatchMinorContract` (the functions through which every contraction operation are routed)
 
-- ***BatchInnerContract*** - [
-  `template<size_t M, size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, const float init, Map map, Reduce reduce)`](src/TensorContract.hpp)'s core primitive; all contraction routes through here
-    - Core primitive: all contractions become `BatchInnerContract`
+- ***BatchMinorContract*** - [
+  `template<size_t M, size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto BatchMinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, const float init, Map map, Reduce reduce)`](src/TensorContract.hpp)'s core primitive; all contraction routes through here
+    - Core primitive: all contractions become `BatchMinorContract`
     - See `BatchContractionKernel` for more details on implementation
 
-- ***BatchInnerContract*** - [
-  `template<size_t M, size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - Tag-parameter specialization of `BatchInnerContract`; calls `BatchInnerContract`
+- ***BatchMinorContract*** - [
+  `template<size_t M, size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto BatchMinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - Tag-parameter specialization of `BatchMinorContract`; calls `BatchMinorContract`
 
-- ***BatchInnerContract*** - [
-  `template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchInnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float /*init*/, Mul, Add)`](src/TensorContract.hpp)
-    - Specialized version of generalized `BatchInnerContract` for `Map=Mul` and `Reduce=Add` (most common use-case)
+- ***BatchMinorContract*** - [
+  `template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchMinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float /*init*/, Mul, Add)`](src/TensorContract.hpp)
+    - Specialized version of generalized `BatchMinorContract` for `Map=Mul` and `Reduce=Add` (most common use-case)
     - Uses `Apple Accelerate`'s
       `cblas_sgemm` function to unlock aggressive vectorization optimization for matrix multiplication
     - Extensive commenting in code
 
 - ***BatchΣΠ*** - [
   `template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - Convenience wrapper for sum of product specialization of `BatchInnerContract`
+    - Convenience wrapper for sum of product specialization of `BatchMinorContract`
 
 - ***BatchSigmaPi*** - [
   `template<size_t M, size_t N, size_t... ADims, size_t... BDims> auto BatchSigmaPi(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
     - ASCII overload of `BatchΣΠ`
 
-- ***InnerContract*** - [
-  `template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)`](src/TensorContract.hpp)
-    - Convenience wrapper for non-batched calls to generalized `BatchInnerContract`
+- ***MinorContract*** - [
+  `template<size_t N, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto MinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)`](src/TensorContract.hpp)
+    - Convenience wrapper for non-batched calls to generalized `BatchMinorContract`
 
-- ***InnerContract*** - [
-  `template<size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto InnerContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
-    - tag-param specialization of `InnerContract`
+- ***MinorContract*** - [
+  `template<size_t N, typename Map, typename Reduce, size_t... ADims, size_t... BDims> requires FloatBinaryOp<Map> && FloatBinaryOp<Reduce> && std::default_initializable<Map> && std::default_initializable<Reduce> && requires { { Reduce::identity } -> std::convertible_to<float>; } auto MinorContract(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
+    - tag-param specialization of `MinorContract`
 
 - ***ΣΠ*** - [
   `template<size_t N, size_t... ADims, size_t... BDims> auto ΣΠ(const Tensor<ADims...> &A, const Tensor<BDims...> &B)`](src/TensorContract.hpp)
@@ -847,7 +897,7 @@ All contractions eventually become a `BatchInnerContraction`, which takes in fou
 - ***Contract*** - [
   `template<AxisList AAxes, AxisList BAxes, size_t... ADims, size_t... BDims, FloatBinaryOp Map, FloatBinaryOp Reduce> auto Contract(const Tensor<ADims...> &A, const Tensor<BDims...> &B, float init, Map map, Reduce reduce)`](src/TensorContract.hpp)
     - Convenience wrapper for `BatchContract` (and
-      `BatchInnerContract`) for non-Batched, arbitrary-axes contractions
+      `BatchMinorContract`) for non-Batched, arbitrary-axes contractions
     - Second-most general function in [TensorContract.hpp](src/TensorContract.hpp)
 
 - ***Contract*** - [
@@ -1978,36 +2028,352 @@ Implements the general multidimensional dense layer (`DenseMDBlock`) and its rec
 `Tensor<OutDims..., InDims...>`; forward pass is a generalized matrix-vector product via
 `ΣΠ`. Includes Adam optimizer state.
 
+### Dense Block
 
----
+- ***DenseMDBlock*** - [
+  `template<size_t... InDims, size_t... OutDims, ActivationOp Act_> class DenseMDBlock<Tensor<InDims...>, Tensor<OutDims...>, Act_>`](src/Dense.hpp)
+    - `Block` implementation for a generalized, multidimensional **Dense** layer
+    - Input and output dimensions are variadic `size_t...`, letting **Dense
+      ** contraction be far more general than the typical Rank-2 matrix multiplication
 
-### `class DenseMDBlock<typename InT, typename OutT, ActivationOp Act_>`
+- ***DenseMBBlock::InputTensor*** - [`using DenseMDBlock::InputTensor`](src/Dense.hpp)
+    - Alias: `InputTensor = Tensor<InDims...>`
+- ***DenseMBBlock::OutputTensor*** - [`using DenseMDBlock::OutputTensor`](src/Dense.hpp)
+    - Alias: `OutputTensor = Tensor<OutDims...>`
+- ***DenseMBBlock::Act*** - [`using DenseMDBlock::Act`](src/Dense.hpp)
+    - Alias: `Act = Act_`
+        - `Act_` is a `DenseMDBlock` template argument, forced to be a valid `ActivationOp`
 
-The concrete fully-connected block. `W = Tensor<OutDims..., InDims...>`, `b = Tensor<OutDims...>`.
+- ***DenseMDBlock::N_in*** - [`static constexpr size_t DenseMDBlock::N_in`](src/Dense.hpp)
+    - Convenience member: `N_in = sizeof...(InDims)`
+- ***DenseMDBlock::N_out*** - [`static constexpr size_t DenseMDBlock::N_out`](src/Dense.hpp)
+    - Convenience member: `N_out = sizeof...(OutDims)`
+
+- ***DenseMDBlock::W_Type*** - [`using DenseMDBlock::W_Type`](src/Dense.hpp)
+    - Convenience alias: `W_Type = Tensor<OutDims..., InDims...>`
+    - If we want to map `InDims...` to `OutDims...`, then this inverted
+      `Tensor` is exactly what we need as a weight matrix
+
+- ***DenseMDBlock::W_*** - [`Param<W_Type> DenseMDBlock::W_`](src/Dense.hpp)
+    - `Param` whose underlying `Tensor` has type `W_Type`
+
+- ***DenseMDBlock::b_*** - [`Param<OutputTensor> DenseMDBlock::b_`](src/Dense.hpp)
+    - `Param` whose underlying `Tensor` has type `OutputDims` (because `b_` is added to the output of the
+      `W_` contraction)
+
+- ***DenseMDBlock::all_params*** - [`auto DenseMDBlock::all_params()`](src/Dense.hpp)
+    - Returns `std::tuple` of references to `W_` and `b_`
+- ***DenseMDBlock::all_params*** - [`auto DenseMDBlock::all_params() const`](src/Dense.hpp)
+    - Returns `std::tuple` of const references to `W_` and `b_`
+
+- ***DenseMDBlock::DenseMDBlock*** - [`DenseMDBlock::DenseMDBlock()`](src/Dense.hpp)
+    - Default constructor
+    - Calls `XavierInitMD` on `W_`
 
 
----
+- ***DenseMDBlock::Forward*** - [`OutputTensor DenseMDBlock::Forward(const InputTensor &x) const`](src/Dense.hpp)
+    - Contracts `W_` and `InputTensor& x` using `ΣΠ`, adds `b_`, maps with `Act`
 
-### `struct DenseMD<typename OutT, ActivationOp Act_>` *(BlockRecipe)*
+- ***DenseMDBlock::Backward*** - [
+  `InputTensor DenseMDBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)`](src/Dense.hpp)
+    - Computes `delta_z` from `delta_A`, propagates to `W_` and `b_`, passes `InputTensor delta_Input` upstream
 
-### `template<size_t N, ActivationOp Act_> using Dense`
+- ***DenseMDBlock::BatchedForward*** - [
+  `template<size_t Batch> Tensor<Batch, OutDims...> DenseMDBlock::BatchedForward(const Tensor<Batch, InDims...> &X) const`](src/Dense.hpp)
+    - Contracts `W_` and `Tensor<Batch, InDims...>& X` using `ΣΠ`, adds `b_`, maps with `Act`
+
+- ***DenseMDBlock::BatchedBackward*** - [
+  `template<size_t Batch> Tensor<Batch, InDims...> DenseMDBlock::BatchedBackward(const Tensor<Batch, OutDims...> &delta_A, const Tensor<Batch, OutDims...> &a, const Tensor<Batch, InDims...> &a_prev)`](src/Dense.hpp)
+    - Computes `delta_z` from `delta_A`, propagates to `W_` and `b_` (scaled by `Batch` count), passes
+      `Tensor<Batch, InDims...> delta_Input` upstream
+
+- ***DenseMD*** - [
+  `template<typename OutT, ActivationOp Act_ = Linear> requires IsTensor<OutT> struct DenseMD`](src/Dense.hpp)
+    - `BlockRecipe` for `DenseMDBlock`
+    - Customarily, takes in a `Tensor` to be `OutputTensor` as well as an `ActivationOp`
+    - `Resolve` takes an `IsTensor<InputT>` and defines the correct full-fledged `DenseMDBlock` type
+
+
+- ***Dense*** - [`template<size_t N, ActivationOp Act_ = Linear> using Dense`](src/Dense.hpp)
+    - Convenience wrapper around `BlockRecipe DenseMD` for the case where `OutT::Rank == 1`
+    - User specifies how large the outgoing vector is to be and gets the corresponding `DenseMD` under the hood
+    - Simple as: `using Dense = DenseMD<Tensor<N>, Act_>`
+
+### Map Dense Block
+
+DenseMD block which contracts the trailing (non-map) axes, doing so separately along specified leading 'map' axes. Almost like a generalization of a Batched Dense, but (A) for arbitrarily many batch axes and (B) native to the
+`Block` (ie not just its `Batched` versions of functions). Motivation for inclusion is the **FFN** layers in
+***TransformerBlock***s, where tokens in sequence (`[SeqLen, EmbDims...]`) are independently mapped through **FFN
+** layers (becoming `[SeqLen, SomeProjectedEmbDims...]`). The same weights are used along each independent path.
+
+- ***MapDenseMDBlock*** - [
+  `template<size_t... InDims, size_t... PartOutDims, size_t N_map, ActivationOp Act_> class MapDenseMDBlock<Tensor<InDims...>, Tensor<PartOutDims...>, N_map, Act_>`](src/Dense.hpp)
+    - `DenseMDBlock` that preserves first `N_map` axes, using shared weights to independently map the last
+      `Rank - N_map` axes of `InDims...` to `PartOutDims...`
+
+- ***MapDenseMDBlock::Split_*** - [`using MapDenseMDBlock::Split_`](src/Dense.hpp)
+    - `SplitAt` resulting object, to be extracted from
+
+- ***MapDenseMDBlock::MapSeq_*** - [`using MapDenseMDBlock::MapSeq_`](src/Dense.hpp)
+    - `std::integer_sequence` with the first `N_map` axes of `InDims...`
+
+- ***MapDenseMDBlock::ContractSeq_*** - [`using MapDenseMDBlock::ContractSeq_`](src/Dense.hpp)
+    - `std::integer_sequence` with trailing axes to be contracted
+
+- ***MapDenseMDBlock::OutDimSeq_*** - [`using MapDenseMDBlock::OutDimSeq_`](src/Dense.hpp)
+    - `std::integer_sequence` representing final output shape: `[MapSeq_..., PartOutDims...]`
+
+- ***MapDenseMDBlock::W_DimSeq_*** - [`using MapDenseMDBlock::W_DimSeq_`](src/Dense.hpp)
+    - `std::integer_sequence` representing weight matrix for each transformation: `[PartOutDims_..., ContractSeq_...]`
+
+- ***MapDenseMDBlock::InputTensor*** - [`using MapDenseMDBlock::InputTensor`](src/Dense.hpp)
+    - Unpack `InDims...` to `Tensor<InDims...>`
+
+- ***MapDenseMDBlock::OutputTensor*** - [`using MapDenseMDBlock::OutputTensor`](src/Dense.hpp)
+    - Unpack `OutDimSeq_` to `Tensor` using `SeqToTensor`
+
+- ***MapDenseMDBlock::W_Type*** - [`using MapDenseMDBlock::W_Type`](src/Dense.hpp)
+    - Unpack `W_Dim_Seq_` to `Tensor` using `SeqToTensor`
+
+- ***MapDenseMDBlock::BiasType*** - [`using MapDenseMDBlock::BiasType`](src/Dense.hpp)
+    - Unpack `PartOutDims...` to `Tensor<PartOutDims...>`
+
+- ***MapDenseMDBlock::Act*** - [`using MapDenseMDBlock::Act`](src/Dense.hpp)
+    - Alias for `ActivationOp Act_`
+
+- ***MapDenseMDBlock::N_contract*** - [`static constexpr size_t MapDenseMDBlock::N_contract`](src/Dense.hpp)
+    - `N_contract = sizeof...(InDims) - N_map`
+
+- ***MapDenseMDBlock::N_out_part*** - [`static constexpr size_t MapDenseMDBlock::N_out_part`](src/Dense.hpp)
+    - `N_out_part = sizeof...(PartOutDims)`
+
+- ***MapDenseMDBlock::MapVolume*** - [`static constexpr size_t MapDenseMDBlock::MapVolume`](src/Dense.hpp)
+    - How many independent sub-`Tensor`s will we contract (one for each **map** index product)
+    - `MapVolume = SeqProduct<MapSeq_>::value`
+
+- ***MapDenseMDBlock::PartOutSize*** - [`static constexpr size_t MapDenseMDBlock::PartOutSize`](src/Dense.hpp)
+    - Size of each projected copy at each **map** index product
+    - `PartOutSize = (PartOutDims * ...)`
+
+- ***MapDenseMDBlock::ContractSize*** - [`static constexpr size_t MapDenseMDBlock::ContractSize`](src/Dense.hpp)
+    - Size contracted in each copy at each **map** index product
+    - `ContractSize = SeqProduct<ContractSeq_>::value`
+
+- ***MapDenseMDBlock::W_*** - [`Param<W_Type> MapDenseMDBlock::W_`](src/Dense.hpp)
+    - Wrap `Tensor` of type `W_Type` into `Param` object
+
+- ***MapDenseMDBlock::b_*** - [`Param<BiasType> MapDenseMDBlock::b_`](src/Dense.hpp)
+    - Wrap `Tensor` of type `BiasType` into `Param` object
+
+- ***MapDenseMDBlock::all_params()*** - [`auto MapDenseMDBlock::all_params()`](src/Dense.hpp)
+    - Returns `std::tuple` of `Param&`s
+
+- ***MapDenseMDBlock::all_params() const*** - [`auto MapDenseMDBlock::all_params() const`](src/Dense.hpp)
+    - Returns `std::tuple` of `const Param&`s
+
+- ***MapDenseMDBlock::MapDenseMDBlock()*** - [`MapDenseMDBlock::MapDenseMDBlock()`](src/Dense.hpp)
+    - Default constructor, calls `XavierInitMD` on `W_`
+
+- ***MapDenseMDBlock::Forward*** - [`OutputTensor MapDenseMDBlock::Forward(const InputTensor &x) const`](src/Dense.hpp)
+    - Compute standard `ΣΠ<N_contract>(x, W_.value)`, add `b_`, wrap in `Act`
+
+- ***MapDenseMDBlock::Backward*** - [
+  `InputTensor MapDenseMDBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)`](src/Dense.hpp)
+    - Backward pass, fills `W_.grad` and `b_.grad`
+    - Similar logic as `DenseMD::Backward`
+
+- ***MapDenseMDBlock::BatchedForward*** - [
+  `template<size_t Batch> auto MapDenseMDBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type`](src/Dense.hpp)
+    - Same internal logic as `MapDenseMDBlock::Forward`, but adds `Batch` axis upfront
+
+- ***MapDenseMDBlock::BatchedBackward*** - [
+  `template<size_t Batch> auto MapDenseMDBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type`](src/Dense.hpp)
+    - Batched backward pass, fills `W_.grad` and `b_.grad`
+    - Similar logic as `DenseMD::BatchedBackward`
+
+- ***MapDense*** - [
+  `template<size_t N_map, typename PartOutT, ActivationOp Act_ = Linear> requires IsTensor<PartOutT> struct MapDense`](src/Dense.hpp)
+    - `BlockRecipe` for `MapDenseMDBlock`
+    - Takes in `N_map` and `Tensor<PartOutDims...> PartOutT`
 
 ---
 
 ## [Attention.hpp](src/Attention.hpp): Multi-Head Self-Attention
 
-Implements scaled dot-product multi-head self-attention over sequences of arbitrary-rank token embeddings. Forward-pass cache is stored as
+Implements scaled dot-product **mult-head self-attention
+** over sequences of arbitrary-rank token embeddings. Forward-pass cache is stored as
 `mutable` members. All four weight matrices (`W_Q`, `W_K`, `W_V`, `W_O`) are updated with Adam.
 
-### `class MultiHeadAttentionBlock<size_t SeqLen, size_t Heads, size_t... EmbDims>`
+- ***MultiHeadAttentionBlock*** - [
+  `template<size_t SeqLen, size_t Heads, size_t... EmbDims> class MultiHeadAttentionBlock`](src/Attention.hpp)
+    - `Block` implementation for **mult-head self-attention** over sequences of arbitrary-rank token embeddings
+    - Parameterized by `size_t SeqLen`, `size_t Heads`, and `size_t...EmbDims`
 
----
+- ***MultiHeadAttentionBlock::InputTensor*** - [`using MultiHeadAttentionBlock::InputTensor`](src/Attention.hpp)
+    - `InputTensor = Tensor<SeqLen, EmbDims...>`
 
-### `struct TensorFirstDim<typename T>`
+- ***MultiHeadAttentionBlock::OutputTensor*** - [`using MultiHeadAttentionBlock::OutputTensor`](src/Attention.hpp)
+    - `OutputTensor = Tensor<SeqLen, EmbDims...>`
 
----
+- ***MultiHeadAttentionBlock::N_emb*** - [`static constexpr size_t MultiHeadAttentionBlock::N_emb`](src/Attention.hpp)
+    - Embeddings rank (`sizeof...(EmbDims)`)
 
-### `struct MHAttention<size_t Heads, size_t... EmbDims>` *(BlockRecipe)*
+- ***MultiHeadAttentionBlock::EmbSize*** - [
+  `static constexpr size_t MultiHeadAttentionBlock::EmbSize`](src/Attention.hpp)
+    - Embeddings net size (`TensorDimsProduct<EmbDims...>::value`)
+
+- ***MultiHeadAttentionBlock::HeadDim*** - [
+  `static constexpr size_t MultiHeadAttentionBlock::HeadDim`](src/Attention.hpp)
+    - `HeadDim = EmbSize / Heads`
+    - `static_assert` that `EmbSize % Heads == 0`
+
+- ***MultiHeadAttentionBlock::W_QKV_Type*** - [`using MultiHeadAttentionBlock::W_QKV_Type`](src/Attention.hpp)
+    - Shape of `W_Q`, `W_K`, `W_V`
+    - `[Heads, HeadDim, EmbDims...]`
+    - For each head, contract `EmbDims...` from Input to get `QKV_Type`
+        - `[Heads, HeadDim, EmbDims...] x [SeqLen, EmbDims...] -> [SeqLen, Heads, HeadDim]`
+
+- ***MultiHeadAttentionBlock::W_O_Type*** - [`using MultiHeadAttentionBlock::W_O_Type`](src/Attention.hpp)
+    - Shape of `W_O`
+    - `[EmbDims..., Heads, HeadDim]`
+    - Scores x `W_O` -> `OutputTensor`:
+        - `[Heads, SeqLen, SeqLen] x [EmbDims..., Heads, HeadDim] -> [SeqLen, EmbDims...]`
+
+- ***MultiHeadAttentionBlock::QKV_Type*** - [`using MultiHeadAttentionBlock::QKV_Type`](src/Attention.hpp)
+    - Shape of `Q`, `K`, `V`
+    - `[SeqLen, Heads, HeadDim]`
+        - Right now, at each head, each element of the sequence is represented by `HeadDim`
+
+- ***MultiHeadAttentionBlock::Scores_Type*** - [`using MultiHeadAttentionBlock::Scores_Type`](src/Attention.hpp)
+    - Attention pattern matrix
+    - `[Heads, SeqLen, SeqLen]`
+
+- ***MultiHeadAttentionBlock::Attended_Type*** - [`using MultiHeadAttentionBlock::Attended_Type`](src/Attention.hpp)
+    - Attended values after softmax-weighted sum (between attention pattern and `W_O` transformation)
+    - `[Heads, SeqLen, HeadDim]`
+
+- ***MultiHeadAttentionBlock::WQ_*** - [`Param<W_QKV_Type> MultiHeadAttentionBlock::WQ_`](src/Attention.hpp)
+    - Query Weight Parameter (`Param<W_QKV_Type>`)
+
+- ***MultiHeadAttentionBlock::WK_*** - [`Param<W_QKV_Type> MultiHeadAttentionBlock::WK_`](src/Attention.hpp)
+    - Key Weight Parameter (`Param<W_QKV_Type>`)
+
+- ***MultiHeadAttentionBlock::WV_*** - [`Param<W_QKV_Type> MultiHeadAttentionBlock::WV_`](src/Attention.hpp)
+    - Value Weight Parameter (`Param<W_QKV_Type>`)
+
+- ***MultiHeadAttentionBlock::WO_*** - [`Param<W_O_Type> MultiHeadAttentionBlock::WO_`](src/Attention.hpp)
+    - Out projection matrix Parameter (`Param<W_O_Type>`)
+
+- ***MultiHeadAttentionBlock::X_cache_*** - [`mutable InputTensor MultiHeadAttentionBlock::X_cache_`](src/Attention.hpp)
+    - Cached `mutable` `Tensor` for `InputTensor x`, used by `Backward`
+
+- ***MultiHeadAttentionBlock::Q_*** - [`mutable QKV_Type MultiHeadAttentionBlock::Q_`](src/Attention.hpp)
+    - Cached `mutable` `Tensor` for `Q`, used by `Backward`
+
+- ***MultiHeadAttentionBlock::K_*** - [`mutable QKV_Type MultiHeadAttentionBlock::K_`](src/Attention.hpp)
+    - Cached `mutable` `Tensor` for `K`, used by `Backward`
+
+- ***MultiHeadAttentionBlock::V_*** - [`mutable QKV_Type MultiHeadAttentionBlock::V_`](src/Attention.hpp)
+    - Cached `mutable` `Tensor` for `V`, used by `Backward`
+
+- ***MultiHeadAttentionBlock::attn_weights_*** - [
+  `mutable Scores_Type MultiHeadAttentionBlock::attn_weights_`](src/Attention.hpp)
+    - Cached `mutable` `Tensor` for attention matrix, used by `Backward`
+
+- ***MultiHeadAttentionBlock::attended_*** - [
+  `mutable Attended_Type MultiHeadAttentionBlock::attended_`](src/Attention.hpp)
+    - Cached `mutable` `Tensor` for attended embeddings, used by `Backward`
+
+- ***MultiHeadAttentionBlock::bX_buf_*** - [
+  `mutable std::vector<float> MultiHeadAttentionBlock::bX_buf_`](src/Attention.hpp)
+    - Cached `std::vector<float>` for batched `InputTensor x`, used by `BatchedBackward` (not a `Tensor` because
+      `Batch` is a function template parameter, not a class paramater)
+
+- ***MultiHeadAttentionBlock::bQ_buf_*** - [
+  `mutable std::vector<float> MultiHeadAttentionBlock::bQ_buf_`](src/Attention.hpp)
+    - Cached `std::vector<float>` for batched `Q`, used by `BatchedBackward` (not a `Tensor` because
+      `Batch` is a function template parameter, not a class paramater)
+
+- ***MultiHeadAttentionBlock::bK_buf_*** - [
+  `mutable std::vector<float> MultiHeadAttentionBlock::bK_buf_`](src/Attention.hpp)
+    - Cached `std::vector<float>` for batched `K`, used by `BatchedBackward` (not a `Tensor` because
+      `Batch` is a function template parameter, not a class paramater)
+
+- ***MultiHeadAttentionBlock::bV_buf_*** - [
+  `mutable std::vector<float> MultiHeadAttentionBlock::bV_buf_`](src/Attention.hpp)
+    - Cached `std::vector<float>` for batched `V`, used by `BatchedBackward` (not a `Tensor` because
+      `Batch` is a function template parameter, not a class paramater)
+
+- ***MultiHeadAttentionBlock::battn_buf_*** - [
+  `mutable std::vector<float> MultiHeadAttentionBlock::battn_buf_`](src/Attention.hpp)
+    - Cached `std::vector<float>` for batched attention matrix, used by `BatchedBackward` (not a `Tensor` because
+      `Batch` is a function template parameter, not a class paramater)
+
+- ***MultiHeadAttentionBlock::battended_buf_*** - [
+  `mutable std::vector<float> MultiHeadAttentionBlock::battended_buf_`](src/Attention.hpp)
+    - Cached `std::vector<float>` for batched attended embeddings, used by `BatchedBackward` (not a `Tensor` because
+      `Batch` is a function template parameter, not a class paramater)
+
+- ***MultiHeadAttentionBlock::bcache_store*** - [
+  `template<typename T> static void MultiHeadAttentionBlock::bcache_store(const T &t, std::vector<float> &buf)`](src/Attention.hpp)
+    - Setter for batch cache `std::vector<float>`s
+
+- ***MultiHeadAttentionBlock::bcache_load*** - [
+  `template<typename T> static T MultiHeadAttentionBlock::bcache_load(const std::vector<float> &buf)`](src/Attention.hpp)
+    - Setter for batch cache `std::vector<float>`s
+
+- ***MultiHeadAttentionBlock::all_params()*** - [`auto MultiHeadAttentionBlock::all_params()`](src/Attention.hpp)
+    - Returns `std::tuple` of `Param&`
+
+- ***MultiHeadAttentionBlock::all_params() const*** - [
+  `auto MultiHeadAttentionBlock::all_params() const`](src/Attention.hpp)
+    - Returns `std::tuple` of `const Param&`
+
+- ***MultiHeadAttentionBlock::attn_weights()*** - [
+  `const Scores_Type &MultiHeadAttentionBlock::attn_weights() const`](src/Attention.hpp)
+    - Getter for attention pattern matrix
+
+- ***MultiHeadAttentionBlock::peek*** - [
+  `void MultiHeadAttentionBlock::peek(SnapshotMap &out, const std::string &prefix) const`](src/Attention.hpp)
+    - `PeekableBlock` satisfier function; returns `attn_weights_`
+
+- ***MultiHeadAttentionBlock::MultiHeadAttentionBlock()*** - [
+  `MultiHeadAttentionBlock::MultiHeadAttentionBlock()`](src/Attention.hpp)
+    - Calls `XavierInitMD` on all weight `Tensor`s (`WQ_`, `WK_`, `WV_`, `WO_`)
+
+- ***MultiHeadAttentionBlock::QKV_Contract*** - [
+  `static constexpr auto MultiHeadAttentionBlock::QKV_Contract(const InputTensor &X, const W_QKV_Type &wm)`](src/Attention.hpp)
+    - #########
+
+- ***MultiHeadAttentionBlock::Forward*** - [
+  `OutputTensor MultiHeadAttentionBlock::Forward(const InputTensor &X) const`](src/Attention.hpp)
+    - #########
+
+- ***MultiHeadAttentionBlock::Backward*** - [
+  `InputTensor MultiHeadAttentionBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)`](src/Attention.hpp)
+    - #########
+
+- ***MultiHeadAttentionBlock::BatchedQKV_Contract*** - [
+  `template<size_t Batch> static auto MultiHeadAttentionBlock::BatchedQKV_Contract(const Tensor<Batch, SeqLen, EmbDims...> &X, const W_QKV_Type &W)`](src/Attention.hpp)
+    - #########
+
+- ***MultiHeadAttentionBlock::BatchedDAttended*** - [
+  `template<size_t Batch> static auto MultiHeadAttentionBlock::BatchedDAttended(const Tensor<Batch, SeqLen, EmbDims...> &dA, const W_O_Type &WO)`](src/Attention.hpp)
+    - #########
+
+- ***MultiHeadAttentionBlock::BatchedForward*** - [
+  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> MultiHeadAttentionBlock::BatchedForward(const Tensor<Batch, SeqLen, EmbDims...> &X) const`](src/Attention.hpp)
+    - #########
+
+- ***MultiHeadAttentionBlock::BatchedBackward*** - [
+  `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> MultiHeadAttentionBlock::BatchedBackward(const Tensor<Batch, SeqLen, EmbDims...> &delta_A, const Tensor<Batch, SeqLen, EmbDims...> &a, const Tensor<Batch, SeqLen, EmbDims...> &a_prev)`](src/Attention.hpp)
+    - #########
+
+- ***MHAttention*** - [`template<size_t Heads, size_t... EmbDims> struct MHAttention`](src/Attention.hpp)
+    - `BlockRecipe` for `MultiHeadAttentionBlock`
+    - Takes in `size_t Heads` for head count and `size_t...EmbDims` indicating the dimensionality of the embeddings
+    - `InputT` passed to `Resolve` should have its first axis be `SeqLen`
+        - `Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`
 
 ---
 

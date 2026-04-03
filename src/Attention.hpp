@@ -4,59 +4,142 @@
 #include "NetworkUtil.hpp"
 
 namespace TTTN {
+    // @doc: template<size_t SeqLen, size_t Heads, size_t... EmbDims> class MultiHeadAttentionBlock
+    /**
+     * `Block` implementation for **mult-head self-attention** over sequences of arbitrary-rank token embeddings
+     * Parameterized by `size_t SeqLen`, `size_t Heads`, and `size_t...EmbDims`
+     */
     template<size_t SeqLen, size_t Heads, size_t... EmbDims>
     class MultiHeadAttentionBlock {
     public:
+        // @doc: using MultiHeadAttentionBlock::InputTensor
+        /** `InputTensor = Tensor<SeqLen, EmbDims...>` */
         using InputTensor = Tensor<SeqLen, EmbDims...>;
+        // @doc: using MultiHeadAttentionBlock::OutputTensor
+        /** `OutputTensor = Tensor<SeqLen, EmbDims...>` */
         using OutputTensor = Tensor<SeqLen, EmbDims...>;
 
+        // @doc: static constexpr size_t MultiHeadAttentionBlock::N_emb
+        /** Embeddings rank (`sizeof...(EmbDims)`) */
         static constexpr size_t N_emb = sizeof...(EmbDims);
+        // @doc: static constexpr size_t MultiHeadAttentionBlock::EmbSize
+        /** Embeddings net size (`TensorDimsProduct<EmbDims...>::value`) */
         static constexpr size_t EmbSize = TensorDimsProduct<EmbDims...>::value;
+        // @doc: static constexpr size_t MultiHeadAttentionBlock::HeadDim
+        /**
+         * `HeadDim = EmbSize / Heads`
+         * `static_assert` that `EmbSize % Heads == 0`
+         */
         static constexpr size_t HeadDim = EmbSize / Heads;
         static_assert(EmbSize % Heads == 0,
                       "Heads must be a factor of EmbSize (the product of all EmbDims)");
 
-        // shape of W_Q, W_K, W_V
-        // [Heads, HeadDim, EmbDims...]
-        //      for each head, contract EmbDims from Input to get QKV_Type
-        //      [Heads, HeadDim, EmbDims...] x [SeqLen, EmbDims...] -> [SeqLen, Heads, HeadDim]
+
+        // @doc: using MultiHeadAttentionBlock::W_QKV_Type
+        /**
+         * Shape of `W_Q`, `W_K`, `W_V`
+         * `[Heads, HeadDim, EmbDims...]`
+         * For each head, contract `EmbDims...` from Input to get `QKV_Type`
+         * `[Heads, HeadDim, EmbDims...] x [SeqLen, EmbDims...] -> [SeqLen, Heads, HeadDim]`
+         */
         using W_QKV_Type = Tensor<Heads, HeadDim, EmbDims...>;
 
-        // shape of W_O
-        // scores is [Heads, SeqLen, SeqLen]...need to go to [SeqLen, EmbDims...] for output
-        // so W_O is [EmbDims..., Heads, HeadDim]...[EmbDims...
+        // @doc: using MultiHeadAttentionBlock::W_O_Type
+        /**
+         * Shape of `W_O`
+         * `[EmbDims..., Heads, HeadDim]`
+         * Scores x `W_O` -> `OutputTensor`:
+         * `[Heads, SeqLen, SeqLen] x [EmbDims..., Heads, HeadDim] -> [SeqLen, EmbDims...]`
+         */
         using W_O_Type = Tensor<EmbDims..., Heads, HeadDim>;
 
-        // shape of Q, K, V
-        // [SeqLen, Heads, HeadDim] (right now, at each head, each element of the sequence is represented in HeadDims)
+
+        // @doc: using MultiHeadAttentionBlock::QKV_Type
+        /**
+         * Shape of `Q`, `K`, `V`
+         * `[SeqLen, Heads, HeadDim]`
+         * Right now, at each head, each element of the sequence is represented by `HeadDim`
+         */
         using QKV_Type = Tensor<SeqLen, Heads, HeadDim>;
 
-        // attention weight matrix
-        // [Heads, SeqLen, SeqLen]
+
+        // @doc: using MultiHeadAttentionBlock::Scores_Type
+        /**
+         * Attention pattern matrix
+         * `[Heads, SeqLen, SeqLen]`
+         */
         using Scores_Type = Tensor<Heads, SeqLen, SeqLen>;
 
-        // attended values after softmax-weighted sum
-        // [Heads, SeqLen, HeadDim]
+
+        // @doc: using MultiHeadAttentionBlock::Attended_Type
+        /**
+         * Attended values after softmax-weighted sum (between attention pattern and `W_O` transformation)
+         * `[Heads, SeqLen, HeadDim]`
+         */
         using Attended_Type = Tensor<Heads, SeqLen, HeadDim>;
 
     private:
-        Param<W_QKV_Type> WQ_, WK_, WV_;
+        // @doc: Param<W_QKV_Type> MultiHeadAttentionBlock::WQ_
+        /** Query Weight Parameter (`Param<W_QKV_Type>`) */
+        Param<W_QKV_Type> WQ_;
+        // @doc: Param<W_QKV_Type> MultiHeadAttentionBlock::WK_
+        /** Key Weight Parameter (`Param<W_QKV_Type>`) */
+        Param<W_QKV_Type> WK_;
+        // @doc: Param<W_QKV_Type> MultiHeadAttentionBlock::WV_
+        /** Value Weight Parameter (`Param<W_QKV_Type>`) */
+        Param<W_QKV_Type> WV_;
+        // @doc: Param<W_O_Type> MultiHeadAttentionBlock::WO_
+        /** Out projection matrix Parameter (`Param<W_O_Type>`) */
         Param<W_O_Type> WO_;
 
-        // forward-pass cache (needed by Backward) — mutable so Forward can be const
+        // @doc: mutable InputTensor MultiHeadAttentionBlock::X_cache_
+        /** Cached `mutable` `Tensor` for `InputTensor x`, used by `Backward` */
         mutable InputTensor X_cache_{};
-        mutable QKV_Type Q_{}, K_{}, V_{};
+        // @doc: mutable QKV_Type MultiHeadAttentionBlock::Q_
+        /** Cached `mutable` `Tensor` for `Q`, used by `Backward` */
+        mutable QKV_Type Q_{};
+        // @doc: mutable QKV_Type MultiHeadAttentionBlock::K_
+        /** Cached `mutable` `Tensor` for `K`, used by `Backward` */
+        mutable QKV_Type K_{};
+        // @doc: mutable QKV_Type MultiHeadAttentionBlock::V_
+        /** Cached `mutable` `Tensor` for `V`, used by `Backward` */
+        mutable QKV_Type V_{};
+        // @doc: mutable Scores_Type MultiHeadAttentionBlock::attn_weights_
+        /** Cached `mutable` `Tensor` for attention matrix, used by `Backward` */
         mutable Scores_Type attn_weights_{};
+        // @doc: mutable Attended_Type MultiHeadAttentionBlock::attended_
+        /** Cached `mutable` `Tensor` for attended embeddings, used by `Backward` */
         mutable Attended_Type attended_{};
 
-        // batched forward-pass cache — float vectors because Batch is a template param, not a class param
-        mutable std::vector<float> bX_buf_, bQ_buf_, bK_buf_, bV_buf_, battn_buf_, battended_buf_;
+        // @doc: mutable std::vector<float> MultiHeadAttentionBlock::bX_buf_
+        /** Cached `std::vector<float>` for batched `InputTensor x`, used by `BatchedBackward` (not a `Tensor` because `Batch` is a function template parameter, not a class paramater) */
+        mutable std::vector<float> bX_buf_;
+        // @doc: mutable std::vector<float> MultiHeadAttentionBlock::bQ_buf_
+        /** Cached `std::vector<float>` for batched `Q`, used by `BatchedBackward` (not a `Tensor` because `Batch` is a function template parameter, not a class paramater) */
+        mutable std::vector<float> bQ_buf_;
+        // @doc: mutable std::vector<float> MultiHeadAttentionBlock::bK_buf_
+        /** Cached `std::vector<float>` for batched `K`, used by `BatchedBackward` (not a `Tensor` because `Batch` is a function template parameter, not a class paramater) */
+        mutable std::vector<float> bK_buf_;
+        // @doc: mutable std::vector<float> MultiHeadAttentionBlock::bV_buf_
+        /** Cached `std::vector<float>` for batched `V`, used by `BatchedBackward` (not a `Tensor` because `Batch` is a function template parameter, not a class paramater) */
+        mutable std::vector<float> bV_buf_;
+        // @doc: mutable std::vector<float> MultiHeadAttentionBlock::battn_buf_
+        /** Cached `std::vector<float>` for batched attention matrix, used by `BatchedBackward` (not a `Tensor` because `Batch` is a function template parameter, not a class paramater) */
+        mutable std::vector<float> battn_buf_;
+        // @doc: mutable std::vector<float> MultiHeadAttentionBlock::battended_buf_
+        /** Cached `std::vector<float>` for batched attended embeddings, used by `BatchedBackward` (not a `Tensor` because `Batch` is a function template parameter, not a class paramater) */
+        mutable std::vector<float> battended_buf_;
 
+        // @doc: template<typename T> static void MultiHeadAttentionBlock::bcache_store(const T &t, std::vector<float> &buf)
+        /** Setter for batch cache `std::vector<float>`s */
         template<typename T>
         static void bcache_store(const T &t, std::vector<float> &buf) {
+            // assign handles efficiently allocating + filling
             buf.assign(t.data(), t.data() + T::Size);
         }
 
+        // @doc: template<typename T> static T MultiHeadAttentionBlock::bcache_load(const std::vector<float> &buf)
+        /** Setter for batch cache `std::vector<float>`s */
         template<typename T>
         static T bcache_load(const std::vector<float> &buf) {
             T t;
@@ -65,21 +148,25 @@ namespace TTTN {
         }
 
     public:
-        // @doc: auto all_params()
-        /** Returns `std::tie(WQ_, WK_, WV_, WO_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this */
+        // @doc: auto MultiHeadAttentionBlock::all_params()
+        /** Returns `std::tuple` of `Param&` */
         auto all_params() { return std::tie(WQ_, WK_, WV_, WO_); }
+        // @doc: auto MultiHeadAttentionBlock::all_params() const
+        /** Returns `std::tuple` of `const Param&` */
         auto all_params() const { return std::tie(WQ_, WK_, WV_, WO_); }
 
-        /** Cached attention weights `Tensor<Heads, SeqLen, SeqLen>` from the most recent `Forward` call. */
+        // @doc: const Scores_Type &MultiHeadAttentionBlock::attn_weights() const
+        /** Getter for attention pattern matrix */
         const Scores_Type &attn_weights() const { return attn_weights_; }
 
-        /** PeekableBlock: expose attn_weights into a SnapshotMap under `prefix`. */
+        // @doc: void MultiHeadAttentionBlock::peek(SnapshotMap &out, const std::string &prefix) const
+        /** `PeekableBlock` satisfier function; returns `attn_weights_` */
         void peek(SnapshotMap &out, const std::string &prefix) const {
             snap_add(out, prefix + "attn_weights", attn_weights_);
         }
 
-        // @doc: MultiHeadAttentionBlock()
-        /** Xavier-initializes `WQ`, `WK`, `WV`, `WO` */
+        // @doc: MultiHeadAttentionBlock::MultiHeadAttentionBlock()
+        /** Calls `XavierInitMD` on all weight `Tensor`s (`WQ_`, `WK_`, `WV_`, `WO_`) */
         MultiHeadAttentionBlock() {
             XavierInitMD(WQ_.value, EmbSize, HeadDim);
             XavierInitMD(WK_.value, EmbSize, HeadDim);
@@ -87,22 +174,24 @@ namespace TTTN {
             XavierInitMD(WO_.value, EmbSize, EmbSize);
         }
 
-        template<size_t... Is>
-        static constexpr auto QKV_Contract(const InputTensor &X, const W_QKV_Type &wm, std::index_sequence<Is...>) {
-            return Contract<AxisList<(1 + Is)...>{}, AxisList<(2 + Is)...>{}, Mul, Add>(X, wm);
-        };
+        // @doc: static constexpr auto MultiHeadAttentionBlock::QKV_Contract(const InputTensor &X, const W_QKV_Type &wm)
+        /** ######### */
+        static constexpr auto QKV_Contract(const InputTensor &X, const W_QKV_Type &wm) {
+            return []<size_t... Is>(std::index_sequence<Is...>, const InputTensor &x, const W_QKV_Type &w) {
+                return Contract<AxisList<(1 + Is)...>{}, AxisList<(2 + Is)...>{}, Mul, Add>(x, w);
+            }(std::make_index_sequence<N_emb>{}, X, wm);
+        }
 
-
-        // @doc: OutputTensor Forward(const InputTensor& X) const
+        // @doc: OutputTensor MultiHeadAttentionBlock::Forward(const InputTensor &X) const
         /** ######### */
         OutputTensor Forward(const InputTensor &X) const {
             const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
             X_cache_ = X;
 
             // [SeqLen, EmbDims...] x [Heads, HeadDim, EmbDims...] -> [SeqLen, Heads, HeadDim]
-            Q_ = QKV_Contract(X, WQ_.value, std::make_index_sequence<N_emb>{});
-            K_ = QKV_Contract(X, WK_.value, std::make_index_sequence<N_emb>{});
-            V_ = QKV_Contract(X, WV_.value, std::make_index_sequence<N_emb>{});
+            Q_ = QKV_Contract(X, WQ_.value);
+            K_ = QKV_Contract(X, WK_.value);
+            V_ = QKV_Contract(X, WV_.value);
 
             // scores[h,s_q,s_k] = Σ_d Q[s_q,h,d] * K[s_k,h,d]
             // Batch H(1,1)  Contract D(2,2)  Free S_q(0) S_k(0)  -> [H,S_q,S_k]
@@ -120,7 +209,7 @@ namespace TTTN {
         }
 
 
-        // @doc: InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)
+        // @doc: InputTensor MultiHeadAttentionBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)
         /** ######### */
         InputTensor Backward(const OutputTensor &delta_A,
                              const OutputTensor & /*a*/,
@@ -178,21 +267,30 @@ namespace TTTN {
 
         // Helper: project [B,S,E...] through [H,D,E...] → [B,S,H,D]
         // Contracts E... at axes (2+Is) in X against axes (2+Is) in W.
-        template<size_t Batch, size_t... Is>
-        static auto BatchedQKV_Contract(const Tensor<Batch, SeqLen, EmbDims...> &X, const W_QKV_Type &W,
-                                        std::index_sequence<Is...>) {
-            return Contract<AxisList<(2 + Is)...>{}, AxisList<(2 + Is)...>{}, Mul, Add>(X, W);
+        // @doc: template<size_t Batch> static auto MultiHeadAttentionBlock::BatchedQKV_Contract(const Tensor<Batch, SeqLen, EmbDims...> &X, const W_QKV_Type &W)
+        /** ######### */
+        template<size_t Batch>
+        static auto BatchedQKV_Contract(const Tensor<Batch, SeqLen, EmbDims...> &X, const W_QKV_Type &W) {
+            return []<size_t... Is>(std::index_sequence<Is...>,
+                                    const Tensor<Batch, SeqLen, EmbDims...> &x, const W_QKV_Type &w) {
+                return Contract<AxisList<(2 + Is)...>{}, AxisList<(2 + Is)...>{}, Mul, Add>(x, w);
+            }(std::make_index_sequence<N_emb>{}, X, W);
         }
 
         // Helper: backward through WO_ — contracts E... at axes (2+Is) in dA against axes (Is) in WO_.
         // [B,S,E...] × [E...,H,D] → [B,S,H,D]
-        template<size_t Batch, size_t... Is>
-        static auto BatchedDAttended(const Tensor<Batch, SeqLen, EmbDims...> &dA, const W_O_Type &WO,
-                                     std::index_sequence<Is...>) {
-            return Contract<AxisList<(2 + Is)...>{}, AxisList<Is...>{}, Mul, Add>(dA, WO);
+        // @doc: template<size_t Batch> static auto MultiHeadAttentionBlock::BatchedDAttended(const Tensor<Batch, SeqLen, EmbDims...> &dA, const W_O_Type &WO)
+        /** ######### */
+        template<size_t Batch>
+        static auto BatchedDAttended(const Tensor<Batch, SeqLen, EmbDims...> &dA, const W_O_Type &WO) {
+            return []<size_t... Is>(std::index_sequence<Is...>,
+                                    const Tensor<Batch, SeqLen, EmbDims...> &da, const W_O_Type &wo) {
+                return Contract<AxisList<(2 + Is)...>{}, AxisList<Is...>{}, Mul, Add>(da, wo);
+            }(std::make_index_sequence<N_emb>{}, dA, WO);
         }
 
-        // @doc: template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> BatchedForward(...)
+
+        // @doc: template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> MultiHeadAttentionBlock::BatchedForward(const Tensor<Batch, SeqLen, EmbDims...> &X) const
         /** ######### */
         template<size_t Batch>
         Tensor<Batch, SeqLen, EmbDims...> BatchedForward(const Tensor<Batch, SeqLen, EmbDims...> &X) const {
@@ -200,9 +298,9 @@ namespace TTTN {
             bcache_store(X, bX_buf_);
 
             // [B,S,E...] × [H,D,E...] → [B,S,H,D]
-            const auto bQ = BatchedQKV_Contract<Batch>(X, WQ_.value, std::make_index_sequence<N_emb>{});
-            const auto bK = BatchedQKV_Contract<Batch>(X, WK_.value, std::make_index_sequence<N_emb>{});
-            const auto bV = BatchedQKV_Contract<Batch>(X, WV_.value, std::make_index_sequence<N_emb>{});
+            const auto bQ = BatchedQKV_Contract<Batch>(X, WQ_.value);
+            const auto bK = BatchedQKV_Contract<Batch>(X, WK_.value);
+            const auto bV = BatchedQKV_Contract<Batch>(X, WV_.value);
             bcache_store(bQ, bQ_buf_);
             bcache_store(bK, bK_buf_);
             bcache_store(bV, bV_buf_);
@@ -230,6 +328,8 @@ namespace TTTN {
             return Contract<AxisList<1, 3>{}, AxisList<N_emb, N_emb + 1>{}, Mul, Add>(battended, WO_.value);
         }
 
+        // @doc: template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> MultiHeadAttentionBlock::BatchedBackward(const Tensor<Batch, SeqLen, EmbDims...> &delta_A, const Tensor<Batch, SeqLen, EmbDims...> &a, const Tensor<Batch, SeqLen, EmbDims...> &a_prev)
+        /** ######### */
         template<size_t Batch>
         Tensor<Batch, SeqLen, EmbDims...> BatchedBackward(
             const Tensor<Batch, SeqLen, EmbDims...> &delta_A,
@@ -251,7 +351,7 @@ namespace TTTN {
             WO_.grad += Contract<AxisList<0, 1>{}, AxisList<0, 2>{}, Mul, Add>(delta_A, battended) * inv_batch;
 
             // d_attended[b,s,h,d] = Σ_{e...} dA[b,s,e...] * WO[e...,h,d]   → [B,S,H,D]
-            const auto d_attended = BatchedDAttended<Batch>(delta_A, WO_.value, std::make_index_sequence<N_emb>{});
+            const auto d_attended = BatchedDAttended<Batch>(delta_A, WO_.value);
 
             // --- Attended backward ---
             // d_attn[b,h,s_q,s_k] = Σ_d d_att[b,s_q,h,d] * V[b,s_k,h,d]
@@ -290,41 +390,21 @@ namespace TTTN {
                    + Contract<AxisList<1, 3>{}, AxisList<0, 1>{}, Mul, Add>(d_K, WK_.value)
                    + Contract<AxisList<1, 3>{}, AxisList<0, 1>{}, Mul, Add>(d_V, WV_.value);
         }
-
-        // ─── ADAM UPDATE ────────────────────────────────────────────────────────
     };
 
 
-    // Helper: extract the first (SeqLen) dimension from Tensor<SeqLen, EmbDims...>
-    template<typename T>
-    struct TensorFirstDim;
-
-    // template<size_t D0, size_t... Rest>
-    // struct TensorFirstDim<Tensor<D0, Rest...> > {
-    //     static constexpr size_t value = D0;
-    // };
-
-
-    // MHAttention<Heads, EmbDims...>: recipe for MultiHeadAttentionBlock.
-    // HeadDim = EmbSize / Heads is derived automatically; EmbSize % Heads == 0 is asserted.
-    //
-    // Usage in NetworkBuilder:
-    //   NetworkBuilder<
-    //       Input<SeqLen, EmbDim>,
-    //       MHAttention<Heads, EmbDim>,
-    //       Dense<EmbDim, ActivationFunction::ReLU>
-    //   >::type transformer_layer;
-    //
-    // OutputTensor = Tensor<1, EmbDims...> is a SeqLen=1 placeholder for the Block concept
-    // self-check only; actual SeqLen is inferred from the input type via Resolve.
+    // @doc: template<size_t Heads, size_t... EmbDims> struct MHAttention
+    /**
+     * `BlockRecipe` for `MultiHeadAttentionBlock`
+     * Takes in `size_t Heads` for head count and `size_t...EmbDims` indicating the dimensionality of the embeddings
+     * `InputT` passed to `Resolve` should have its first axis be `SeqLen`
+     * `Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`
+     */
     template<size_t Heads, size_t... EmbDims>
     struct MHAttention {
         using OutputTensor = Tensor<1, EmbDims...>;
 
-        template<typename InputT>
-        using Resolve = MultiHeadAttentionBlock<
-            TensorFirstDim<InputT>::value,
-            Heads, EmbDims...
-        >;
+        template<typename InputT> requires IsTensor<InputT>
+        using Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>;
     };
 } // namespace TTTN

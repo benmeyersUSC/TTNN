@@ -5,322 +5,324 @@
 #include "NetworkUtil.hpp"
 
 namespace TTTN {
-    // DENSE BLOCK
-    // Weights, bias, activation.
-    // Implements the Block interface for a fully-connected layer with activation.
-    // InputTensor and OutputTensor can be any rank — this is the fully general version.
-    //
-    // W = Tensor<OutDims..., InDims...>   linear map from In-space to Out-space
-    // b = Tensor<OutDims...>              bias in Out-space
-    //
-    // Forward:  z = ΣΠ<N_in>(W, x) + b        contracts W's last N_in axes with x (generalised matvec)
-    //           a = z.map(Act{})
-    //
-    // Backward: delta_z  = delta_A ⊙ Act::prime(a)           peel off activation derivative → dL/dZ
-    //           dW      += ΣΠ<0>(delta_z, a_prev)             outer product → Tensor<OutDims...,InDims...>
-    //           dB      += delta_z
-    //           dL/dx    = ΣΠ<N_out>(W_T, delta_z)            generalises W^T · delta_z; W_T = Tensor<InDims...,OutDims...>
-    //
-    // caller must ZeroGrad() before the first Backward in each training step
-
     template<typename InT, typename OutT, ActivationOp Act_ = Linear>
     class DenseMDBlock;
 
+    // @doc: template<size_t... InDims, size_t... OutDims, ActivationOp Act_> class DenseMDBlock<Tensor<InDims...>, Tensor<OutDims...>, Act_>
+    /**
+     * `Block` implementation for a generalized, multidimensional **Dense** layer
+     * Input and output dimensions are variadic `size_t...`, letting **Dense ** contraction be far more general than the typical Rank-2 matrix multiplication
+     */
     template<size_t... InDims, size_t... OutDims, ActivationOp Act_>
     class DenseMDBlock<Tensor<InDims...>, Tensor<OutDims...>, Act_> {
     public:
+        // @doc: using DenseMDBlock::InputTensor
+        /** Alias: `InputTensor = Tensor<InDims...>` */
         using InputTensor = Tensor<InDims...>;
+        // @doc: using DenseMDBlock::OutputTensor
+        /** Alias: `OutputTensor = Tensor<OutDims...>` */
         using OutputTensor = Tensor<OutDims...>;
+        // @doc: using DenseMDBlock::Act
+        /**
+         * Alias: `Act = Act_`
+         * `Act_` is a `DenseMDBlock` template argument, forced to be a valid `ActivationOp`
+         */
         using Act = Act_;
 
     private:
+        // @doc: static constexpr size_t DenseMDBlock::N_in
+        /** Convenience member: `N_in = sizeof...(InDims)` */
         static constexpr size_t N_in = sizeof...(InDims);
+        // @doc: static constexpr size_t DenseMDBlock::N_out
+        /** Convenience member: `N_out = sizeof...(OutDims)` */
         static constexpr size_t N_out = sizeof...(OutDims);
+        // @doc: using DenseMDBlock::W_Type
+        /**
+         * Convenience alias: `W_Type = Tensor<OutDims..., InDims...>`
+         * If we want to map `InDims...` to `OutDims...`, then this inverted `Tensor` is exactly what we need as a weight matrix
+         */
         using W_Type = Tensor<OutDims..., InDims...>;
 
+        // @doc: Param<W_Type> DenseMDBlock::W_
+        /** `Param` whose underlying `Tensor` has type `W_Type` */
         Param<W_Type> W_;
+        // @doc: Param<OutputTensor> DenseMDBlock::b_
+        /** `Param` whose underlying `Tensor` has type `OutputDims` (because `b_` is added to the output of the `W_` contraction) */
         Param<OutputTensor> b_;
 
     public:
-        // @doc: auto all_params()
-        /** Returns `std::tie(W_, b_)`; TTN drives `ZeroGrad`, `Update`, `Save`, `Load` from this */
+        // @doc: auto DenseMDBlock::all_params()
+        /** Returns `std::tuple` of references to `W_` and `b_` */
         auto all_params() { return std::tie(W_, b_); }
+        // @doc: auto DenseMDBlock::all_params() const
+        /** Returns `std::tuple` of const references to `W_` and `b_` */
         auto all_params() const { return std::tie(W_, b_); }
 
-        // @doc: DenseMDBlock()
-        /** Xavier-initializes `W` */
+
+        // @doc: DenseMDBlock::DenseMDBlock()
+        /**
+         * Default constructor
+         * Calls `XavierInitMD` on `W_`
+         */
         DenseMDBlock() { XavierInitMD(W_.value, InputTensor::Size, OutputTensor::Size); }
 
-        // @doc: OutputTensor Forward(const InputTensor& x) const
-        /** ######### */
+
+        // @doc: OutputTensor DenseMDBlock::Forward(const InputTensor &x) const
+        /** Contracts `W_` and `InputTensor& x` using `ΣΠ`, adds `b_`, maps with `Act` */
         OutputTensor Forward(const InputTensor &x) const {
-            return Map<Act>(ΣΠ<N_in>(W_.value, x) + b_.value);
+            auto z = ΣΠ<N_in>(W_.value, x);
+            z += b_.value;
+            return MapMove<Act>(std::move(z));
         }
 
-        // @doc: InputTensor Backward(const OutputTensor& delta_A, const OutputTensor& a, const InputTensor& a_prev)
-        /** ######### */
-        InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a,
-                             const InputTensor &a_prev) {
+        // @doc: InputTensor DenseMDBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)
+        /** Computes `delta_z` from `delta_A`, propagates to `W_` and `b_`, passes `InputTensor delta_Input` upstream */
+        InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev) {
+            // get dLoss/dz from dLoss/dA with Act::prime
             const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
-            W_.grad += ΣΠ<0>(delta_z, a_prev);
+            // dLoss/dW = outer of grad-coming-back and a-that-came-in
+            W_.grad += Outer(delta_z, a_prev);
+            // dLoss/db is just dLoss/dz
             b_.grad += delta_z;
 
+            // permute manually so we can use ΣΠ
             const auto W_T = PermuteFromArray<SwapNDims<N_out, N_in>::value>(
                 W_.value, std::make_index_sequence<N_out + N_in>{}
             );
+            // contract the out dimensions, leaving an InputTensor being passed upstream
             return ΣΠ<N_out>(W_T, delta_z);
         }
 
+        // @doc: template<size_t Batch> Tensor<Batch, OutDims...> DenseMDBlock::BatchedForward(const Tensor<Batch, InDims...> &X) const
+        /** Contracts `W_` and `Tensor<Batch, InDims...>& X` using `ΣΠ`, adds `b_`, maps with `Act` */
         template<size_t Batch>
         Tensor<Batch, OutDims...> BatchedForward(const Tensor<Batch, InDims...> &X) const {
-            return Map<Act>(BroadcastMap<0, Add>(ΣΠ<N_in>(X, W_.value), b_.value));
+            // same efficiency logic as forward
+            auto z = ΣΠ<N_in>(X, W_.value);
+            return MapMove<Act>(BroadcastMapMove<0, Add>(std::move(z), b_.value));
         }
 
+        // @doc: template<size_t Batch> Tensor<Batch, InDims...> DenseMDBlock::BatchedBackward(const Tensor<Batch, OutDims...> &delta_A, const Tensor<Batch, OutDims...> &a, const Tensor<Batch, InDims...> &a_prev)
+        /** Computes `delta_z` from `delta_A`, propagates to `W_` and `b_` (scaled by `Batch` count), passes `Tensor<Batch, InDims...> delta_Input` upstream */
         template<size_t Batch>
         Tensor<Batch, InDims...> BatchedBackward(const Tensor<Batch, OutDims...> &delta_A,
                                                  const Tensor<Batch, OutDims...> &a,
                                                  const Tensor<Batch, InDims...> &a_prev) {
             const float inv_batch = 1.f / static_cast<float>(Batch);
+            // [Batch, OutDims...]
             const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
-            W_.grad += Contract<AxisList<0>{}, AxisList<0>{}, Mul, Add>(delta_z, a_prev) * inv_batch;
-            b_.grad += Reduce<0, Add>(delta_z) * inv_batch;
+            // contract batch axis, effectively computing Outer product of delta_z and a_prev, collapsing with add
+            // [OutDims..., InDims...]
+            W_.grad += Contract<AxisList<0>{}, AxisList<0>{}, Mul, Add>(delta_z, a_prev);
+            W_.grad *= inv_batch;
+            b_.grad += Reduce<0, Add>(delta_z);
+            b_.grad *= inv_batch;
 
+            // [InDims..., OutDims...]
             const auto W_T = PermuteFromArray<SwapNDims<N_out, N_in>::value>(
                 W_.value, std::make_index_sequence<N_out + N_in>{});
-            return ΣΠ<N_out>(delta_z, W_T);
+            return ΣΠ<N_out>(delta_z, W_T); // [Batch, OutDims...] x [InDims..., OutDims...] -> [Batch, InDims...]
         }
     };
 
 
-    // DenseMD recipe: specify the output tensor type; input is inferred at chain time via Resolve.
-    //
-    // Usage:
-    //   NetworkBuilder<
-    //       Input<3, 4>,                              // Tensor<3,4> input
-    //       DenseMD<Tensor<5>>,                       // → Tensor<5>
-    //       DenseMD<Tensor<2, 3>, ReLU>               // → Tensor<2,3>
-    //   >::type net;
-    template<typename OutT, ActivationOp Act_ = Linear>
+    // @doc: template<typename OutT, ActivationOp Act_ = Linear> requires IsTensor<OutT> struct DenseMD
+    /**
+     * `BlockRecipe` for `DenseMDBlock`
+     * Customarily, takes in a `Tensor` to be `OutputTensor` as well as an `ActivationOp`
+     * `Resolve` takes an `IsTensor<InputT>` and defines the correct full-fledged `DenseMDBlock` type
+     */
+    template<typename OutT, ActivationOp Act_ = Linear> requires IsTensor<OutT>
     struct DenseMD {
         using OutputTensor = OutT;
-        template<typename InputT>
+        template<typename InputT> requires IsTensor<InputT>
         using Resolve = DenseMDBlock<InputT, OutT, Act_>;
     };
 
-    // Dense<N, Act>: rank-1 shorthand for DenseMD<Tensor<N>, Act>
-    // @doc: using Dense = DenseMD<Tensor<N>, Act_>
-    /** `Dense<128, ReLU>`, `Dense<10, Sigmoid>`, `Dense<10>` (defaults to `Linear`) */
+
+    // @doc: template<size_t N, ActivationOp Act_ = Linear> using Dense
+    /**
+     * Convenience wrapper around `BlockRecipe DenseMD` for the case where `OutT::Rank == 1`
+     * User specifies how large the outgoing vector is to be and gets the corresponding `DenseMD` under the hood
+     * Simple as: `using Dense = DenseMD<Tensor<N>, Act_>`
+     */
     template<size_t N, ActivationOp Act_ = Linear>
     using Dense = DenseMD<Tensor<N>, Act_>;
-
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // MAP-DENSE: Dense applied independently along leading "map" axes
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    // Splits the input tensor into:
-    //   - N_map leading "map" axes (preserved, mapped over independently)
-    //   - remaining trailing "contract" axes (transformed by the Dense)
-    //
-    // Input:  Tensor<MapDims..., ContractDims...>
-    // Output: Tensor<MapDims..., PartOutDims...>
-    // W:      Tensor<PartOutDims..., ContractDims...>
-    // b:      Tensor<PartOutDims...>
-    //
-    // Forward:  Map<Act>(ΣΠ<N_contract>(X, W_T) + broadcast(b))
-    //           ΣΠ naturally maps over the leading MapDims — no per-slice loop.
-    //
-    // Backward: dW = ΣΠ<N_map>(swap(δz), X)       sum outer products over map positions
-    //           dB = Σ_{map} δz[map]              sum over map positions
-    //           dX = ΣΠ<N_out>(δz, W)             upstream gradient, maps over MapDims
-    //
-    // This is the "per-token FFN" in transformer architectures, generalized to any
-    // number of map axes and any-rank embedding shapes.
-
-    namespace detail {
-        // SplitAt<N, Dims...>: split dimension list at position N into head and tail
-        template<size_t N, typename Collected, typename Remaining>
-        struct SplitAtImpl;
-
-        template<size_t... Collected, size_t... Remaining>
-        struct SplitAtImpl<0,
-                    std::integer_sequence<size_t, Collected...>,
-                    std::integer_sequence<size_t, Remaining...> > {
-            using head = std::integer_sequence<size_t, Collected...>;
-            using tail = std::integer_sequence<size_t, Remaining...>;
-        };
-
-        template<size_t N, size_t... Collected, size_t D0, size_t... Rest>
-            requires (N > 0)
-        struct SplitAtImpl<N,
-                    std::integer_sequence<size_t, Collected...>,
-                    std::integer_sequence<size_t, D0, Rest...> > {
-            using next = SplitAtImpl<N - 1,
-                std::integer_sequence<size_t, Collected..., D0>,
-                std::integer_sequence<size_t, Rest...> >;
-            using head = typename next::head;
-            using tail = typename next::tail;
-        };
-
-        template<size_t N, size_t... Dims>
-        struct SplitAt {
-            using impl = SplitAtImpl<N,
-                std::integer_sequence<size_t>,
-                std::integer_sequence<size_t, Dims...> >;
-            using head = typename impl::head;
-            using tail = typename impl::tail;
-        };
-
-        template<typename Seq>
-        struct SeqToTensor;
-
-        template<size_t... Ds>
-        struct SeqToTensor<std::integer_sequence<size_t, Ds...> > {
-            using type = Tensor<Ds...>;
-        };
-
-        template<typename A, typename B>
-        struct ConcatSeqs;
-
-        template<size_t... As, size_t... Bs>
-        struct ConcatSeqs<std::integer_sequence<size_t, As...>,
-                    std::integer_sequence<size_t, Bs...> > {
-            using type = std::integer_sequence<size_t, As..., Bs...>;
-        };
-
-        template<typename Seq>
-        struct SeqProduct;
-
-        template<>
-        struct SeqProduct<std::integer_sequence<size_t> > {
-            static constexpr size_t value = 1;
-        };
-
-        template<size_t D0, size_t... Rest>
-        struct SeqProduct<std::integer_sequence<size_t, D0, Rest...> > {
-            static constexpr size_t value = D0 * SeqProduct<std::integer_sequence<size_t, Rest...> >::value;
-        };
-
-        template<size_t N, typename T>
-        struct PrependOnes;
-
-        template<size_t... Dims>
-        struct PrependOnes<0, Tensor<Dims...> > {
-            using type = Tensor<Dims...>;
-        };
-
-        template<size_t N, size_t... Dims>
-        struct PrependOnes<N, Tensor<Dims...> > {
-            using type = typename PrependOnes<N - 1, Tensor<1, Dims...> >::type;
-        };
-    } // namespace detail
 
 
     template<typename InT, typename PartOutT, size_t N_map,
         ActivationOp Act_ = Linear>
     class MapDenseMDBlock;
 
+    // @doc: template<size_t... InDims, size_t... PartOutDims, size_t N_map, ActivationOp Act_> class MapDenseMDBlock<Tensor<InDims...>, Tensor<PartOutDims...>, N_map, Act_>
+    /** `DenseMDBlock` that preserves first `N_map` axes, using shared weights to independently map the last `Rank - N_map` axes of `InDims...` to `PartOutDims...` */
     template<size_t... InDims, size_t... PartOutDims, size_t N_map, ActivationOp Act_>
     class MapDenseMDBlock<Tensor<InDims...>, Tensor<PartOutDims...>, N_map, Act_> {
         static_assert(N_map < sizeof...(InDims),
                       "N_map must be less than input rank (need at least one contract dim)");
 
-        using Split_ = detail::SplitAt<N_map, InDims...>;
-        using MapSeq_ = typename Split_::head;
-        using ContractSeq_ = typename Split_::tail;
+        // @doc: using MapDenseMDBlock::Split_
+        /** `SplitAt` resulting object, to be extracted from */
+        using Split_ = SplitAt<N_map, InDims...>;
+        // @doc: using MapDenseMDBlock::MapSeq_
+        /** `std::integer_sequence` with the first `N_map` axes of `InDims...` */
+        using MapSeq_ = Split_::head;
+        // @doc: using MapDenseMDBlock::ContractSeq_
+        /** `std::integer_sequence` with trailing axes to be contracted */
+        using ContractSeq_ = Split_::tail;
 
-        using OutDimSeq_ = typename detail::ConcatSeqs<
+        // @doc: using MapDenseMDBlock::OutDimSeq_
+        /** `std::integer_sequence` representing final output shape: `[MapSeq_..., PartOutDims...]` */
+        using OutDimSeq_ = ConcatSeqs<
             MapSeq_, std::integer_sequence<size_t, PartOutDims...> >::type;
-        using W_DimSeq_ = typename detail::ConcatSeqs<
+        // @doc: using MapDenseMDBlock::W_DimSeq_
+        /** `std::integer_sequence` representing weight matrix for each transformation: `[PartOutDims_..., ContractSeq_...]` */
+        using W_DimSeq_ = ConcatSeqs<
             std::integer_sequence<size_t, PartOutDims...>, ContractSeq_>::type;
 
     public:
+        // @doc: using MapDenseMDBlock::InputTensor
+        /** Unpack `InDims...` to `Tensor<InDims...>` */
         using InputTensor = Tensor<InDims...>;
-        using OutputTensor = typename detail::SeqToTensor<OutDimSeq_>::type;
-        using W_Type = typename detail::SeqToTensor<W_DimSeq_>::type;
+        // @doc: using MapDenseMDBlock::OutputTensor
+        /** Unpack `OutDimSeq_` to `Tensor` using `SeqToTensor` */
+        using OutputTensor = SeqToTensor<OutDimSeq_>::type;
+        // @doc: using MapDenseMDBlock::W_Type
+        /** Unpack `W_Dim_Seq_` to `Tensor` using `SeqToTensor` */
+        using W_Type = SeqToTensor<W_DimSeq_>::type;
+        // @doc: using MapDenseMDBlock::BiasType
+        /** Unpack `PartOutDims...` to `Tensor<PartOutDims...>` */
         using BiasType = Tensor<PartOutDims...>;
 
+        // @doc: using MapDenseMDBlock::Act
+        /** Alias for `ActivationOp Act_` */
         using Act = Act_;
+        // @doc: static constexpr size_t MapDenseMDBlock::N_contract
+        /** `N_contract = sizeof...(InDims) - N_map` */
         static constexpr size_t N_contract = sizeof...(InDims) - N_map;
+        // @doc: static constexpr size_t MapDenseMDBlock::N_out_part
+        /** `N_out_part = sizeof...(PartOutDims)` */
         static constexpr size_t N_out_part = sizeof...(PartOutDims);
-        static constexpr size_t MapVolume = detail::SeqProduct<MapSeq_>::value;
+        // @doc: static constexpr size_t MapDenseMDBlock::MapVolume
+        /**
+         * How many independent sub-`Tensor`s will we contract (one for each **map** index product)
+         * `MapVolume = SeqProduct<MapSeq_>::value`
+         */
+        static constexpr size_t MapVolume = SeqProduct<MapSeq_>::value;
+        // @doc: static constexpr size_t MapDenseMDBlock::PartOutSize
+        /**
+         * Size of each projected copy at each **map** index product
+         * `PartOutSize = (PartOutDims * ...)`
+         */
         static constexpr size_t PartOutSize = (PartOutDims * ...);
-        static constexpr size_t ContractSize = detail::SeqProduct<ContractSeq_>::value;
+        // @doc: static constexpr size_t MapDenseMDBlock::ContractSize
+        /**
+         * Size contracted in each copy at each **map** index product
+         * `ContractSize = SeqProduct<ContractSeq_>::value`
+         */
+        static constexpr size_t ContractSize = SeqProduct<ContractSeq_>::value;
 
     private:
+        // @doc: Param<W_Type> MapDenseMDBlock::W_
+        /** Wrap `Tensor` of type `W_Type` into `Param` object */
         Param<W_Type> W_;
+        // @doc: Param<BiasType> MapDenseMDBlock::b_
+        /** Wrap `Tensor` of type `BiasType` into `Param` object */
         Param<BiasType> b_;
 
     public:
+        // @doc: auto MapDenseMDBlock::all_params()
+        /** Returns `std::tuple` of `Param&`s */
         auto all_params() { return std::tie(W_, b_); }
+        // @doc: auto MapDenseMDBlock::all_params() const
+        /** Returns `std::tuple` of `const Param&`s */
         auto all_params() const { return std::tie(W_, b_); }
 
+        // @doc: MapDenseMDBlock::MapDenseMDBlock()
+        /** Default constructor, calls `XavierInitMD` on `W_` */
         MapDenseMDBlock() { XavierInitMD(W_.value, ContractSize, PartOutSize); }
 
+        // @doc: OutputTensor MapDenseMDBlock::Forward(const InputTensor &x) const
+        /** Compute standard `ΣΠ<N_contract>(x, W_.value)`, add `b_`, wrap in `Act` */
         OutputTensor Forward(const InputTensor &x) const {
+            // [MapSeq_..., ContractSeq_...] x [PartOutDims..., ContractSeq_...] -> [MapSeq_..., PartOutDims...]
             auto z = ΣΠ<N_contract>(x, W_.value);
-            for (size_t m = 0; m < MapVolume; ++m)
-                for (size_t i = 0; i < PartOutSize; ++i)
-                    z.flat(m * PartOutSize + i) += b_.value.flat(i);
-            return Map<Act>(z);
+            // add bias to each mapped copy
+            ParForEach(MapVolume * PartOutSize, [&](size_t i) {
+                z.flat(i) += b_.value.flat(i % PartOutSize);
+            });
+            return MapMove<Act>(std::move(z));
         }
 
-        InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a,
-                             const InputTensor &a_prev) {
+        // @doc: InputTensor MapDenseMDBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)
+        /**
+         * Backward pass, fills `W_.grad` and `b_.grad`
+         * Similar logic as `DenseMD::Backward`
+         */
+        InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev) {
+            // same as DenseMDBlock
             const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
-            const auto dz_swap = PermuteFromArray<SwapNDims<N_map, N_out_part>::value>(
-                delta_z, std::make_index_sequence<N_map + N_out_part>{});
-            const auto a_prev_swap = PermuteFromArray<SwapNDims<N_map, N_contract>::value>(
-                a_prev, std::make_index_sequence<N_map + N_contract>{});
-            W_.grad += ΣΠ<N_map>(dz_swap, a_prev_swap);
+            // collapse both Tensors into BC_Permute form and contract
+            W_.grad += [&]<size_t... I>(std::index_sequence<I...>) {
+                return Contract<AxisList<I...>{}, AxisList<I...>{}, Mul, Add>(delta_z, a_prev);
+            }(std::make_index_sequence<N_map>{});
 
-            for (size_t m = 0; m < MapVolume; ++m)
-                for (size_t i = 0; i < PartOutSize; ++i)
+            // need loops to avoid race
+            for (size_t m = 0; m < MapVolume; ++m) {
+                for (size_t i = 0; i < PartOutSize; ++i) {
                     b_.grad.flat(i) += delta_z.flat(m * PartOutSize + i);
+                }
+            }
 
+            // same as Dense
             const auto W_T = PermuteFromArray<SwapNDims<N_out_part, N_contract>::value>(
                 W_.value, std::make_index_sequence<N_out_part + N_contract>{});
             return ΣΠ<N_out_part>(delta_z, W_T);
         }
 
+        // @doc: template<size_t Batch> auto MapDenseMDBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type
+        /** Same internal logic as `MapDenseMDBlock::Forward`, but adds `Batch` axis upfront */
         template<size_t Batch>
-        auto BatchedForward(const typename PrependBatch<Batch, InputTensor>::type &X) const
-            -> typename PrependBatch<Batch, OutputTensor>::type {
+        auto BatchedForward(
+            const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type {
             auto z = ΣΠ<N_contract>(X, W_.value);
-            constexpr size_t slice = MapVolume * PartOutSize;
-            for (size_t bi = 0; bi < Batch; ++bi)
-                for (size_t m = 0; m < MapVolume; ++m)
-                    for (size_t i = 0; i < PartOutSize; ++i)
-                        z.flat(bi * slice + m * PartOutSize + i) += b_.value.flat(i);
-            return Map<Act>(z);
+            ParForEach(Batch * MapVolume * PartOutSize, [&](size_t i) {
+                z.flat(i) += b_.value.flat(i % PartOutSize);
+            });
+            return MapMove<Act>(std::move(z));
         }
 
+        // @doc: template<size_t Batch> auto MapDenseMDBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type
+        /**
+         * Batched backward pass, fills `W_.grad` and `b_.grad`
+         * Similar logic as `DenseMD::BatchedBackward`
+         */
         template<size_t Batch>
-        auto BatchedBackward(
-            const typename PrependBatch<Batch, OutputTensor>::type &delta_A,
-            const typename PrependBatch<Batch, OutputTensor>::type &a,
-            const typename PrependBatch<Batch, InputTensor>::type &a_prev)
-            -> typename PrependBatch<Batch, InputTensor>::type {
+        auto BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A,
+                             const PrependBatch<Batch, OutputTensor>::type &a,
+                             const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch,
+            InputTensor>::type {
             const float inv_batch = 1.f / static_cast<float>(Batch);
             const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
-            constexpr size_t BmRank = 1 + N_map + N_out_part;
-            const auto dz_swap = PermuteFromArray<SwapNDims<1 + N_map, N_out_part>::value>(
-                delta_z, std::make_index_sequence<BmRank>{});
-            constexpr size_t ApRank = 1 + N_map + N_contract;
-            const auto a_prev_swap = PermuteFromArray<SwapNDims<1 + N_map, N_contract>::value>(
-                a_prev, std::make_index_sequence<ApRank>{});
-            W_.grad += ΣΠ<1 + N_map>(dz_swap, a_prev_swap) * inv_batch;
+            auto localWGrad = [&]<size_t... I>(std::index_sequence<I...>) {
+                return Contract<AxisList<I...>{}, AxisList<I...>{}, Mul, Add>(delta_z, a_prev);
+            }(std::make_index_sequence<1 + N_map>{});
+            localWGrad *= inv_batch;
+            W_.grad += localWGrad;
 
             BiasType dB_local{};
             constexpr size_t slice = MapVolume * PartOutSize;
-            for (size_t bi = 0; bi < Batch; ++bi)
-                for (size_t m = 0; m < MapVolume; ++m)
-                    for (size_t i = 0; i < PartOutSize; ++i)
+            for (size_t bi = 0; bi < Batch; ++bi) {
+                for (size_t m = 0; m < MapVolume; ++m) {
+                    for (size_t i = 0; i < PartOutSize; ++i) {
                         dB_local.flat(i) += delta_z.flat(bi * slice + m * PartOutSize + i);
+                    }
+                }
+            }
             b_.grad += dB_local * inv_batch;
 
             const auto W_T = PermuteFromArray<SwapNDims<N_out_part, N_contract>::value>(
@@ -330,21 +332,17 @@ namespace TTTN {
     };
 
 
-    // MapDense recipe: "preserve the first N_map axes, transform the rest into PartOutT."
-    //
-    // Usage (transformer per-token FFN):
-    //   NetworkBuilder<
-    //       Input<SeqLen, EmbDim>,
-    //       MHAttention<Heads, EmbDim>,
-    //       MapDense<1, Tensor<FFN_Dim>, ReLU>,    // per-token: SeqLen preserved, EmbDim → FFN_Dim
-    //       MapDense<1, Tensor<EmbDim>>,           // per-token: SeqLen preserved, FFN_Dim → EmbDim
-    //   >::type transformer;
-    template<size_t N_map, typename PartOutT,
-        ActivationOp Act_ = Linear>
+    // @doc: template<size_t N_map, typename PartOutT, ActivationOp Act_ = Linear> requires IsTensor<PartOutT> struct MapDense
+    /**
+     * `BlockRecipe` for `MapDenseMDBlock`
+     * Takes in `N_map` and `Tensor<PartOutDims...> PartOutT`
+     */
+    template<size_t N_map, typename PartOutT, ActivationOp Act_ = Linear>
+        requires IsTensor<PartOutT>
     struct MapDense {
-        using OutputTensor = typename detail::PrependOnes<N_map, PartOutT>::type;
+        using OutputTensor = PrependOnes<N_map, PartOutT>::type;
 
-        template<typename InputT>
+        template<typename InputT> requires IsTensor<InputT>
         using Resolve = MapDenseMDBlock<InputT, PartOutT, N_map, Act_>;
     };
 }
