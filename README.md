@@ -2237,7 +2237,7 @@ Implements scaled dot-product **mult-head self-attention
     - Shape of `W_O`
     - `[EmbDims..., Heads, HeadDim]`
     - Scores x `W_O` -> `OutputTensor`:
-        - `[Heads, SeqLen, SeqLen] x [EmbDims..., Heads, HeadDim] -> [SeqLen, EmbDims...]`
+        - `[Heads, SeqLen, HeadDim] x [EmbDims..., Heads, HeadDim] -> [SeqLen, EmbDims...]`
 
 - ***MultiHeadAttentionBlock::QKV_Type*** - [`using MultiHeadAttentionBlock::QKV_Type`](src/Attention.hpp)
     - Shape of `Q`, `K`, `V`
@@ -2287,32 +2287,32 @@ Implements scaled dot-product **mult-head self-attention
 - ***MultiHeadAttentionBlock::bX_buf_*** - [
   `mutable std::vector<float> MultiHeadAttentionBlock::bX_buf_`](src/Attention.hpp)
     - Cached `std::vector<float>` for batched `InputTensor x`, used by `BatchedBackward` (not a `Tensor` because
-      `Batch` is a function template parameter, not a class paramater)
+      `Batch` is a function template parameter, not a class parameter)
 
 - ***MultiHeadAttentionBlock::bQ_buf_*** - [
   `mutable std::vector<float> MultiHeadAttentionBlock::bQ_buf_`](src/Attention.hpp)
     - Cached `std::vector<float>` for batched `Q`, used by `BatchedBackward` (not a `Tensor` because
-      `Batch` is a function template parameter, not a class paramater)
+      `Batch` is a function template parameter, not a class parameter)
 
 - ***MultiHeadAttentionBlock::bK_buf_*** - [
   `mutable std::vector<float> MultiHeadAttentionBlock::bK_buf_`](src/Attention.hpp)
     - Cached `std::vector<float>` for batched `K`, used by `BatchedBackward` (not a `Tensor` because
-      `Batch` is a function template parameter, not a class paramater)
+      `Batch` is a function template parameter, not a class parameter)
 
 - ***MultiHeadAttentionBlock::bV_buf_*** - [
   `mutable std::vector<float> MultiHeadAttentionBlock::bV_buf_`](src/Attention.hpp)
     - Cached `std::vector<float>` for batched `V`, used by `BatchedBackward` (not a `Tensor` because
-      `Batch` is a function template parameter, not a class paramater)
+      `Batch` is a function template parameter, not a class parameter)
 
 - ***MultiHeadAttentionBlock::battn_buf_*** - [
   `mutable std::vector<float> MultiHeadAttentionBlock::battn_buf_`](src/Attention.hpp)
     - Cached `std::vector<float>` for batched attention matrix, used by `BatchedBackward` (not a `Tensor` because
-      `Batch` is a function template parameter, not a class paramater)
+      `Batch` is a function template parameter, not a class parameter)
 
 - ***MultiHeadAttentionBlock::battended_buf_*** - [
   `mutable std::vector<float> MultiHeadAttentionBlock::battended_buf_`](src/Attention.hpp)
     - Cached `std::vector<float>` for batched attended embeddings, used by `BatchedBackward` (not a `Tensor` because
-      `Batch` is a function template parameter, not a class paramater)
+      `Batch` is a function template parameter, not a class parameter)
 
 - ***MultiHeadAttentionBlock::bcache_store*** - [
   `template<typename T> static void MultiHeadAttentionBlock::bcache_store(const T &t, std::vector<float> &buf)`](src/Attention.hpp)
@@ -2343,37 +2343,194 @@ Implements scaled dot-product **mult-head self-attention
 
 - ***MultiHeadAttentionBlock::QKV_Contract*** - [
   `static constexpr auto MultiHeadAttentionBlock::QKV_Contract(const InputTensor &X, const W_QKV_Type &wm)`](src/Attention.hpp)
-    - #########
+    - Abstraction of the contraction that occurs between `InputTensor x` and `W_QKV_Type w` (for **query**, **key**, and
+      **value**)
 
 - ***MultiHeadAttentionBlock::Forward*** - [
   `OutputTensor MultiHeadAttentionBlock::Forward(const InputTensor &X) const`](src/Attention.hpp)
-    - #########
+    - Forward pass:
+        - Take `InputTensor x` as input
+        - Map to **heads**
+        - Within each head, map to `Q`, `K`, and `V` representations
+        - Compute attention matrix for each head (`softmax(Q . K)`)
+        - Contract `V` with `x` according to attention matrix (attend)
+        - Map from **heads** to normal embedding dimension, return
+    - Excellent comments in the code
 
 - ***MultiHeadAttentionBlock::Backward*** - [
   `InputTensor MultiHeadAttentionBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)`](src/Attention.hpp)
-    - #########
+    - Backpropagates gradients through attended, attention pattern,`Q`, `K`, and
+      `V` representations, passing same-shape gradient upstream
+    - Extensive commenting below and in the code
 
 - ***MultiHeadAttentionBlock::BatchedQKV_Contract*** - [
   `template<size_t Batch> static auto MultiHeadAttentionBlock::BatchedQKV_Contract(const Tensor<Batch, SeqLen, EmbDims...> &X, const W_QKV_Type &W)`](src/Attention.hpp)
-    - #########
+    - Abstraction of the batched contraction that occurs between `PrependBatch<InputTensor> x` and `W_QKV_Type w` (for *
+      *query**, **key**, and
+      **value**)
 
 - ***MultiHeadAttentionBlock::BatchedDAttended*** - [
   `template<size_t Batch> static auto MultiHeadAttentionBlock::BatchedDAttended(const Tensor<Batch, SeqLen, EmbDims...> &dA, const W_O_Type &WO)`](src/Attention.hpp)
-    - #########
+    - Abstraction of the contraction that occurs between `delta_A` coming back and
+      `WO_` to produce the attended tokens pre out-projection
 
 - ***MultiHeadAttentionBlock::BatchedForward*** - [
   `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> MultiHeadAttentionBlock::BatchedForward(const Tensor<Batch, SeqLen, EmbDims...> &X) const`](src/Attention.hpp)
-    - #########
+    - Echoes `Forward`, but incorporates `Batch`
+    - Batched forward pass goes from `[Batch, SeqLen, EmbDims...]` -> `[Batch, SeqLen, EmbDims...]`
+    - Extensive comments in code
 
 - ***MultiHeadAttentionBlock::BatchedBackward*** - [
   `template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> MultiHeadAttentionBlock::BatchedBackward(const Tensor<Batch, SeqLen, EmbDims...> &delta_A, const Tensor<Batch, SeqLen, EmbDims...> &a, const Tensor<Batch, SeqLen, EmbDims...> &a_prev)`](src/Attention.hpp)
-    - #########
+    - Echoes 'Backward', but incorporates 'Batch'
+    - Batched backward pass goes from `[Batch, SeqLen, EmbDims...]` -> `[Batch, SeqLen, EmbDims...]`
 
 - ***MHAttention*** - [`template<size_t Heads, size_t... EmbDims> struct MHAttention`](src/Attention.hpp)
     - `BlockRecipe` for `MultiHeadAttentionBlock`
     - Takes in `size_t Heads` for head count and `size_t...EmbDims` indicating the dimensionality of the embeddings
     - `InputT` passed to `Resolve` should have its first axis be `SeqLen`
         - `Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`
+
+---
+
+### Forward pass
+
+```cpp
+OutputTensor Forward(const InputTensor &X) const {
+    const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
+    X_cache_ = X;
+
+    // [SeqLen, EmbDims...] x [Heads, HeadDim, EmbDims...] -> [SeqLen, Heads, HeadDim]
+    Q_ = QKV_Contract(X, WQ_.value);
+    K_ = QKV_Contract(X, WK_.value);
+    V_ = QKV_Contract(X, WV_.value);
+
+    // Q: [SeqLen, Heads, HeadDim]
+    // K: [SeqLen, Heads, HeadDim]
+    // ?(Q, K) -> [Heads, SeqLen, SeqLen]
+    // ? :
+    //      batch axes: Q/K[1] = 'Heads`
+    //      contract axes: Q/K[2] = 'HeadDim'
+    auto rawQK = BatchContract<AxisList<1>{}, AxisList<1>{}, AxisList<2>{}, AxisList<2>{}, Mul, Add>(Q_, K_);
+    rawQK *= inv_sqrt;
+    // rawQK: [Heads, SeqLen_Q, SeqLen_K]
+    // softmax needs to apply 'over the keys', so index 2
+    attn_weights_ = Softmax<2>(rawQK);
+
+    // attn_weights_: [Heads, SeqLen_Q, SeqLen_K]
+    // ?(attn_weights_, V_) -> [Heads, SeqLen, HeadDim]
+    // ? :
+    //      batch axes: attn_weights_/V_[0] = 'Heads'
+    //      contract axes: attn_weights_[2] = 'SeqLen_K', V_[0] = 'SeqLen'
+    attended_ = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<2>{}, AxisList<0>{}, Mul, Add>(
+        attn_weights_, V_);
+
+    // attended_: [Heads, SeqLen, HeadDim]
+    // WO_: [EmbDims..., Heads, HeadDim]
+    // ?(attended_, WO_) -> [SeqLen, EmbDims...]
+    //      contract axes: attended_[0, 2] = ['Heads', 'HeadDim'], WO_[N_emb, N_emb+1] = ['Heads', 'HeadDim']
+    return Contract<AxisList<0, 2>{}, AxisList<N_emb, N_emb + 1>{}, Mul, Add>(attended_, WO_.value);
+}
+```
+
+### Backward pass
+
+```cpp
+InputTensor Backward(const OutputTensor &delta_A,
+                     const OutputTensor & /*a*/,
+                     const InputTensor & /*a_prev*/) {
+    const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
+
+    // delta_A: [SeqLen, EmbDims...]
+    // attended_: [Heads, SeqLen, HeadDim]
+    // ?(delta_A, attended_) -> [EmbDims..., Heads, HeadDim]
+    //      contract delta_A[0] = 'SeqLen' with attended_[1] = 'SeqLen'
+    // this collapses the gradient coming back to this Block along SeqLen
+    // ie WO_ is punished at each free index for its effect on *all* tokens in the sequence
+    // when we strip SeqLen, we have [EmbDims...] x [Heads, HeadDim]
+    // the result is a sum of: Outer(delta_A[s, EmbDims...], attended_[Heads, s, HeadDim]) for s in SeqLen
+    WO_.grad += Einsum<0, 1>(delta_A, attended_);
+
+    // now need dLoss/d_attended_
+    // delta_A: [SeqLen, EmbDims...]
+    // WO_: [EmbDims..., Heads, HeadDim]
+    // ?(delta_A, WO_) -> [SeqLen, Heads, HeadDim]
+    //      ΣΠ contracted over EmbDims... is exactly what we want
+    // NOTE: d_att ([SeqLen, Heads, HeadDim]) does not have the same shape as attended_ ([Heads, SeqLen, HeadDim])
+    // this is because attended_ itself is an intermediary (no weights) and we can use flexible contraction below to grab the axes we want
+    const auto d_attended = ΣΠ<N_emb>(delta_A, WO_.value);
+
+    // now propagate gradients from d_attended to the attention pattern itself
+    // d_attended: [SeqLen, Heads, HeadDim]
+    // V_: [SeqLen, Heads, HeadDim]
+    // ?(d_attended, V_) -> [Heads, SeqLen_Q, SeqLen_K]
+    //      batch axes: d_attended[1] = 'Heads', V_[1] = 'Heads'
+    //      contract axes: d_attended[2] = 'HeadDim', V_[2] = 'HeadDim'
+    // NOTE: d_attended is 'A' in the BatchContract call, meaning its free axes (SeqLen) go first
+    // so SeqLen_Q comes from d_attended, SeqLen_K comes from V_.
+
+    // d_attended[s_q, h, d] carries 'how much did attended token s_q need to change?'
+    // V_[s_k, h, d] carries 'what did key s_k contribute to values it attended?'
+    // so d_attention[h, s_q, s_k] carries 'how much should the WEIGHT on key s_k change for query s_q?'
+    //      -> this is exactly the dot product over d (over the whole HeadDim)
+    // Why? because s_k's WEIGHT needs to change for s_q exactly according to:
+    //      (A) how much the *attended* s_q should change (post s_k)
+    //      (B) what s_k passes to s_q (regardless of weight)
+    const auto d_attention = BatchContract<AxisList<1>{}, AxisList<1>{}, AxisList<2>{}, AxisList<2>{}, Mul,
+        Add>(
+        d_attended, V_);
+
+    // V_[s_k, h, d] carries 'what did key s_k contribute to values it attended?'
+    // V_ is combined with attn_weights_ to make attended_...
+    //      V_ x attn_weights_ = attended_; d_attended_/d_V_ = attn_weights_... so feed grad to attn_weights_:
+    // attn_weights_: [Heads, SeqLen_Q, SeqLen_K]
+    // d_attended: [SeqLen, Heads, HeadDim]
+    // ?(attn_weights_, d_attended) -> [Heads, SeqLen, HeadDim]
+    //      (...d_V_ is a temp, so doesn't need V_'s exact shape, just the same info!)
+    //      batch axes: attn_weights_[0] = 'Heads', d_attended[1] = 'Heads'
+    //      contract axes: attn_weights_[1] = 'SeqLen_Q', d_attended[0] = 'SeqLen'
+    const auto d_V = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<1>{}, AxisList<0>{}, Mul, Add>(
+        attn_weights_, d_attended);
+
+    // take softmax derivative
+    // again, axis = 2, over SeqLen_K (which is the axis over which Softmax was computed)
+    auto d_scores = SoftmaxPrime<2>(d_attention, attn_weights_);
+    d_scores *= inv_sqrt;
+
+    // d_scores: [Heads, SeqLen_Q, SeqLen_K]
+    // K_: [SeqLen, Heads, HeadDim]
+    // ?(d_scores, K_) -> [Heads, SeqLen, HeadDim] (d_Q is also a temp...when WQ_.grad is updated, shapes will agree)
+    //      batch axes: d_scores[0] = 'Heads', K_[1] = 'Heads'
+    //      contract axes: d_scores[2] = 'SeqLen_K', K_[0] = 'SeqLen'
+    const auto d_Q = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<2>{}, AxisList<0>{}, Mul, Add>(
+        d_scores, K_);
+    // same logic for grad wrt K
+    const auto d_K = BatchContract<AxisList<0>{}, AxisList<1>{}, AxisList<1>{}, AxisList<0>{}, Mul, Add>(
+        d_scores, Q_);
+
+    // now for WQ_, we have d_Q (coming back) times X (which multiplies with WQ_ to make Q!)
+    // d_Q: [Heads, SeqLen, HeadDim]
+    // X_cache_: [SeqLen, EmbDims...]
+    // ?(d_Q, X_cache_) -> [Heads, HeadDim, EmbDims...] (this must be actual WQ_ shape)
+    //      contract: d_Q[1] = 'SeqLen' with X_cache_[0] = 'SeqLen'
+    // these weights are duly punished for all tokens!
+    WQ_.grad += Einsum<1, 0>(d_Q, X_cache_);
+    WK_.grad += Einsum<1, 0>(d_K, X_cache_);
+    WV_.grad += Einsum<1, 0>(d_V, X_cache_);
+
+    // now derivatives of all Q, K, V representations of the sequence need to be added
+    // to represent what they all depend on: the input tokens
+
+    // d_Q: [Heads, SeqLen, HeadDim]
+    // WQ_: [Heads, HeadDim, EmbDims...]
+    // ?(d_Q, WQ_) -> [SeqLen, EmbDims...]
+    //      contract d_Q[0, 2] = ['Heads', 'HeadDim'] with WQ_[0, 1] = ['Heads', 'HeadDim']
+    auto result = Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_Q, WQ_.value);
+    result += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_K, WK_.value);
+    result += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_V, WV_.value);
+    return result;
+}
+```
 
 ---
 
