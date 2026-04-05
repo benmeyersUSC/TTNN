@@ -119,6 +119,18 @@ namespace TTTN {
         }
 
 
+        // @doc: template<size_t Lo, size_t Hi, typename GradT> auto TrainableTensorNetwork::BackwardRange(const Activations &A, const GradT &grad)
+        template<size_t Lo, size_t Hi, typename GradT>
+        auto BackwardRange(const Activations &A, const GradT &grad) {
+            return mSeq_.template BackwardRange<Lo, Hi>(A, grad);
+        }
+
+        // @doc: template<size_t Batch, size_t Lo, size_t Hi, typename GradT> auto TrainableTensorNetwork::BatchedBackwardRange(const BatchedActivations<Batch> &A, const GradT &grad)
+        template<size_t Batch, size_t Lo, size_t Hi, typename GradT>
+        auto BatchedBackwardRange(const BatchedActivations<Batch> &A, const GradT &grad) {
+            return mSeq_.template BatchedBackwardRange<Batch, Lo, Hi>(A, grad);
+        }
+
         // @doc: void TrainableTensorNetwork::ZeroGrad()
         /** Delegates to `BlockSequence::ZeroGrad` */
         void ZeroGrad() { mSeq_.ZeroGrad(); }

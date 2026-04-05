@@ -126,6 +126,24 @@ namespace TTTN {
             else return grad;
         }
 
+        // @doc: template<size_t I, size_t Lo> auto BlockSequence::backward_range_impl(const ActivationsTuple &A, const std::tuple_element_t<I, ActivationsTuple> &delta)
+        template<size_t I, size_t Lo>
+        auto backward_range_impl(const ActivationsTuple &A,
+                                 const std::tuple_element_t<I, ActivationsTuple> &delta) {
+            const auto grad = std::get<I - 1>(mBlocks) << BackwardArgs{delta, std::get<I>(A), std::get<I - 1>(A)};
+            if constexpr (I - 1 > Lo) return backward_range_impl<I - 1, Lo>(A, grad);
+            else return grad;
+        }
+
+        // @doc: template<size_t Batch, size_t I, size_t Lo> auto BlockSequence::batched_backward_range_impl(const BatchedActivationsTuple<Batch> &A, const std::tuple_element_t<I, BatchedActivationsTuple<Batch>> &delta)
+        template<size_t Batch, size_t I, size_t Lo>
+        auto batched_backward_range_impl(const BatchedActivationsTuple<Batch> &A,
+                                          const std::tuple_element_t<I, BatchedActivationsTuple<Batch>> &delta) {
+            const auto grad = std::get<I - 1>(mBlocks) << BackwardArgs{delta, std::get<I>(A), std::get<I - 1>(A)};
+            if constexpr (I - 1 > Lo) return batched_backward_range_impl<Batch, I - 1, Lo>(A, grad);
+            else return grad;
+        }
+
     public:
         // @doc: BlockSequence::BlockSequence()
         /** Default construct `mBlocks` and `mActs` */
@@ -253,6 +271,24 @@ namespace TTTN {
             BatchedBackwardFrom<Batch, N>(A, grad);
         }
 
+
+        // @doc: template<size_t Lo, size_t Hi> auto BlockSequence::BackwardRange(const Activations &A, const std::tuple_element_t<Hi, ActivationsTuple> &grad)
+        template<size_t Lo, size_t Hi>
+        auto BackwardRange(const Activations &A,
+                           const std::tuple_element_t<Hi, ActivationsTuple> &grad) {
+            static_assert(Lo <= Hi && Hi <= N, "BackwardRange: bounds out of range");
+            if constexpr (Lo == Hi) return grad;
+            else return backward_range_impl<Hi, Lo>(A.tuple(), grad);
+        }
+
+        // @doc: template<size_t Batch, size_t Lo, size_t Hi> auto BlockSequence::BatchedBackwardRange(const BatchedActivations<Batch> &A, const std::tuple_element_t<Hi, BatchedActivationsTuple<Batch>> &grad)
+        template<size_t Batch, size_t Lo, size_t Hi>
+        auto BatchedBackwardRange(const BatchedActivations<Batch> &A,
+                                   const std::tuple_element_t<Hi, BatchedActivationsTuple<Batch>> &grad) {
+            static_assert(Lo <= Hi && Hi <= N, "BatchedBackwardRange: bounds out of range");
+            if constexpr (Lo == Hi) return grad;
+            else return batched_backward_range_impl<Batch, Hi, Lo>(A.tuple(), grad);
+        }
 
         // @doc: void BlockSequence::ZeroGrad()
         /** Calls `ZeroAllGrads` on each `Block`'s `all_params()` */

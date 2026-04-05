@@ -9,4 +9,5 @@
 #include "MoreNets.hpp"
 #include "TransformerBlock.hpp"
 #include "DataIO.hpp"
+#include "BranchTrainer.hpp"
 
