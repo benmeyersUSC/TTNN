@@ -80,16 +80,22 @@ namespace TTTN {
     private:
         // @doc: Param<W_QKV_Type> MultiHeadAttentionBlock::WQ_
         /** Query Weight Parameter (`Param<W_QKV_Type>`) */
-        Param<W_QKV_Type> WQ_;
+        // Param<W_QKV_Type> WQ_;
         // @doc: Param<W_QKV_Type> MultiHeadAttentionBlock::WK_
         /** Key Weight Parameter (`Param<W_QKV_Type>`) */
-        Param<W_QKV_Type> WK_;
+        // Param<W_QKV_Type> WK_;
         // @doc: Param<W_QKV_Type> MultiHeadAttentionBlock::WV_
         /** Value Weight Parameter (`Param<W_QKV_Type>`) */
-        Param<W_QKV_Type> WV_;
+        // Param<W_QKV_Type> WV_;
         // @doc: Param<W_O_Type> MultiHeadAttentionBlock::WO_
         /** Out projection matrix Parameter (`Param<W_O_Type>`) */
-        Param<W_O_Type> WO_;
+        // Param<W_O_Type> WO_;
+
+        // QKV: [SeqLen,EmbDims...] x [Heads,HeadDim,EmbDims...] -> [SeqLen,Heads,HeadDim], NFree=1 (SeqLen passes through)
+        mutable LearnedContraction<InputTensor, QKV_Type, 1> lc_Q_, lc_K_, lc_V_;
+        // Out: [SeqLen,Heads,HeadDim] x [EmbDims...,Heads,HeadDim] -> [SeqLen,EmbDims...], NFree=1 (SeqLen passes through)
+        // attended_ must be permuted to [SeqLen,Heads,HeadDim] before >> and after << in backward
+        mutable LearnedContraction<QKV_Type, OutputTensor, 1> lc_O_;
 
         // @doc: mutable InputTensor MultiHeadAttentionBlock::X_cache_
         /** Cached `mutable` `Tensor` for `InputTensor x`, used by `Backward` */
@@ -112,9 +118,10 @@ namespace TTTN {
 
         // @doc: mutable std::vector<float> MultiHeadAttentionBlock::bX_buf_
         /** Cached `std::vector<float>` for batched `InputTensor x`, used by `BatchedBackward` (not a `Tensor` because `Batch` is a function template parameter, not a class parameter) */
-        mutable std::vector<float> bX_buf_;
+        // mutable std::vector<float> bX_buf_;  // now lives in lc_Q_/lc_K_/lc_V_.bX_buf_ (LC caches its input X)
         // @doc: mutable std::vector<float> MultiHeadAttentionBlock::bQ_buf_
         /** Cached `std::vector<float>` for batched `Q`, used by `BatchedBackward` (not a `Tensor` because `Batch` is a function template parameter, not a class parameter) */
+        // bQ/bK/bV are LC *outputs* — LC only caches its input, so we still need these for the attention score backward
         mutable std::vector<float> bQ_buf_;
         // @doc: mutable std::vector<float> MultiHeadAttentionBlock::bK_buf_
         /** Cached `std::vector<float>` for batched `K`, used by `BatchedBackward` (not a `Tensor` because `Batch` is a function template parameter, not a class parameter) */
@@ -149,10 +156,10 @@ namespace TTTN {
     public:
         // @doc: auto MultiHeadAttentionBlock::all_params()
         /** Returns `std::tuple` of `Param&` */
-        auto all_params() { return std::tie(WQ_, WK_, WV_, WO_); }
+        auto all_params() { return std::tie(lc_Q_.W_, lc_K_.W_, lc_V_.W_, lc_O_.W_); }
         // @doc: auto MultiHeadAttentionBlock::all_params() const
         /** Returns `std::tuple` of `const Param&` */
-        auto all_params() const { return std::tie(WQ_, WK_, WV_, WO_); }
+        auto all_params() const { return std::tie(lc_Q_.W_, lc_K_.W_, lc_V_.W_, lc_O_.W_); }
 
         // @doc: const Scores_Type &MultiHeadAttentionBlock::attn_weights() const
         /** Getter for attention pattern matrix */
@@ -167,10 +174,10 @@ namespace TTTN {
         // @doc: MultiHeadAttentionBlock::MultiHeadAttentionBlock()
         /** Calls `XavierInitMD` on all weight `Tensor`s (`WQ_`, `WK_`, `WV_`, `WO_`) */
         MultiHeadAttentionBlock() {
-            XavierInitMD(WQ_.value, EmbSize, HeadDim);
-            XavierInitMD(WK_.value, EmbSize, HeadDim);
-            XavierInitMD(WV_.value, EmbSize, HeadDim);
-            XavierInitMD(WO_.value, EmbSize, EmbSize);
+            // XavierInitMD(WQ_.value, EmbSize, HeadDim);
+            // XavierInitMD(WK_.value, EmbSize, HeadDim);
+            // XavierInitMD(WV_.value, EmbSize, HeadDim);
+            // XavierInitMD(WO_.value, EmbSize, EmbSize);
         }
 
         // @doc: static constexpr auto MultiHeadAttentionBlock::QKV_Contract(const InputTensor &X, const W_QKV_Type &wm)
@@ -199,9 +206,10 @@ namespace TTTN {
             X_cache_ = X;
 
             // [SeqLen, EmbDims...] x [Heads, HeadDim, EmbDims...] -> [SeqLen, Heads, HeadDim]
-            Q_ = QKV_Contract(X, WQ_.value);
-            K_ = QKV_Contract(X, WK_.value);
-            V_ = QKV_Contract(X, WV_.value);
+            // Q_ = QKV_Contract(X, WQ_.value);
+            Q_ = X >> lc_Q_;
+            K_ = X >> lc_K_;
+            V_ = X >> lc_V_;
 
             // Q: [SeqLen, Heads, HeadDim]
             // K: [SeqLen, Heads, HeadDim]
@@ -227,7 +235,11 @@ namespace TTTN {
             // WO_: [EmbDims..., Heads, HeadDim]
             // ?(attended_, WO_) -> [SeqLen, EmbDims...]
             //      contract axes: attended_[0, 2] = ['Heads', 'HeadDim'], WO_[N_emb, N_emb+1] = ['Heads', 'HeadDim']
-            return Contract<AxisList<0, 2>{}, AxisList<N_emb, N_emb + 1>{}, Mul, Add>(attended_, WO_.value);
+            // permute attended_ to [SeqLen, Heads, HeadDim] for minor-aligned >>
+            // lc_O_ caches this permuted form for Backward
+            // return Contract<AxisList<0, 2>{}, AxisList<N_emb, N_emb + 1>{}, Mul, Add>(attended_, WO_.value);
+            const auto attended_perm = Permute<1, 0, 2>(attended_);
+            return attended_perm >> lc_O_;
         }
 
 
@@ -249,7 +261,7 @@ namespace TTTN {
             // ie WO_ is punished at each free index for its effect on *all* tokens in the sequence
             // when we strip SeqLen, we have [EmbDims...] x [Heads, HeadDim]
             // the result is a sum of: Outer(delta_A[s, EmbDims...], attended_[Heads, s, HeadDim]) for s in SeqLen
-            WO_.grad += Einsum<0, 1>(delta_A, attended_);
+            // WO_.grad += Einsum<0, 1>(delta_A, attended_);  // handled inside lc_O_ <<
 
             // now need dLoss/d_attended_
             // delta_A: [SeqLen, EmbDims...]
@@ -258,7 +270,10 @@ namespace TTTN {
             //      ΣΠ contracted over EmbDims... is exactly what we want
             // NOTE: d_att ([SeqLen, Heads, HeadDim]) does not have the same shape as attended_ ([Heads, SeqLen, HeadDim])
             // this is because attended_ itself is an intermediary (no weights) and we can use flexible contraction below to grab the axes we want
-            const auto d_attended = ΣΠ<N_emb>(delta_A, WO_.value);
+            // const auto d_attended = ΣΠ<N_emb>(delta_A, WO_.value);
+            // lc_O_ << delta_A: updates lc_O_.W_.grad AND returns [SeqLen, Heads, HeadDim]
+            // permute back to [Heads, SeqLen, HeadDim] to match attended_ shape used downstream
+            const auto d_attended = Permute<1, 0, 2>(lc_O_ << delta_A);
 
             // now propagate gradients from d_attended to the attention pattern itself
             // d_attended: [SeqLen, Heads, HeadDim]
@@ -314,20 +329,25 @@ namespace TTTN {
             // ?(d_Q, X_cache_) -> [Heads, HeadDim, EmbDims...] (this must be actual WQ_ shape)
             //      contract: d_Q[1] = 'SeqLen' with X_cache_[0] = 'SeqLen'
             // these weights are duly punished for all tokens!
-            WQ_.grad += Einsum<1, 0>(d_Q, X_cache_);
-            WK_.grad += Einsum<1, 0>(d_K, X_cache_);
-            WV_.grad += Einsum<1, 0>(d_V, X_cache_);
+            // WQ_.grad += Einsum<1, 0>(d_Q, X_cache_);  // handled inside lc_Q_ <<
+            // WK_.grad += Einsum<1, 0>(d_K, X_cache_);  // handled inside lc_K_ <<
+            // WV_.grad += Einsum<1, 0>(d_V, X_cache_);  // handled inside lc_V_ <<
 
             // now derivatives of all Q, K, V representations of the sequence need to be added
             // to represent what they all depend on: the input tokens
 
+            // d_Q: [Heads, SeqLen, HeadDim] — permute to [SeqLen, Heads, HeadDim] for lc_Q_ <<
+            // lc_Q_ << d_Q_perm: updates WQ_.grad AND returns [SeqLen, EmbDims...]
             // d_Q: [Heads, SeqLen, HeadDim]
             // WQ_: [Heads, HeadDim, EmbDims...]
             // ?(d_Q, WQ_) -> [SeqLen, EmbDims...]
             //      contract d_Q[0, 2] = ['Heads', 'HeadDim'] with WQ_[0, 1] = ['Heads', 'HeadDim']
-            auto result = Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_Q, WQ_.value);
-            result += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_K, WK_.value);
-            result += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_V, WV_.value);
+            // auto result = Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_Q, WQ_.value);
+            // result += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_K, WK_.value);
+            // result += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_V, WV_.value);
+            auto result = lc_Q_ << Permute<1, 0, 2>(d_Q);
+            result += lc_K_ << Permute<1, 0, 2>(d_K);
+            result += lc_V_ << Permute<1, 0, 2>(d_V);
             return result;
         }
 
@@ -366,12 +386,14 @@ namespace TTTN {
         Tensor<Batch, SeqLen, EmbDims...> BatchedForward(const Tensor<Batch, SeqLen, EmbDims...> &X) const {
             // more extensive commenting exists in Forward()
             const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
-            bcache_store(X, bX_buf_);
+            // bcache_store(X, bX_buf_);  // X is now cached inside each lc_ during >> below
 
-            // [Batch, SeqLen, EmbDims...] x [Batch, Heads, HeadDim, EmbDims...] -> [Batch, SeqLen, Heads, HeadDim]
-            const auto bQ = BatchedQKV_Contract<Batch>(X, WQ_.value);
-            const auto bK = BatchedQKV_Contract<Batch>(X, WK_.value);
-            const auto bV = BatchedQKV_Contract<Batch>(X, WV_.value);
+            // [Batch, SeqLen, EmbDims...] x [Heads, HeadDim, EmbDims...] -> [Batch, SeqLen, Heads, HeadDim]
+            // const auto bQ = BatchedQKV_Contract<Batch>(X, WQ_.value);  // now via >>
+            const auto bQ = X >> lc_Q_;  // lc_Q_ caches X in its bX_buf_ for W grad in backward
+            const auto bK = X >> lc_K_;
+            const auto bV = X >> lc_V_;
+            // bQ/bK/bV are LC *outputs* — must cache separately for attention score backward
             bcache_store(bQ, bQ_buf_);
             bcache_store(bK, bK_buf_);
             bcache_store(bV, bV_buf_);
@@ -391,14 +413,17 @@ namespace TTTN {
             // [Batch, Heads, SeqLen_Q, HeadDim]
             const auto b_attended = BatchContract<AxisList<0, 1>{}, AxisList<0, 2>{}, AxisList<3>{}, AxisList<1>{}, Mul,
                 Add>(b_attn, bV);
-            bcache_store(b_attended, battended_buf_);
 
             // out needs to be: [Batch, SeqLen, EmbDims...]
             // attended: [Batch, Heads, SeqLen_Q, HeadDim]
             // WO_: [EmbDims..., Heads, HeadDim]
-
             // so contract attended[1, 3] = ['Heads', 'HeadDim'] and WO_[N_emb, N_emb+1] = ['Heads', 'HeadDim']
-            return Contract<AxisList<1, 3>{}, AxisList<N_emb, N_emb + 1>{}, Mul, Add>(b_attended, WO_.value);
+            // permute b_attended to [Batch, SeqLen, Heads, HeadDim] for minor-aligned >>
+            // lc_O_ caches this permuted form for BatchedBackward
+            // return Contract<AxisList<1, 3>{}, AxisList<N_emb, N_emb + 1>{}, Mul, Add>(b_attended, WO_.value);
+            const auto b_attended_perm = Permute<0, 2, 1, 3>(b_attended);
+            bcache_store(b_attended_perm, battended_buf_);
+            return b_attended_perm >> lc_O_;
         }
 
         // @doc: template<size_t Batch> Tensor<Batch, SeqLen, EmbDims...> MultiHeadAttentionBlock::BatchedBackward(const Tensor<Batch, SeqLen, EmbDims...> &delta_A, const Tensor<Batch, SeqLen, EmbDims...> &a, const Tensor<Batch, SeqLen, EmbDims...> &a_prev)
@@ -415,18 +440,23 @@ namespace TTTN {
             const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
             const float inv_batch = 1.f / static_cast<float>(Batch);
 
+            // bQ/bK/bV cached as LC outputs in their own buffers (LC's bX_buf_ holds X, not the projected output)
             const auto bQ = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim> >(bQ_buf_);
             const auto bK = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim> >(bK_buf_);
             const auto bV = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim> >(bV_buf_);
             const auto battn = bcache_load<Tensor<Batch, Heads, SeqLen, SeqLen> >(battn_buf_);
-            const auto battended = bcache_load<Tensor<Batch, Heads, SeqLen, HeadDim> >(battended_buf_);
-            const auto bX = bcache_load<Tensor<Batch, SeqLen, EmbDims...> >(bX_buf_);
+            // battended_buf_ stores the permuted form [Batch, SeqLen, Heads, HeadDim] (set during BatchedForward)
+            const auto b_attended_perm = bcache_load<Tensor<Batch, SeqLen, Heads, HeadDim> >(battended_buf_);
+            // bX now lives in lc_Q_/K_/V_.bX_buf_ (each LC caches X during batched_forward, used for W grad in <<)
 
+            // WO_.grad handled inside lc_O_ <<
+            // WO_.grad += Contract<AxisList<0, 1>{}, AxisList<0, 2>{}, Mul, Add>(delta_A, battended);
+            // WO_.grad *= inv_batch;
 
-            WO_.grad += Contract<AxisList<0, 1>{}, AxisList<0, 2>{}, Mul, Add>(delta_A, battended);
-            WO_.grad *= inv_batch;
-
-            const auto d_attended = BatchedDAttended<Batch>(delta_A, WO_.value);
+            // const auto d_attended = BatchedDAttended<Batch>(delta_A, WO_.value);
+            // lc_O_ << delta_A: updates lc_O_.W_.grad (with inv_batch scaling) AND returns [Batch, SeqLen, Heads, HeadDim]
+            // downstream BatchContracts (d_attn, d_V) expect [B,S,H,D] — no permute needed
+            const auto d_attended = lc_O_ << delta_A;
 
             const auto d_attn = BatchContract<AxisList<0, 2>{}, AxisList<0, 2>{}, AxisList<3>{}, AxisList<3>{}, Mul,
                 Add>(d_attended, bV);
@@ -440,22 +470,22 @@ namespace TTTN {
             const auto d_Q = BatchContract<AxisList<0, 1>{}, AxisList<0, 2>{}, AxisList<3>{}, AxisList<1>{}, Mul, Add>(
                 d_scores, bK);
 
-
             const auto d_K = BatchContract<AxisList<0, 1>{}, AxisList<0, 2>{}, AxisList<2>{}, AxisList<1>{}, Mul, Add>(
                 d_scores, bQ);
 
+            // WQ/WK/WV_.grad handled inside lc_Q/K/V_ <<  (with inv_batch scaling)
+            // WQ_.grad += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_Q, bX); WQ_.grad *= inv_batch;
+            // WK_.grad += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_K, bX); WK_.grad *= inv_batch;
+            // WV_.grad += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_V, bX); WV_.grad *= inv_batch;
 
-            WQ_.grad += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_Q, bX);
-            WQ_.grad *= inv_batch;
-            WK_.grad += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_K, bX);
-            WK_.grad *= inv_batch;
-            WV_.grad += Contract<AxisList<0, 2>{}, AxisList<0, 1>{}, Mul, Add>(d_V, bX);
-            WV_.grad *= inv_batch;
-
-
-            auto result = Contract<AxisList<1, 3>{}, AxisList<0, 1>{}, Mul, Add>(d_Q, WQ_.value);
-            result += Contract<AxisList<1, 3>{}, AxisList<0, 1>{}, Mul, Add>(d_K, WK_.value);
-            result += Contract<AxisList<1, 3>{}, AxisList<0, 1>{}, Mul, Add>(d_V, WV_.value);
+            // d_Q: [Batch, Heads, SeqLen, HeadDim] — permute to [Batch, SeqLen, Heads, HeadDim] for lc <<
+            // lc_Q_ << d_Q_perm: updates WQ_.grad AND returns [Batch, SeqLen, EmbDims...]
+            // auto result = Contract<AxisList<1, 3>{}, AxisList<0, 1>{}, Mul, Add>(d_Q, WQ_.value);
+            // result += Contract<AxisList<1, 3>{}, AxisList<0, 1>{}, Mul, Add>(d_K, WK_.value);
+            // result += Contract<AxisList<1, 3>{}, AxisList<0, 1>{}, Mul, Add>(d_V, WV_.value);
+            auto result = lc_Q_ << Permute<0, 2, 1, 3>(d_Q);
+            result += lc_K_ << Permute<0, 2, 1, 3>(d_K);
+            result += lc_V_ << Permute<0, 2, 1, 3>(d_V);
             return result;
         }
     };

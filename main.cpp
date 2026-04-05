@@ -527,7 +527,7 @@ void runSeqTasksViz() {
     constexpr size_t TrainN = 10000, TestN = 1000, Cols = 33;
     constexpr size_t Batch = 32;
     constexpr size_t EvalN = 500;
-    constexpr int Epochs = 36;
+    constexpr int Epochs = 18;
     constexpr float LR = 0.0005f;
 
     auto make_input = [](const auto &ds, size_t row) {
@@ -823,7 +823,7 @@ void runMNISTDense() {
 int main() {
     // runMNISTAttnViz();
     // runBracketsAttnViz();
-    // runSeqTasksViz();
+    runSeqTasksViz();
     // runLCSmoke();
     runMNISTDense();
     return 0;

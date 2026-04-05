@@ -1521,6 +1521,123 @@ All Adam hyperparameters and per-network bias-correction state in one place. TTN
     - Sum of all `Param` sizes in a `std::tuple` of `Param`s
     - Calls `tuple_param_count_impl`
 
+### `struct LearnedContraction<InputTensor, OutputTensor, NumFree>`
+
+- ***LearnedContraction*** - [
+  `template<size_t... InDims, size_t... OutDims, size_t NumFree> struct LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree>`](src/NetworkUtil.hpp)
+    - Abstraction of learned weight `Tensor` component to any `Block`, handling forward and backward pass internally
+    - Templated by `Tensor<InDims...>`,
+      `Tensor<OutDims...>`, and the number of leading (from the left) free axes you want to pass through the transformation, the internal
+      `WeightTensor` type is deduced, initialized, stored, and updated internally
+    - Learned weight `Tensor`s are as easy as simply declaring what your desired input and output shapes are.
+
+### Type Aliases
+
+- ***LearnedContraction::InputTensor*** - [`using LearnedContraction::InputTensor`](src/NetworkUtil.hpp)
+    - Alias for input type: `Tensor<InDims...>`
+
+- ***LearnedContraction::OutputTensor*** - [`using LearnedContraction::OutputTensor`](src/NetworkUtil.hpp)
+    - Alias for output type: `Tensor<OutDims...>`
+
+- ***LearnedContraction::N_contract_in*** - [
+  `static constexpr size_t LearnedContraction::N_contract_in`](src/NetworkUtil.hpp)
+    - Deduced number of contracted axes of `InputTensor`
+    - `InputTensor::Rank - NumFree`
+
+- ***LearnedContraction::N_contract_out*** - [
+  `static constexpr size_t LearnedContraction::N_contract_out`](src/NetworkUtil.hpp)
+    - Deduced number of contracted axes of `OutputTensor`
+    - `OutputTensor::Rank - NumFree`
+
+
+- ***LearnedContraction::InSplit*** - [`using LearnedContraction::InSplit`](src/NetworkUtil.hpp)
+    - Split `InDims...` into first `NumFree` free axes (`InSplit::head`) and latter `N_contract_in` contracted axes of
+      `InputTensor` (`InSplit::tail`)
+
+- ***LearnedContraction::OutSplit*** - [`using LearnedContraction::OutSplit`](src/NetworkUtil.hpp)
+    - Split `OutDims...` into first `NumFree` free axes (`OutSplit::head`) and latter
+      `N_contract_out` contracted axes of
+      `OutputTensor` (`OutSplit::tail`)
+
+- ***LearnedContraction::WeightSeq*** - [`using LearnedContraction::WeightSeq`](src/NetworkUtil.hpp)
+    - `std::integer_sequence` of two splits fused together:
+        - `[OutSplit::tail, InSplit::tail]`
+    - `WeightTensor` needs to minor-contract with `InSplit::tail` (the contracted axes of `InputTensor`)
+
+- ***LearnedContraction::WeightTensor*** - [`using LearnedContraction::WeightTensor`](src/NetworkUtil.hpp)
+    - `Tensor` type created from `WeightSeq` using `SeqToTensor`
+
+### Members
+
+- ***LearnedContraction::W_*** - [`Param<WeightTensor> LearnedContraction::W_`](src/NetworkUtil.hpp)
+    - `Param` type, holding a `WeightTensor`
+
+- ***LearnedContraction::X_cache_*** - [`mutable InputTensor LearnedContraction::X_cache_`](src/NetworkUtil.hpp)
+    - `mutable` cache for `InputTensor`, used for efficient backward pass
+
+- ***LearnedContraction::bX_buf_*** - [`mutable std::vector<float> LearnedContraction::bX_buf_`](src/NetworkUtil.hpp)
+    - `mutable` cache for batched input `Tensor`, used for efficient backward pass
+    - Uses `std::vector<float>` instead of `Tensor` type because `Batch` is only templated in `>>` and
+      `<<` functions (i.e. `LearnedContraction` and its `WeightTensor` are oblivious to `Batch` dimensions)
+
+### Methods
+
+- ***LearnedContraction::LearnedContraction*** - [`LearnedContraction::LearnedContraction()`](src/NetworkUtil.hpp)
+    - Default construct, call `XavierInitMD` on `W_.value`
+
+- ***LearnedContraction::all_params*** - [`auto LearnedContraction::all_params()`](src/NetworkUtil.hpp)
+    - Return `std::tuple` of `Param&` to weight parameter
+
+- ***LearnedContraction::all_params*** - [`auto LearnedContraction::all_params() const`](src/NetworkUtil.hpp)
+    - Return `std::tuple` of `const Param&` to weight parameter
+
+
+- ***LearnedContraction::forward*** - [
+  `OutputTensor LearnedContraction::forward(const InputTensor &X) const`](src/NetworkUtil.hpp)
+    - Forward pass implementation, called by `>>`
+    - Executes general pattern, implementation heavily documented in code
+
+- ***LearnedContraction::backward*** - [
+  `InputTensor LearnedContraction::backward(const OutputTensor &deltaO)`](src/NetworkUtil.hpp)
+    - Backward pass implementation, called by `<<`
+    - Executes general pattern, implementation heavily documented in code
+
+- ***LearnedContraction::batched_forward*** - [
+  `template<size_t Batch> Tensor<Batch, OutDims...> LearnedContraction::batched_forward(const Tensor<Batch, InDims...> &X) const`](src/NetworkUtil.hpp)
+    - Batched forward pass implementation, called by `>>`
+    - Executes general pattern, implementation heavily documented in code
+
+- ***LearnedContraction::batched_backward*** - [
+  `template<size_t Batch> Tensor<Batch, InDims...> LearnedContraction::batched_backward(const Tensor<Batch, OutDims...> &deltaO)`](src/NetworkUtil.hpp)
+    - Batched backward pass implementation, called by `<<`
+    - Executes general pattern, implementation heavily documented in code
+
+### Operators
+
+- ***operator>>*** - [
+  `auto operator>>(const Tensor<InDims...> &X, const LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc)`](src/NetworkUtil.hpp)
+    - Terse operator for forward pass (takes `const Tensor<InDims...> &X` on the left of the operator,
+      `LearnedContraction` on the right)
+    - *Propagate signal forward through `W_`*
+
+- ***operator<<*** - [
+  `auto operator<<(LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc, const Tensor<OutDims...> &deltaO)`](src/NetworkUtil.hpp)
+    - Terse operator for backward pass (takes `LearnedContraction` on the left of the operator,
+      `const Tensor<OutDims...> &deltaO` on the right)
+    - *Propagate gradient backward through `W_`*
+
+- ***operator>> (batched)*** - [
+  `template<size_t Batch, size_t... InDims, size_t... OutDims, size_t NumFree> auto operator>>(const Tensor<Batch, InDims...> &X, const LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc)`](src/NetworkUtil.hpp)
+    - Terse operator for batched forward pass (takes `const Tensor<Batch, InDims...> &X` on the left of the operator,
+      `LearnedContraction` on the right)
+    - *Propagate signal forward through `W_`*
+
+- ***operator<< (batched)*** - [
+  `template<size_t Batch> auto operator<<(LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc, const Tensor<Batch, OutDims...> &deltaO)`](src/NetworkUtil.hpp)
+    - Terse operator for backward pass (takes `LearnedContraction` on the left of the operator,
+      `const Tensor<Batch, OutDims...> &deltaO` on the right)
+    - *Propagate gradient backward through `W_`*
+
 ---
 
 ## [BlockSequence.hpp](src/BlockSequence.hpp): The Sequence Core
@@ -2049,13 +2166,8 @@ Implements the general multidimensional dense layer (`DenseMDBlock`) and its rec
 - ***DenseMDBlock::N_out*** - [`static constexpr size_t DenseMDBlock::N_out`](src/Dense.hpp)
     - Convenience member: `N_out = sizeof...(OutDims)`
 
-- ***DenseMDBlock::W_Type*** - [`using DenseMDBlock::W_Type`](src/Dense.hpp)
-    - Convenience alias: `W_Type = Tensor<OutDims..., InDims...>`
-    - If we want to map `InDims...` to `OutDims...`, then this inverted
-      `Tensor` is exactly what we need as a weight matrix
-
-- ***DenseMDBlock::W_*** - [`Param<W_Type> DenseMDBlock::W_`](src/Dense.hpp)
-    - `Param` whose underlying `Tensor` has type `W_Type`
+- ***DenseMDBlock::W_*** - [`mutable LearnedContraction<InputTensor, OutputTensor, 0> DenseMDBlock::W__`](src/Dense.hpp)
+    - `LearnedContraction` of all axes of `InputTensor` with all axes of `OutputTensor`
 
 - ***DenseMDBlock::b_*** - [`Param<OutputTensor> DenseMDBlock::b_`](src/Dense.hpp)
     - `Param` whose underlying `Tensor` has type `OutputDims` (because `b_` is added to the output of the
@@ -2068,7 +2180,6 @@ Implements the general multidimensional dense layer (`DenseMDBlock`) and its rec
 
 - ***DenseMDBlock::DenseMDBlock*** - [`DenseMDBlock::DenseMDBlock()`](src/Dense.hpp)
     - Default constructor
-    - Calls `XavierInitMD` on `W_`
 
 
 - ***DenseMDBlock::Forward*** - [`OutputTensor DenseMDBlock::Forward(const InputTensor &x) const`](src/Dense.hpp)
