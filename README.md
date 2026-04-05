@@ -187,7 +187,8 @@ Replace the parallel CPU dispatch (
 16. [Dense.hpp: Fully-Connected Layer](#densehpp--fully-connected-layer)
 17. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
 18. [MoreNets.hpp: More helper Block types](#morenetshpp)
-19. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
+19. [TransformerBlock.hpp: Pre-norm Transformer Block](#transformerblockhpp--pre-norm-transformer-block)
+20. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
 
 ---
 
@@ -1371,6 +1372,27 @@ Defines the foundational block concepts that gate the type system and the `Activ
         - `InputTensor Backward(OutputTensor, OutputTensor, InputTensor)`
         - `auto all_params()` and `auto all_params() const`
     - `TrainableTensorNetwork` blocks need not belong to a specific hierarchy; just satisfy this `concept`
+
+### Block Operators
+
+- ***operator>>*** - [`template<Block B, size_t... InDims> auto operator>>(const Tensor<InDims...> &x, const B &b)`](src/NetworkUtil.hpp)
+    - Forward pass: `InDims...` deduced from `x`, `requires B::InputTensor == Tensor<InDims...>`; routes to `b.Forward(x)`
+    - Single-sample overload — batched overload selected automatically when input has a prepended batch dim
+
+- ***operator>> (batched)*** - [`template<Block B, size_t Batch, size_t... InDims> auto operator>>(const Tensor<Batch, InDims...> &X, const B &b)`](src/NetworkUtil.hpp)
+    - Batched forward pass: `Batch` and `InDims...` deduced directly from `X`, `requires B::InputTensor == Tensor<InDims...>`; routes to `b.BatchedForward<Batch>(X)`
+
+- ***BackwardArgs*** - [`template<typename DeltaT, typename AT, typename APrevT> struct BackwardArgs`](src/NetworkUtil.hpp)
+    - Carrier struct bundling the three arguments to `Backward`: `delta_A`, `a`, `a_prev`
+    - Used as the right-hand operand of `operator<<` on `Block`s
+    - Single-sample callsite: `block << BackwardArgs{delta_A, a, a_prev}` (implicit — no type name needed once `B` is deduced from block)
+    - Batched callsite: `block << BackwardArgs{delta_batched, a_batched, a_prev_batched}` (explicit type name required; `Batch` deduced from tensor dims)
+
+- ***operator<<*** - [`template<Block B> auto operator<<(B &b, const BackwardArgs<B::OutputTensor, B::OutputTensor, B::InputTensor> &args)`](src/NetworkUtil.hpp)
+    - Single-sample backward pass: routes to `b.Backward(args.delta_A, args.a, args.a_prev)`
+
+- ***operator<< (batched)*** - [`template<Block B, size_t Batch, size_t... OutDims, size_t... InDims> auto operator<<(B &b, const BackwardArgs<Tensor<Batch, OutDims...>, Tensor<Batch, OutDims...>, Tensor<Batch, InDims...>> &args)`](src/NetworkUtil.hpp)
+    - Batched backward pass: `Batch`, `OutDims...`, `InDims...` deduced from the `BackwardArgs` tensor types; `requires` enforces match against `B::OutputTensor`/`B::InputTensor`; routes to `b.BatchedBackward<Batch>(...)`
 
 - ***PeekableBlock*** - [`template<typename T> concept PeekableBlock`](src/NetworkUtil.hpp)
     - Opt-in `concept` for `Block`s to be able to expose their internal activations to an owning
@@ -2646,6 +2668,382 @@ InputTensor Backward(const OutputTensor &delta_A,
 ---
 
 ## [MoreNets.hpp](src/MoreNets.hpp) -- Helper Block types
+
+---
+
+### `class IdentityBlock<T>`
+
+- ***IdentityBlock*** - [`template<IsTensor T> class IdentityBlock`](src/MoreNets.hpp)
+    - `Block` that performs identity transformation
+    - Used by `ResidualBlock`
+
+- ***IdentityBlock::InputTensor*** - [`using IdentityBlock::InputTensor`](src/MoreNets.hpp)
+    - Alias for `IsTensor T` template parameter
+
+- ***IdentityBlock::OutputTensor*** - [`using IdentityBlock::OutputTensor`](src/MoreNets.hpp)
+    - Alias for `IsTensor T` template parameter
+
+- ***IdentityBlock::all_params*** - [`auto IdentityBlock::all_params()`](src/MoreNets.hpp)
+    - Returns emtpy `std::tuple`
+
+- ***IdentityBlock::all_params*** - [`auto IdentityBlock::all_params() const`](src/MoreNets.hpp)
+    - Returns emtpy `std::tuple`
+
+
+- ***IdentityBlock::Forward*** - [`static OutputTensor IdentityBlock::Forward(const InputTensor &x)`](src/MoreNets.hpp)
+    - Return `X`
+
+- ***IdentityBlock::Backward*** - [
+  `static InputTensor IdentityBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)`](src/MoreNets.hpp)
+    - Return `delta_A`
+
+- ***IdentityBlock::BatchedForward*** - [
+  `template<size_t Batch> static auto IdentityBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) -> PrependBatch<Batch, OutputTensor>::type`](src/MoreNets.hpp)
+    - Return `X`
+
+- ***IdentityBlock::BatchedBackward*** - [
+  `template<size_t Batch> static auto IdentityBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type`](src/MoreNets.hpp)
+    - Return `delta_A`
+
+---
+
+### `class ParallelBlock<BlockA, BlockB>`
+
+- ***ParallelBlock*** - [`template<Block BlockA, Block BlockB> class ParallelBlock`](src/MoreNets.hpp)
+    - Take two `Block`s who have the same `InputTensor`s and
+      `OutputTensor`s and compute their forward and backward passes, effectively, in parallel
+    - Forward pass results are summed
+
+- ***ParallelBlock::InputTensor*** - [`using ParallelBlock::InputTensor`](src/MoreNets.hpp)
+    - Alias for `BlockA::`/`BlockB::InputTensor`
+
+- ***ParallelBlock::OutputTensor*** - [`using ParallelBlock::OutputTensor`](src/MoreNets.hpp)
+    - Alias for `BlockA::`/`BlockB::OutputTensor`
+
+- ***ParallelBlock::a_*** - [`BlockA ParallelBlock::a_`](src/MoreNets.hpp)
+    - `Block` member variable for first `Block BlockA`
+
+- ***ParallelBlock::b_*** - [`BlockB ParallelBlock::b_`](src/MoreNets.hpp)
+    - `Block` member variable for second `Block BlockB`
+
+- ***ParallelBlock::a_out_*** - [`mutable OutputTensor ParallelBlock::a_out_`](src/MoreNets.hpp)
+    - `mutable` cache for `a_`'s intermediate resulting `OutputTensor`, used in backward pass
+
+- ***ParallelBlock::b_out_*** - [`mutable OutputTensor ParallelBlock::b_out_`](src/MoreNets.hpp)
+    - `mutable` cache for `b_`'s intermediate resulting `OutputTensor`, used in backward pass
+
+- ***ParallelBlock::a_out_buf_*** - [`mutable std::vector<float> ParallelBlock::a_out_buf_`](src/MoreNets.hpp)
+    - `mutable` cache for batched intermediate forward results
+    - Uses `std::vector<float>` because `Batch` is not a class parameter
+
+- ***ParallelBlock::b_out_buf_*** - [`mutable std::vector<float> ParallelBlock::b_out_buf_`](src/MoreNets.hpp)
+    - `mutable` cache for batched intermediate forward results
+    - Uses `std::vector<float>` because `Batch` is not a class parameter
+
+- ***ParallelBlock::block_a*** - [`const BlockA &ParallelBlock::block_a() const`](src/MoreNets.hpp)
+    - `const &` getter for `BlockA a_`
+
+- ***ParallelBlock::block_b*** - [`const BlockB &ParallelBlock::block_b() const`](src/MoreNets.hpp)
+    - `const &` getter for `BlockB b_`
+
+- ***ParallelBlock::all_params*** - [`auto ParallelBlock::all_params()`](src/MoreNets.hpp)
+    - `std::tuple_cat` of `a_.all_params()` and `b_.all_params()`
+
+- ***ParallelBlock::all_params*** - [`auto ParallelBlock::all_params() const`](src/MoreNets.hpp)
+    - `std::tuple_cat` of `a_.all_params()` and `b_.all_params()`
+
+
+- ***ParallelBlock::Forward*** - [`OutputTensor ParallelBlock::Forward(const InputTensor &x) const`](src/MoreNets.hpp)
+    - Call `Forward` on `a_` and `b_` and return their sum
+    - Caches intermediate results
+
+- ***ParallelBlock::Backward*** - [
+  `InputTensor ParallelBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)`](src/MoreNets.hpp)
+    - Call `Backward` on `a_out_` and `b_out_` (cached individual results) and pass their sum upstream
+
+- ***ParallelBlock::BatchedForward*** - [
+  `template<size_t Batch> auto ParallelBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type`](src/MoreNets.hpp)
+    - Call `BatchedForward` on `a_` and `b_` and return their sum
+    - Caches intermediate results
+
+- ***ParallelBlock::BatchedBackward*** - [
+  `template<size_t Batch> auto ParallelBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type`](src/MoreNets.hpp)
+    - Call `BatchedBackward` on `a_out_buf_` and `b_out_buf_` (cached individual results) and pass their sum upstream
+
+- ***Parallel*** - [`template<typename RecipeA, typename RecipeB> struct Parallel`](src/MoreNets.hpp)
+    - `BlockRecipe` for `ParallelBlock`
+
+- ***Parallel::OutputTensor*** - [`using Parallel::OutputTensor`](src/MoreNets.hpp)
+    - Alias for output `Tensor` type
+
+- ***Parallel::Resolve*** - [`template<IsTensor InputT> using Parallel::Resolve`](src/MoreNets.hpp)
+    - Given `IsTensor InputT`, define `ParallelBlock` type that should be created
+
+---
+
+### `using ResidualBlock<B>`
+
+- ***ResidualBlock*** - [`template<Block B> using ResidualBlock`](src/MoreNets.hpp)
+    - `Block` type alias for residual connections, defined as a `ParallelBlock` with some `Block B` and `IdentityBlock`
+    - `ParallelBlock` handles both forward and backward passes!
+
+- ***Residual*** - [`template<typename Recipe> struct Residual`](src/MoreNets.hpp)
+    - `Block` type alias for residual connections, defined as a `ParallelBlock` with some `Block B` and `IdentityBlock`
+    - `ParallelBlock` handles both forward and backward passes!
+
+
+- ***Residual::OutputTensor*** - [`using Residual::OutputTensor`](src/MoreNets.hpp)
+    - Alias for output `Tensor` type
+
+- ***Residual::Resolve*** - [`template<IsTensor InputT> using Residual::Resolve`](src/MoreNets.hpp)
+    - Given `IsTensor T`, define `ResidualBlock` type that should be created
+
+---
+
+### `class TransposeBlock<InnerBlock>`
+
+- ***TransposeBlock*** - [`template<Block InnerBlock> class TransposeBlock`](src/MoreNets.hpp)
+    - Wraps a
+      `Block InnerBlock` and runs its forward and backward passes on the transposed input, transposing results back out
+    - Requires `InputTensor == OutputTensor` (transposing preserves shape)
+
+- ***TransposeBlock::InputTensor*** - [`using TransposeBlock::InputTensor`](src/MoreNets.hpp)
+    - Alias for `InnerBlock::InputTensor`
+
+- ***TransposeBlock::OutputTensor*** - [`using TransposeBlock::OutputTensor`](src/MoreNets.hpp)
+    - Alias for `InnerBlock::OutputTensor`
+
+- ***TransposeBlock::inner_*** - [`mutable InnerBlock TransposeBlock::inner_`](src/MoreNets.hpp)
+    - The wrapped `Block`
+
+- ***TransposeBlock::inner*** - [`const InnerBlock &TransposeBlock::inner() const`](src/MoreNets.hpp)
+    - `const &` getter for `inner_`
+
+- ***TransposeBlock::all_params*** - [`auto TransposeBlock::all_params()`](src/MoreNets.hpp)
+    - Delegates to `inner_.all_params()`
+
+- ***TransposeBlock::Forward*** - [`OutputTensor TransposeBlock::Forward(const InputTensor &x) const`](src/MoreNets.hpp)
+    - `Permute<1,0>(inner_.Forward(Permute<1,0>(x)))`
+
+- ***TransposeBlock::Backward*** - [
+  `InputTensor TransposeBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)`](src/MoreNets.hpp)
+    - Transposes all arguments into `inner_`'s perspective, calls `inner_.Backward`, transposes result back
+
+- ***TransposeBlock::BatchedForward*** - [
+  `template<size_t Batch> auto TransposeBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type`](src/MoreNets.hpp)
+    - `Permute<0,2,1>` on `Tensor<Batch, R, C>` gives `Tensor<Batch, C, R>`, forward through `inner_`, permute back
+
+- ***TransposeBlock::BatchedBackward*** - [
+  `template<size_t Batch> auto TransposeBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type`](src/MoreNets.hpp)
+    - Same as `Backward` with batched `Permute<0,2,1>` on all arguments
+
+- ***Transposed*** - [`template<typename InnerRecipe> struct Transposed`](src/MoreNets.hpp)
+    - `BlockRecipe` for `TransposeBlock`
+
+- ***Transposed::OutputTensor*** - [`using Transposed::OutputTensor`](src/MoreNets.hpp)
+    - Alias for `InnerRecipe::OutputTensor`
+
+- ***Transposed::Resolve*** - [`template<IsTensor InputT> using Transposed::Resolve`](src/MoreNets.hpp)
+    - Given `IsTensor InputT`, define `TransposeBlock` type wrapping the resolved inner block
+
+---
+
+### `class LayerNormBlock<SeqLen, EmbDims...>`
+
+**Layer Normalization**: z-score transformation around learned mean and variance!
+
+- ***LayerNormBlock*** - [`template<size_t SeqLen, size_t... EmbDims> class LayerNormBlock`](src/MoreNets.hpp)
+  -
+  `Block` for layer normalization: z-score transformation around learned mean and variance, performed independently over each
+  `size_t...EmbDims` in `SeqLen`
+
+- ***LayerNormBlock::EmbSize*** - [`static constexpr size_t LayerNormBlock::EmbSize`](src/MoreNets.hpp)
+    - Total element count of (Rank-1 mandated) `EmbDims...`
+
+- ***LayerNormBlock::inv_emb*** - [`static constexpr float LayerNormBlock::inv_emb`](src/MoreNets.hpp)
+    - Precompute `1.f / EmbSize`
+
+- ***LayerNormBlock::InputTensor*** - [`using LayerNormBlock::InputTensor`](src/MoreNets.hpp)
+    - Alias around `Tensor<SeqLen, EmbDims...>`
+
+- ***LayerNormBlock::OutputTensor*** - [`using LayerNormBlock::OutputTensor`](src/MoreNets.hpp)
+    - Alias around `Tensor<SeqLen, EmbDims...>`
+
+- ***LayerNormBlock::Scale_Type*** - [`using LayerNormBlock::Scale_Type`](src/MoreNets.hpp)
+    - Alias around the type to be scaled (each `Tensor<EmbDims...>`)
+
+- ***LayerNormBlock::Sigma_Type*** - [`using LayerNormBlock::Sigma_Type`](src/MoreNets.hpp)
+    - Scalar multiple for each of the `SeqLen` sub`Tensor<EmbDims...>`s
+
+- ***LayerNormBlock::gamma_*** - [`Param<Scale_Type> LayerNormBlock::gamma_`](src/MoreNets.hpp)
+    - Learned `Scale_Type` parameter used in Hadamard product to stretch distribution for each token
+
+- ***LayerNormBlock::beta_*** - [`Param<Scale_Type> LayerNormBlock::beta_`](src/MoreNets.hpp)
+    - Learned `Scale_Type` parameter used in elementwise sum to translate/shift mean for each token
+
+- ***LayerNormBlock::x_hat_*** - [`mutable InputTensor LayerNormBlock::x_hat_`](src/MoreNets.hpp)
+    - `mutable` cache for pre-`gamma_`- and -`beta_`-transformed tokens
+
+- ***LayerNormBlock::inv_sigma_*** - [`mutable Sigma_Type LayerNormBlock::inv_sigma_`](src/MoreNets.hpp)
+    - `mutable` cache for precomputed inverse of standard deviation
+
+- ***LayerNormBlock::LayerNormBlock*** - [`LayerNormBlock::LayerNormBlock()`](src/MoreNets.hpp)
+    - Default construct, fill `gamma_` with `1.f`
+
+- ***LayerNormBlock::all_params*** - [`auto LayerNormBlock::all_params()`](src/MoreNets.hpp)
+    - Return `std::tuple` of `Param&` for `gamma_` and `beta_`
+
+- ***LayerNormBlock::all_params*** - [`auto LayerNormBlock::all_params() const`](src/MoreNets.hpp)
+    - Return `std::tuple` of `const Param&` for `gamma_` and `beta_`
+
+
+- ***LayerNormBlock::Forward*** - [`OutputTensor LayerNormBlock::Forward(const InputTensor &X) const`](src/MoreNets.hpp)
+    - Subtract mean from each token, divide by standard deviation, apply learned elementwise `gamma_` and
+      `beta_` transformation
+
+- ***LayerNormBlock::Backward*** - [
+  `InputTensor LayerNormBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)`](src/MoreNets.hpp)
+    - Sum `delta_A` over all tokens for `beta_.grad`
+    - Sum `delta_A * x_hat_` over all tokens for `gamma_.grad` (product rule 101)
+    - Reverse `gamma_`- and `beta_`-transformations, reverse z-score, pass gradient back upstream
+
+- ***LayerNormBlock::BatchedForward*** - [
+  `template<size_t Batch> auto LayerNormBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type`](src/MoreNets.hpp)
+    - Slices each sample out of the batch, calls `Forward`, writes result back
+    - Layer norm has no cross-sample dependencies so per-sample dispatch is correct
+
+- ***LayerNormBlock::BatchedBackward*** - [
+  `template<size_t Batch> auto LayerNormBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type`](src/MoreNets.hpp)
+    - Slices each sample out of the batch, calls `Backward`, writes result back
+    - `gamma_.grad` and `beta_.grad` accumulate across the loop then are scaled by `inv_batch`
+
+- ***LayerNorm*** - [`template<size_t... EmbDims> struct LayerNorm`](src/MoreNets.hpp)
+    - `BlockRecipe` for `LayerNormBlock`
+
+- ***LayerNorm::OutputTensor*** - [`using LayerNorm::OutputTensor`](src/MoreNets.hpp)
+    - Placeholder output type for recipe chain resolution
+
+- ***LayerNorm::Resolve*** - [`template<IsTensor InputT> using LayerNorm::Resolve`](src/MoreNets.hpp)
+    - Extracts `SeqLen` from `InputT` via `TensorFirstDim` and resolves to `LayerNormBlock<SeqLen, EmbDims...>`
+
+---
+
+## [TransformerBlock.hpp](src/TransformerBlock.hpp) -- Pre-norm Transformer Block
+
+```cpp
+// sequence of 28 tokens, each embedded in R^28, 7 heads, FFN projects through 64
+NetworkBuilder<
+    Input<Tensor<28, 28>>,
+    Transformer<7, 64>,
+    Transformer<7, 64>,
+    MapDense<1, Tensor<2>>,   // per-token binary classifier
+    SoftmaxBlock<1>
+>::type net;
+
+std::mt19937 rng{42};
+net.RunEpoch<CEL, 32>(X_train, Y_train, rng, 1e-3f);
+```
+
+---
+
+### `class TransformerBlock<InputT, Heads, FFNHidden>`
+
+Implementation is purely a composition; all detailed work is handled by denizen `Block`s.
+
+- ***TransformerBlock*** - [
+  `template<size_t SeqLen, size_t EmbDim, size_t Heads, size_t FFNHidden> class TransformerBlock<Tensor<SeqLen, EmbDim>, Heads, FFNHidden>`](src/TransformerBlock.hpp)
+    - `Block` that defines standard **Transformer Block***: LayerNorm, Multi-headed Attention, LayerNorm, FFN.
+    - Topology:
+        - `BlockSequence<`
+            - `ResidualBlock<`
+                - `BlockSequence<`
+                    - `LayerNormBlock`
+                    - `MultiHeadAttentionBlock`
+                - `>`
+            - `>`
+            - `ResidualBlock<`
+                - `BlockSequence<`
+                    - `LayerNormBlock`
+                    - `MapDenseMDBlock`
+                    - `MapDenseMDBlock`
+                - `>`
+            - `>`
+        - `>`
+
+- ***TransformerBlock::MHASub_*** - [`using TransformerBlock::MHASub_`](src/TransformerBlock.hpp)
+    - Multi-head attention sub-sequence, wrapped by the first `ResidualBlock`
+    - Topology:
+        - `BlockSequence<`
+            - `LayerNormBlock`
+            - `MultiHeadAttentionBlock`
+        - `>`
+
+- ***TransformerBlock::FFNSub_*** - [`using TransformerBlock::FFNSub_`](src/TransformerBlock.hpp)
+    - Feed-forward sub-sequence, wrapped by the second `ResidualBlock`
+    - Topology:
+        - `BlockSequence<`
+            - `LayerNormBlock`
+            - `MapDenseMDBlock`
+            - `MapDenseMDBlock`
+        - `>`
+    - Two `MapDenseMDBlock`s: one to map to `FFNHidden`, one to map back down to `EmbDim`
+
+- ***TransformerBlock::Inner_*** - [`using TransformerBlock::Inner_`](src/TransformerBlock.hpp)
+    - Topology:
+        - `BlockSequence<`
+            - `ResidualBlock<`
+                - `BlockSequence<`
+                    - `LayerNormBlock`
+                    - `MultiHeadAttentionBlock`
+                - `>`
+            - `>`
+            - `ResidualBlock<`
+                - `BlockSequence<`
+                    - `LayerNormBlock`
+                    - `MapDenseMDBlock`
+                    - `MapDenseMDBlock`
+                - `>`
+            - `>`
+        - `>`
+
+- ***TransformerBlock::inner_*** - [`Inner_ TransformerBlock::inner_`](src/TransformerBlock.hpp)
+    - Instance of topology defined in `Inner_`
+
+- ***TransformerBlock::InputTensor*** - [`using TransformerBlock::InputTensor`](src/TransformerBlock.hpp)
+    - Alias for `Tensor<SeqLen, EmbDim>`
+
+- ***TransformerBlock::OutputTensor*** - [`using TransformerBlock::OutputTensor`](src/TransformerBlock.hpp)
+    - Alias for `Tensor<SeqLen, EmbDim>`
+
+- ***TransformerBlock::all_params*** - [`auto TransformerBlock::all_params()`](src/TransformerBlock.hpp)
+    - Return `std::tuple` from `inner_.all_params()`
+
+- ***TransformerBlock::all_params*** - [`auto TransformerBlock::all_params() const`](src/TransformerBlock.hpp)
+    - Return `std::tuple` from `inner_.all_params()`
+
+
+- ***TransformerBlock::Forward*** - [
+  `OutputTensor TransformerBlock::Forward(const InputTensor &x) const`](src/TransformerBlock.hpp)
+    - Forward pass, simply: `inner_.Forward(x)`
+
+- ***TransformerBlock::Backward*** - [
+  `InputTensor TransformerBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)`](src/TransformerBlock.hpp)
+    - Backward pass, simply: `inner_.Backward(delta_A, a, a_prev)`
+
+- ***TransformerBlock::BatchedForward*** - [
+  `template<size_t Batch> auto TransformerBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type`](src/TransformerBlock.hpp)
+    - Batched forward pass, simply: `inner_.template BatchedForward<Batch>(X)`
+
+- ***TransformerBlock::BatchedBackward*** - [
+  `template<size_t Batch> auto TransformerBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type`](src/TransformerBlock.hpp)
+    - Batched backward pass, simply: `inner_.template BatchedBackward<Batch>(delta_A, a, a_prev)`
+
+- ***Transformer*** - [`template<size_t Heads, size_t FFNHidden> struct Transformer`](src/TransformerBlock.hpp)
+    - `BlockRecipe` struct for building a `TransformerBlock`
+    - Parameterized (when in a `NetworkBuilder` sequence) entirely by `Heads` and `FFNHidden`, the rest is deduced
+
+- ***Transformer::Resolve*** - [`template<IsTensor InputT> using Transformer::Resolve`](src/TransformerBlock.hpp)
+    - When given `IsTensor InputT`, create full `TransformerBlock<InputT, Heads, FFNHidden>`
 
 ---
 

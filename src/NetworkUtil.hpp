@@ -432,6 +432,61 @@ namespace TTTN {
             };
 
 
+    // @doc: template<Block B, size_t... InDims> auto operator>>(const Tensor<InDims...> &x, const B &b)
+    /**
+     * Forward pass: `InDims...` deduced from `x`, `requires B::InputTensor == Tensor<InDims...>`; routes to `b.Forward(x)`
+     * Single-sample overload — batched overload selected automatically when input has a prepended batch dim
+     */
+    template<Block B, size_t... InDims>
+        requires std::same_as<typename B::InputTensor, Tensor<InDims...>>
+    auto operator>>(const Tensor<InDims...>& x, const B& b) {
+        return b.Forward(x);
+    }
+
+    // @doc: template<Block B, size_t Batch, size_t... InDims> auto operator>>(const Tensor<Batch, InDims...> &X, const B &b)
+    /** Batched forward pass: `Batch` and `InDims...` deduced directly from `X`, `requires B::InputTensor == Tensor<InDims...>`; routes to `b.BatchedForward<Batch>(X)` */
+    template<Block B, size_t Batch, size_t... InDims>
+        requires std::same_as<typename B::InputTensor, Tensor<InDims...>>
+    auto operator>>(const Tensor<Batch, InDims...>& X, const B& b) {
+        return b.template BatchedForward<Batch>(X);
+    }
+
+    // @doc: template<typename DeltaT, typename AT, typename APrevT> struct BackwardArgs
+    /**
+     * Carrier struct bundling the three arguments to `Backward`: `delta_A`, `a`, `a_prev`
+     * Used as the right-hand operand of `operator<<` on `Block`s
+     * Single-sample callsite: `block << BackwardArgs{delta_A, a, a_prev}` (implicit — no type name needed once `B` is deduced from block)
+     * Batched callsite: `block << BackwardArgs{delta_batched, a_batched, a_prev_batched}` (explicit type name required; `Batch` deduced from tensor dims)
+     */
+    template<typename DeltaT, typename AT, typename APrevT>
+    struct BackwardArgs {
+        const DeltaT&    delta_A;
+        const AT&        a;
+        const APrevT&    a_prev;
+    };
+
+    // @doc: template<Block B> auto operator<<(B &b, const BackwardArgs<B::OutputTensor, B::OutputTensor, B::InputTensor> &args)
+    /** Single-sample backward pass: routes to `b.Backward(args.delta_A, args.a, args.a_prev)` */
+    template<Block B>
+    auto operator<<(B& b, const BackwardArgs<
+        typename B::OutputTensor,
+        typename B::OutputTensor,
+        typename B::InputTensor>& args) {
+        return b.Backward(args.delta_A, args.a, args.a_prev);
+    }
+
+    // @doc: template<Block B, size_t Batch, size_t... OutDims, size_t... InDims> auto operator<<(B &b, const BackwardArgs<Tensor<Batch, OutDims...>, Tensor<Batch, OutDims...>, Tensor<Batch, InDims...>> &args)
+    /** Batched backward pass: `Batch`, `OutDims...`, `InDims...` deduced from the `BackwardArgs` tensor types; `requires` enforces match against `B::OutputTensor`/`B::InputTensor`; routes to `b.BatchedBackward<Batch>(...)` */
+    template<Block B, size_t Batch, size_t... OutDims, size_t... InDims>
+        requires std::same_as<typename B::OutputTensor, Tensor<OutDims...>> &&
+                 std::same_as<typename B::InputTensor,  Tensor<InDims...>>
+    auto operator<<(B& b, const BackwardArgs<
+        Tensor<Batch, OutDims...>,
+        Tensor<Batch, OutDims...>,
+        Tensor<Batch, InDims...>>& args) {
+        return b.template BatchedBackward<Batch>(args.delta_A, args.a, args.a_prev);
+    }
+
     // @doc: template<typename TupleT> class ActivationsWrap
     /**
      * Wrapper around a `std::tuple` of `Tensor`s representing intermediate activations of a `TrainableTensorNetwork`

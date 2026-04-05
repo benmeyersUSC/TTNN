@@ -84,7 +84,7 @@ namespace TTTN {
         template<size_t I = 0>
         void forward_impl(ActivationsTuple &A) const {
             if constexpr (I < N) {
-                std::get<I + 1>(A) = std::get<I>(mBlocks).Forward(std::get<I>(A));
+                std::get<I + 1>(A) = std::get<I>(A) >> std::get<I>(mBlocks);
                 forward_impl<I + 1>(A);
             }
         }
@@ -98,7 +98,7 @@ namespace TTTN {
             IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, ActivationsTuple> >
         auto backward_impl(const ActivationsTuple &A, const Delta &delta) {
             // the I-1-th block's gradient is a function of: downstream gradient, the I-th activation (output of I-1-th block), and the I-1-th activation (input to I-1-th block)
-            const auto grad = std::get<I - 1>(mBlocks).Backward(delta, std::get<I>(A), std::get<I - 1>(A));
+            const auto grad = std::get<I - 1>(mBlocks) << BackwardArgs{delta, std::get<I>(A), std::get<I - 1>(A)};
             if constexpr (I > 1) {
                 return backward_impl<I - 1>(A, grad);
             } else {
@@ -111,7 +111,7 @@ namespace TTTN {
         template<size_t Batch, size_t I = 0>
         void batched_forward_impl(BatchedActivationsTuple<Batch> &A) const {
             if constexpr (I < N) {
-                std::get<I + 1>(A) = std::get<I>(mBlocks).template BatchedForward<Batch>(std::get<I>(A));
+                std::get<I + 1>(A) = std::get<I>(A) >> std::get<I>(mBlocks);
                 batched_forward_impl<Batch, I + 1>(A);
             }
         }
@@ -121,8 +121,7 @@ namespace TTTN {
         template<size_t Batch, size_t I, typename Delta> requires
             IsTensor<Delta> && std::is_same_v<Delta, std::tuple_element_t<I, BatchedActivationsTuple<Batch> > >
         auto batched_backward_impl(const BatchedActivationsTuple<Batch> &A, const Delta &delta) {
-            const auto grad = std::get<I - 1>(mBlocks).template BatchedBackward<Batch>(
-                delta, std::get<I>(A), std::get<I - 1>(A));
+            const auto grad = std::get<I - 1>(mBlocks) << BackwardArgs{delta, std::get<I>(A), std::get<I - 1>(A)};
             if constexpr (I > 1) return batched_backward_impl<Batch, I - 1>(A, grad);
             else return grad;
         }

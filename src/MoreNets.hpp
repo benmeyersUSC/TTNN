@@ -4,78 +4,67 @@
 #include "TensorReduce.hpp"
 
 namespace TTTN {
-    // =========================================================================
-    // Identity Block
-    // =========================================================================
-    //
-    // Pass-through: Forward returns input unchanged.
-    // Used as a building block for Residual = Parallel<Block, Identity<T>>.
-    //
-    // =========================================================================
-
-    // @doc: template<typename T> class IdentityBlock
+    // @doc: template<IsTensor T> class IdentityBlock
     /**
-     * Pass-through block: `Forward(x) = x`, `Backward(delta, ...) = delta`.
-     * No parameters. Satisfies the Block concept.
-     * Used internally by `Residual<Block>` = `Parallel<Block, IdentityBlock<InputTensor>>`.
+     * `Block` that performs identity transformation
+     * Used by `ResidualBlock`
      */
-    template<typename T>
+    template<IsTensor T>
     class IdentityBlock {
     public:
+        // @doc: using IdentityBlock::InputTensor
+        /** Alias for `IsTensor T` template parameter */
         using InputTensor = T;
+        // @doc: using IdentityBlock::OutputTensor
+        /** Alias for `IsTensor T` template parameter */
         using OutputTensor = T;
 
+        // @doc: auto IdentityBlock::all_params()
+        /** Returns emtpy `std::tuple` */
         auto all_params() { return std::tie(); }
+        // @doc: auto IdentityBlock::all_params() const
+        /** Returns emtpy `std::tuple` */
         auto all_params() const { return std::tie(); }
 
-        OutputTensor Forward(const InputTensor &x) const { return x; }
+        // @doc: static OutputTensor IdentityBlock::Forward(const InputTensor &x)
+        /** Return `X` */
+        static OutputTensor Forward(const InputTensor &x) { return x; }
 
-        InputTensor Backward(const OutputTensor &delta_A,
-                             const OutputTensor & /*a*/,
-                             const InputTensor & /*a_prev*/) {
+        // @doc: static InputTensor IdentityBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)
+        /** Return `delta_A` */
+        static InputTensor Backward(const OutputTensor &delta_A,
+                                    const OutputTensor & /*a*/,
+                                    const InputTensor & /*a_prev*/) {
             return delta_A;
         }
 
+        // @doc: template<size_t Batch> static auto IdentityBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) -> PrependBatch<Batch, OutputTensor>::type
+        /** Return `X` */
         template<size_t Batch>
-        auto BatchedForward(const typename PrependBatch<Batch, InputTensor>::type &X) const
-            -> typename PrependBatch<Batch, OutputTensor>::type {
+        static auto BatchedForward(
+            const PrependBatch<Batch, InputTensor>::type &X) -> PrependBatch<Batch, OutputTensor>::type {
             return X;
         }
 
+        // @doc: template<size_t Batch> static auto IdentityBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type
+        /** Return `delta_A` */
         template<size_t Batch>
-        auto BatchedBackward(
-            const typename PrependBatch<Batch, OutputTensor>::type &delta_A,
-            const typename PrependBatch<Batch, OutputTensor>::type & /*a*/,
-            const typename PrependBatch<Batch, InputTensor>::type & /*a_prev*/)
-            -> typename PrependBatch<Batch, InputTensor>::type {
+        static auto BatchedBackward(
+            const PrependBatch<Batch, OutputTensor>::type &delta_A,
+            const PrependBatch<Batch, OutputTensor>::type & /*a*/,
+            const PrependBatch<Batch, InputTensor>::type & /*a_prev*/)
+            -> PrependBatch<Batch, InputTensor>::type {
             return delta_A;
         }
     };
 
 
-    // =========================================================================
-    // Parallel Block
-    // =========================================================================
-    //
-    // Feeds the same input to two sub-blocks, combines outputs with element-wise
-    // addition: output = BlockA.Forward(x) + BlockB.Forward(x)
-    //
-    // Both blocks must have the same InputTensor and OutputTensor types.
-    //
-    // Backward: gradient flows identically to both branches (since d/dx (a+b) = 1+1).
-    // Each branch receives the full upstream gradient and its own cached activation.
-    // Upstream gradient = sum of both branches' upstream contributions.
-    //
-    // =========================================================================
-
-    // @doc: template<typename BlockA, typename BlockB> class ParallelBlock
+    // @doc: template<Block BlockA, Block BlockB> class ParallelBlock
     /**
-     * Parallel composition: `Forward(x) = A.Forward(x) + B.Forward(x)`.
-     * Both blocks must share `InputTensor` and `OutputTensor` types.
-     * Backward passes gradient to both branches; upstream = `dA + dB`.
-     * Caches each branch's output for correct `Backward(delta, a, a_prev)` calls.
+     * Take two `Block`s who have the same `InputTensor`s and `OutputTensor`s and compute their forward and backward passes, effectively, in parallel
+     * Forward pass results are summed
      */
-    template<typename BlockA, typename BlockB>
+    template<Block BlockA, Block BlockB>
     class ParallelBlock {
         static_assert(std::is_same_v<typename BlockA::InputTensor, typename BlockB::InputTensor>,
                       "ParallelBlock: both blocks must have the same InputTensor");
@@ -83,256 +72,347 @@ namespace TTTN {
                       "ParallelBlock: both blocks must have the same OutputTensor");
 
     public:
-        using InputTensor = typename BlockA::InputTensor;
-        using OutputTensor = typename BlockA::OutputTensor;
+        // @doc: using ParallelBlock::InputTensor
+        /** Alias for `BlockA::`/`BlockB::InputTensor` */
+        using InputTensor = BlockA::InputTensor;
+        // @doc: using ParallelBlock::OutputTensor
+        /** Alias for `BlockA::`/`BlockB::OutputTensor` */
+        using OutputTensor = BlockA::OutputTensor;
 
     private:
+        // @doc: BlockA ParallelBlock::a_
+        /** `Block` member variable for first `Block BlockA` */
         BlockA a_;
+        // @doc: BlockB ParallelBlock::b_
+        /** `Block` member variable for second `Block BlockB` */
         BlockB b_;
 
-        // Cache each branch's output for backward pass
+        // @doc: mutable OutputTensor ParallelBlock::a_out_
+        /** `mutable` cache for `a_`'s intermediate resulting `OutputTensor`, used in backward pass */
         mutable OutputTensor a_out_{};
+        // @doc: mutable OutputTensor ParallelBlock::b_out_
+        /** `mutable` cache for `b_`'s intermediate resulting `OutputTensor`, used in backward pass */
         mutable OutputTensor b_out_{};
+        // @doc: mutable std::vector<float> ParallelBlock::a_out_buf_
+        /**
+         * `mutable` cache for batched intermediate forward results
+         * Uses `std::vector<float>` because `Batch` is not a class parameter
+         */
+        mutable std::vector<float> a_out_buf_;
+        // @doc: mutable std::vector<float> ParallelBlock::b_out_buf_
+        /**
+         * `mutable` cache for batched intermediate forward results
+         * Uses `std::vector<float>` because `Batch` is not a class parameter
+         */
+        mutable std::vector<float> b_out_buf_;
 
     public:
-        const BlockA& block_a() const { return a_; }
-        const BlockB& block_b() const { return b_; }
+        // @doc: const BlockA &ParallelBlock::block_a() const
+        /** `const &` getter for `BlockA a_` */
+        const BlockA &block_a() const { return a_; }
+        // @doc: const BlockB &ParallelBlock::block_b() const
+        /** `const &` getter for `BlockB b_` */
+        const BlockB &block_b() const { return b_; }
 
+        // @doc: auto ParallelBlock::all_params()
+        /** `std::tuple_cat` of `a_.all_params()` and `b_.all_params()` */
         auto all_params() {
             return std::tuple_cat(a_.all_params(), b_.all_params());
         }
 
+        // @doc: auto ParallelBlock::all_params() const
+        /** `std::tuple_cat` of `a_.all_params()` and `b_.all_params()` */
         auto all_params() const {
             return std::tuple_cat(a_.all_params(), b_.all_params());
         }
 
+        // @doc: OutputTensor ParallelBlock::Forward(const InputTensor &x) const
+        /**
+         * Call `Forward` on `a_` and `b_` and return their sum
+         * Caches intermediate results
+         */
         OutputTensor Forward(const InputTensor &x) const {
-            return a_.Forward(x) + b_.Forward(x);
+            a_out_ = x >> a_;
+            b_out_ = x >> b_;
+            return a_out_ + b_out_;
         }
 
+        // @doc: InputTensor ParallelBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)
+        /** Call `Backward` on `a_out_` and `b_out_` (cached individual results) and pass their sum upstream */
         InputTensor Backward(const OutputTensor &delta_A,
                              const OutputTensor & /*a*/,
                              const InputTensor &a_prev) {
-            // Both branches receive the full upstream gradient.
-            // Each gets its own cached activation for activation derivative.
-            return a_.Backward(delta_A, a_out_, a_prev) + b_.Backward(delta_A, b_out_, a_prev);
+            return (a_ << BackwardArgs{delta_A, a_out_, a_prev}) + (b_ << BackwardArgs{delta_A, b_out_, a_prev});
         }
 
+        // @doc: template<size_t Batch> auto ParallelBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type
+        /**
+         * Call `BatchedForward` on `a_` and `b_` and return their sum
+         * Caches intermediate results
+         */
         template<size_t Batch>
-        auto BatchedForward(const typename PrependBatch<Batch, InputTensor>::type &X) const
-            -> typename PrependBatch<Batch, OutputTensor>::type {
-            // auto a_batch = a_.template BatchedForward<Batch>(X);
-            // auto b_batch = b_.template BatchedForward<Batch>(X);
-            // element-wise add via zip
-            // return a_batch.zip(b_batch, [](float x, float y) { return x + y; });
-            return Zip<Add>(a_.template BatchedForward<Batch>(X), b_.template BatchedForward<Batch>(X));
+        auto BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const
+            -> PrependBatch<Batch, OutputTensor>::type {
+            using BatchOut = PrependBatch<Batch, OutputTensor>::type;
+            const auto af = X >> a_;
+            const auto bf = X >> b_;
+            a_out_buf_.assign(af.data(), af.data() + BatchOut::Size);
+            b_out_buf_.assign(bf.data(), bf.data() + BatchOut::Size);
+            return af + bf;
         }
 
+        // @doc: template<size_t Batch> auto ParallelBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type
+        /** Call `BatchedBackward` on `a_out_buf_` and `b_out_buf_` (cached individual results) and pass their sum upstream */
         template<size_t Batch>
         auto BatchedBackward(
-            const typename PrependBatch<Batch, OutputTensor>::type &delta_A,
-            const typename PrependBatch<Batch, OutputTensor>::type & /*a*/,
-            const typename PrependBatch<Batch, InputTensor>::type &a_prev)
-            -> typename PrependBatch<Batch, InputTensor>::type {
-            // For batched: we don't have cached per-branch outputs.
-            // Re-forward to get them. This is the cost of generality.
-            auto a_batch_out = a_.template BatchedForward<Batch>(a_prev);
-            auto b_batch_out = b_.template BatchedForward<Batch>(a_prev);
+            const PrependBatch<Batch, OutputTensor>::type &delta_A,
+            const PrependBatch<Batch, OutputTensor>::type & /*a*/,
+            const PrependBatch<Batch, InputTensor>::type &a_prev)
+            -> PrependBatch<Batch, InputTensor>::type {
+            using BatchOut = PrependBatch<Batch, OutputTensor>::type;
+            BatchOut a_batch_out, b_batch_out;
+            std::copy(a_out_buf_.begin(), a_out_buf_.begin() + BatchOut::Size, a_batch_out.data());
+            std::copy(b_out_buf_.begin(), b_out_buf_.begin() + BatchOut::Size, b_batch_out.data());
 
-            auto grad_a = a_.template BatchedBackward<Batch>(delta_A, a_batch_out, a_prev);
-            auto grad_b = b_.template BatchedBackward<Batch>(delta_A, b_batch_out, a_prev);
-            return grad_a + grad_b;
+            auto grad = a_ << BackwardArgs{delta_A, a_batch_out, a_prev};
+            grad += b_ << BackwardArgs{delta_A, b_batch_out, a_prev};
+            return grad;
         }
     };
 
 
-    // =========================================================================
-    // Residual Block
-    // =========================================================================
-    //
-    // Residual<Block> = Parallel<Block, Identity>
-    //
-    // output = Block.Forward(x) + x
-    //
-    // =========================================================================
-
-    // @doc: template<typename Block> using ResidualBlock
+    // @doc: template<Block B> using ResidualBlock
     /**
-     * `Parallel<Block, IdentityBlock<InputTensor>>` — residual connection.
-     * `Forward(x) = Block.Forward(x) + x`. Requires `InputTensor == OutputTensor`.
+     * `Block` type alias for residual connections, defined as a `ParallelBlock` with some `Block B` and `IdentityBlock`
+     * `ParallelBlock` handles both forward and backward passes!
      */
-    template<typename Block>
-    using ResidualBlock = ParallelBlock<Block, IdentityBlock<typename Block::InputTensor> >;
+    template<Block B>
+    using ResidualBlock = ParallelBlock<B, IdentityBlock<typename B::InputTensor> >;
 
 
-    // =========================================================================
-    // Recipe wrappers for NetworkBuilder
-    // =========================================================================
-
-    // @doc: template<typename RecipeA, typename RecipeB> struct ParallelRecipe
-    /**
-     * `NetworkBuilder` recipe for `ParallelBlock`.
-     * Usage: `Parallel<MHAttention<4, 28>, MHAttention<4, 28>>`
-     * Both recipes must resolve to blocks with matching Input/OutputTensor.
-     */
+    // @doc: template<typename RecipeA, typename RecipeB> struct Parallel
+    /** `BlockRecipe` for `ParallelBlock` */
     template<typename RecipeA, typename RecipeB>
     struct Parallel {
-        // Placeholder — actual OutputTensor depends on input, resolved at chain time
-        using OutputTensor = typename RecipeA::OutputTensor;
+        // @doc: using Parallel::OutputTensor
+        /** Alias for output `Tensor` type */
+        using OutputTensor = RecipeA::OutputTensor;
 
-        template<typename InputT>
+        // @doc: template<IsTensor InputT> using Parallel::Resolve
+        /** Given `IsTensor InputT`, define `ParallelBlock` type that should be created */
+        template<IsTensor InputT>
         using Resolve = ParallelBlock<
             typename RecipeA::template Resolve<InputT>,
             typename RecipeB::template Resolve<InputT>
         >;
     };
 
+
     // @doc: template<typename Recipe> struct Residual
     /**
-     * `NetworkBuilder` recipe for `ResidualBlock`.
-     * Usage: `Residual<ComposeBlocks<MHAttention<4, 28>, MapDense<1, Tensor<28>>>>`
-     * The inner block's output shape must match its input shape.
+     * `Block` type alias for residual connections, defined as a `ParallelBlock` with some `Block B` and `IdentityBlock`
+     * `ParallelBlock` handles both forward and backward passes!
      */
     template<typename Recipe>
     struct Residual {
-        using OutputTensor = typename Recipe::OutputTensor;
+        // @doc: using Residual::OutputTensor
+        /** Alias for output `Tensor` type */
+        using OutputTensor = Recipe::OutputTensor;
 
-        template<typename InputT>
+        // @doc: template<IsTensor InputT> using Residual::Resolve
+        /** Given `IsTensor T`, define `ResidualBlock` type that should be created */
+        template<IsTensor InputT>
         using Resolve = ResidualBlock<typename Recipe::template Resolve<InputT> >;
     };
 
 
-    template<typename InnerBlock>
+    // @doc: template<Block InnerBlock> class TransposeBlock
+    /**
+     * Wraps a `Block InnerBlock` and runs its forward and backward passes on the transposed input, transposing results back out
+     * Requires `InputTensor == OutputTensor` (transposing preserves shape)
+     */
+    template<Block InnerBlock>
     class TransposeBlock {
     public:
-        using InputTensor = typename InnerBlock::InputTensor;
-        using OutputTensor = typename InnerBlock::OutputTensor;
-        // Only valid for rank-2 tensors where transposing preserves shape
+        // @doc: using TransposeBlock::InputTensor
+        /** Alias for `InnerBlock::InputTensor` */
+        using InputTensor = InnerBlock::InputTensor;
+        // @doc: using TransposeBlock::OutputTensor
+        /** Alias for `InnerBlock::OutputTensor` */
+        using OutputTensor = InnerBlock::OutputTensor;
         static_assert(std::is_same_v<InputTensor, OutputTensor>,
                       "TransposeBlock requires InputTensor == OutputTensor");
 
     private:
+        // @doc: mutable InnerBlock TransposeBlock::inner_
+        /** The wrapped `Block` */
         mutable InnerBlock inner_;
 
     public:
-        const InnerBlock& inner() const { return inner_; }
+        // @doc: const InnerBlock &TransposeBlock::inner() const
+        /** `const &` getter for `inner_` */
+        const InnerBlock &inner() const { return inner_; }
 
+        // @doc: auto TransposeBlock::all_params()
+        /** Delegates to `inner_.all_params()` */
         auto all_params() { return inner_.all_params(); }
+        // @doc: auto TransposeBlock::all_params() const
+        /** Delegates to `inner_.all_params()` */
         auto all_params() const { return inner_.all_params(); }
 
+        // @doc: OutputTensor TransposeBlock::Forward(const InputTensor &x) const
+        /** `Permute<1,0>(inner_.Forward(Permute<1,0>(x)))` */
         OutputTensor Forward(const InputTensor &x) const {
-            return Permute<1, 0>(inner_.Forward(Permute<1, 0>(x)));
+            return Permute<1, 0>(Permute<1, 0>(x) >> inner_);
         }
 
+        // @doc: InputTensor TransposeBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)
+        /** Transposes all arguments into `inner_`'s perspective, calls `inner_.Backward`, transposes result back */
         InputTensor Backward(const OutputTensor &delta_A,
                              const OutputTensor &a,
                              const InputTensor &a_prev) {
-            // Transpose everything into inner block's perspective, backward, transpose result back
-            return Permute<1, 0>(inner_.Backward(
+            return Permute<1, 0>(inner_ << BackwardArgs{
                 Permute<1, 0>(delta_A),
                 Permute<1, 0>(a),
-                Permute<1, 0>(a_prev)));
+                Permute<1, 0>(a_prev)});
         }
 
+        // @doc: template<size_t Batch> auto TransposeBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type
+        /** `Permute<0,2,1>` on `Tensor<Batch, R, C>` gives `Tensor<Batch, C, R>`, forward through `inner_`, permute back */
         template<size_t Batch>
-        auto BatchedForward(const typename PrependBatch<Batch, InputTensor>::type &X) const
-            -> typename PrependBatch<Batch, OutputTensor>::type {
+        auto BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const
+            -> PrependBatch<Batch, OutputTensor>::type {
             // Permute<0, 2, 1> on Tensor<Batch, R, C> → Tensor<Batch, C, R>
             auto X_t = Permute<0, 2, 1>(X);
-            auto out_t = inner_.template BatchedForward<Batch>(X_t);
-            return Permute<0, 2, 1>(out_t);
+            return Permute<0, 2, 1>(X_t >> inner_);
         }
 
+        // @doc: template<size_t Batch> auto TransposeBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type
+        /** Same as `Backward` with batched `Permute<0,2,1>` on all arguments */
         template<size_t Batch>
         auto BatchedBackward(
-            const typename PrependBatch<Batch, OutputTensor>::type &delta_A,
-            const typename PrependBatch<Batch, OutputTensor>::type &a,
-            const typename PrependBatch<Batch, InputTensor>::type &a_prev)
-            -> typename PrependBatch<Batch, InputTensor>::type {
-            return Permute<0, 2, 1>(inner_.template BatchedBackward<Batch>(
+            const PrependBatch<Batch, OutputTensor>::type &delta_A,
+            const PrependBatch<Batch, OutputTensor>::type &a,
+            const PrependBatch<Batch, InputTensor>::type &a_prev)
+            -> PrependBatch<Batch, InputTensor>::type {
+            return Permute<0, 2, 1>(inner_ << BackwardArgs{
                 Permute<0, 2, 1>(delta_A),
                 Permute<0, 2, 1>(a),
-                Permute<0, 2, 1>(a_prev)));
+                Permute<0, 2, 1>(a_prev)});
         }
     };
 
-    // Recipe wrapper for NetworkBuilder
+    // @doc: template<typename InnerRecipe> struct Transposed
+    /** `BlockRecipe` for `TransposeBlock` */
     template<typename InnerRecipe>
     struct Transposed {
-        using OutputTensor = typename InnerRecipe::OutputTensor;
+        // @doc: using Transposed::OutputTensor
+        /** Alias for `InnerRecipe::OutputTensor` */
+        using OutputTensor = InnerRecipe::OutputTensor;
 
-        template<typename InputT>
+        // @doc: template<IsTensor InputT> using Transposed::Resolve
+        /** Given `IsTensor InputT`, define `TransposeBlock` type wrapping the resolved inner block */
+        template<IsTensor InputT>
         using Resolve = TransposeBlock<typename InnerRecipe::template Resolve<InputT> >;
     };
 
 
-    // =========================================================================
-    // LayerNormBlock<SeqLen, EmbDim>
-    //
-    // Per-token layer normalization over the embedding axis (axis 1).
-    // Learnable scale gamma and shift beta, both shape Tensor<EmbDim>.
-    //
-    // Forward:
-    //   centered = BroadcastReduce<1, SubMean<D>, Add>(X)   (x - mean)
-    //   inv_sigma = 1/sqrt(Reduce<1,SqAdd>(centered)/D + eps)
-    //   x_hat     = BroadcastMap<1, Mul>(centered, inv_sigma)
-    //   out       = gamma * x_hat + beta   (broadcast over SeqLen)
-    //
-    // Backward: standard LayerNorm gradient.
-    // =========================================================================
-
+    // @doc: template<size_t SeqLen, size_t... EmbDims> class LayerNormBlock
+    /** Subtract mean from each token, divide by standard deviation, apply learned elementwise `gamma_` and `beta_` transformation */
     template<size_t SeqLen, size_t... EmbDims>
     class LayerNormBlock {
         static_assert(sizeof...(EmbDims) == 1, "LayerNormBlock: only 1D embeddings supported");
-        static constexpr float   eps     = 1e-5f;
-        static constexpr size_t  EmbSize = TensorDimsProduct<EmbDims...>::value;
+        // @doc: static constexpr size_t LayerNormBlock::EmbSize
+        /** Total element count of (Rank-1 mandated) `EmbDims...` */
+        static constexpr size_t EmbSize = TensorDimsProduct<EmbDims...>::value;
+
+        // @doc: static constexpr float LayerNormBlock::inv_emb
+        /** Precompute `1.f / EmbSize` */
+        static constexpr float inv_emb = 1.f / static_cast<float>(EmbSize);
 
     public:
-        using InputTensor  = Tensor<SeqLen, EmbDims...>;
+        // @doc: using LayerNormBlock::InputTensor
+        /** Alias around `Tensor<SeqLen, EmbDims...>` */
+        using InputTensor = Tensor<SeqLen, EmbDims...>;
+        // @doc: using LayerNormBlock::OutputTensor
+        /** Alias around `Tensor<SeqLen, EmbDims...>` */
         using OutputTensor = Tensor<SeqLen, EmbDims...>;
-        using Scale_Type   = Tensor<EmbDims...>;
-        using Sigma_Type   = Tensor<SeqLen>;
+        // @doc: using LayerNormBlock::Scale_Type
+        /** Alias around the type to be scaled (each `Tensor<EmbDims...>`) */
+        using Scale_Type = Tensor<EmbDims...>;
+        // @doc: using LayerNormBlock::Sigma_Type
+        /** Scalar multiple for each of the `SeqLen` sub`Tensor<EmbDims...>`s */
+        using Sigma_Type = Tensor<SeqLen>;
 
     private:
+        // @doc: Param<Scale_Type> LayerNormBlock::gamma_
+        /** Learned `Scale_Type` parameter used in Hadamard product to stretch distribution for each token */
+        // @doc: Param<Scale_Type> LayerNormBlock::beta_
+        /** Learned `Scale_Type` parameter used in elementwise sum to translate/shift mean for each token */
         Param<Scale_Type> gamma_, beta_;
+        // @doc: mutable InputTensor LayerNormBlock::x_hat_
+        /** `mutable` cache for pre-`gamma_`- and -`beta_`-transformed tokens */
         mutable InputTensor x_hat_{};
-        mutable Sigma_Type  inv_sigma_{};
+        // @doc: mutable Sigma_Type LayerNormBlock::inv_sigma_
+        /** `mutable` cache for precomputed inverse of standard deviation */
+        mutable Sigma_Type inv_sigma_{};
 
     public:
+        // @doc: LayerNormBlock::LayerNormBlock()
+        /** Default construct, fill `gamma_` with `1.f` */
         LayerNormBlock() { gamma_.value.apply([](float) { return 1.f; }); }
 
-        auto all_params()       { return std::tie(gamma_, beta_); }
+        // @doc: auto LayerNormBlock::all_params()
+        /** Return `std::tuple` of `Param&` for `gamma_` and `beta_` */
+        auto all_params() { return std::tie(gamma_, beta_); }
+        // @doc: auto LayerNormBlock::all_params() const
+        /** Return `std::tuple` of `const Param&` for `gamma_` and `beta_` */
         auto all_params() const { return std::tie(gamma_, beta_); }
 
-        // @doc: OutputTensor LayerNormBlock::Forward(const InputTensor& X) const
-        /** Per-token layer norm: `out = gamma * (x - mean) / sigma + beta` */
+        // @doc: OutputTensor LayerNormBlock::Forward(const InputTensor &X) const
+        /** Subtract mean from each token, divide by standard deviation, apply learned elementwise `gamma_` and `beta_` transformation */
         OutputTensor Forward(const InputTensor &X) const {
-            auto centered  = BroadcastReduce<1, SubMean<EmbSize>, Add>(X);
-            auto sum_sq    = Reduce<1, SqAdd>(centered);
-            inv_sigma_     = sum_sq.map([](float s) {
-                return 1.f / std::sqrt(s / static_cast<float>(EmbSize) + eps);
+            auto centered = BroadcastReduce<1, SubMean<EmbSize>, Add>(X);
+            inv_sigma_ = Reduce<1, SqAdd>(centered);
+            inv_sigma_.apply([](const float s) {
+                return 1.f / std::sqrt(s * inv_emb + EPS);
             });
-            x_hat_         = BroadcastMap<1, Mul>(centered, inv_sigma_);
-            return BroadcastMap<0, Add>(BroadcastMap<0, Mul>(x_hat_, gamma_.value), beta_.value);
+            x_hat_ = BroadcastMap<1, Mul>(centered, inv_sigma_);
+            return BroadcastMapMove<0, Add>(BroadcastMap<0, Mul>(x_hat_, gamma_.value), beta_.value);
         }
 
+        // @doc: InputTensor LayerNormBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)
+        /**
+         * Sum `delta_A` over all tokens for `beta_.grad`
+         * Sum `delta_A * x_hat_` over all tokens for `gamma_.grad` (product rule 101)
+         * Reverse `gamma_`- and `beta_`-transformations, reverse z-score, pass gradient back upstream
+         */
         InputTensor Backward(const OutputTensor &delta_A,
                              const OutputTensor & /*a*/,
                              const InputTensor & /*a_prev*/) {
-            beta_.grad  += Reduce<0, Add>(delta_A);
+            beta_.grad += Reduce<0, Add>(delta_A);
             gamma_.grad += Reduce<0, Add>(delta_A * x_hat_);
 
-            auto ds       = BroadcastMap<0, Mul>(delta_A, gamma_.value);
-            auto ds_c     = BroadcastReduce<1, SubMean<EmbSize>, Add>(ds);
-            auto cov_ds   = Reduce<1, Add>(ds * x_hat_) * (1.f / static_cast<float>(EmbSize));
-            return BroadcastMap<1, Mul>(
+            // broadcast delta * gamma along all tokens in sequence
+            auto ds = BroadcastMap<0, Mul>(delta_A, gamma_.value);
+            // reduce each embedding to sum of delta * gamma * x_hat_
+            auto cov_ds = Reduce<1, Add>(ds * x_hat_);
+            cov_ds *= inv_emb;
+            // sum delta * gamma along each token, then broadcast up with mean subtraction
+            auto ds_c = BroadcastReduceMove<1, SubMean<EmbSize>, Add>(std::move(ds));
+            return BroadcastMapMove<1, Mul>(
                 ds_c - BroadcastMap<1, Mul>(x_hat_, cov_ds),
                 inv_sigma_);
         }
 
+        // @doc: template<size_t Batch> auto LayerNormBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type
+        /**
+         * Slices each sample out of the batch, calls `Forward`, writes result back
+         * Layer norm has no cross-sample dependencies so per-sample dispatch is correct
+         */
         template<size_t Batch>
-        auto BatchedForward(const typename PrependBatch<Batch, InputTensor>::type &X) const
-            -> typename PrependBatch<Batch, OutputTensor>::type {
+        auto BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const
+            -> PrependBatch<Batch, OutputTensor>::type {
             typename PrependBatch<Batch, OutputTensor>::type result;
             constexpr size_t ss = InputTensor::Size;
             for (size_t b = 0; b < Batch; ++b) {
@@ -344,19 +424,24 @@ namespace TTTN {
             return result;
         }
 
+        // @doc: template<size_t Batch> auto LayerNormBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type
+        /**
+         * Slices each sample out of the batch, calls `Backward`, writes result back
+         * `gamma_.grad` and `beta_.grad` accumulate across the loop then are scaled by `inv_batch`
+         */
         template<size_t Batch>
         auto BatchedBackward(
-            const typename PrependBatch<Batch, OutputTensor>::type &delta_A,
-            const typename PrependBatch<Batch, OutputTensor>::type &a,
-            const typename PrependBatch<Batch, InputTensor>::type  &a_prev)
-            -> typename PrependBatch<Batch, InputTensor>::type {
+            const PrependBatch<Batch, OutputTensor>::type &delta_A,
+            const PrependBatch<Batch, OutputTensor>::type &a,
+            const PrependBatch<Batch, InputTensor>::type &a_prev)
+            -> PrependBatch<Batch, InputTensor>::type {
             typename PrependBatch<Batch, InputTensor>::type result;
             constexpr size_t ss = InputTensor::Size;
             for (size_t b = 0; b < Batch; ++b) {
                 InputTensor dA_b, a_b, ap_b;
                 for (size_t i = 0; i < ss; ++i) {
                     dA_b.flat(i) = delta_A.flat(b * ss + i);
-                    a_b.flat(i)  = a.flat(b * ss + i);
+                    a_b.flat(i) = a.flat(b * ss + i);
                     ap_b.flat(i) = a_prev.flat(b * ss + i);
                 }
                 const auto up = Backward(dA_b, a_b, ap_b);
@@ -364,22 +449,23 @@ namespace TTTN {
             }
             const float inv_b = 1.f / static_cast<float>(Batch);
             gamma_.grad = gamma_.grad * inv_b;
-            beta_.grad  = beta_.grad  * inv_b;
+            beta_.grad = beta_.grad * inv_b;
             return result;
         }
     };
 
 
     // @doc: template<size_t... EmbDims> struct LayerNorm
-    /**
-     * Recipe resolving to `LayerNormBlock<SeqLen, EmbDims...>`, inferring `SeqLen` from `InputT`.
-     * Usage: `LayerNorm<EmbDim>` inside a `NetworkBuilder` or `ComposeBlocks` chain.
-     */
+    /** `BlockRecipe` for `LayerNormBlock` */
     template<size_t... EmbDims>
     struct LayerNorm {
+        // @doc: using LayerNorm::OutputTensor
+        /** Placeholder output type for recipe chain resolution */
         using OutputTensor = Tensor<1, EmbDims...>;
 
-        template<typename InputT>
+        // @doc: template<IsTensor InputT> using LayerNorm::Resolve
+        /** Extracts `SeqLen` from `InputT` via `TensorFirstDim` and resolves to `LayerNormBlock<SeqLen, EmbDims...>` */
+        template<IsTensor InputT>
         using Resolve = LayerNormBlock<TensorFirstDim<InputT>::value, EmbDims...>;
     };
 }

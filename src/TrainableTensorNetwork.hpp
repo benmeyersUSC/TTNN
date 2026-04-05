@@ -71,7 +71,7 @@ namespace TTTN {
 
         // @doc: [[nodiscard]] OutputTensor TrainableTensorNetwork::Forward(const InputTensor &x) const
         /** Delegates to `BlockSequence::Forward` */
-        [[nodiscard]] OutputTensor Forward(const InputTensor &x) const { return mSeq_.Forward(x); }
+        [[nodiscard]] OutputTensor Forward(const InputTensor &x) const { return x >> mSeq_; }
 
 
         // @doc: template<size_t Batch> [[nodiscard]] BatchedActivations<Batch> TrainableTensorNetwork::BatchedForwardAll(const PrependBatch<Batch, InputTensor>::type &X) const
@@ -281,4 +281,29 @@ namespace TTTN {
             return total_loss / static_cast<float>(Steps);
         }
     };
+
+    // @doc: template<Block... Blocks, size_t... InDims> auto operator>>(const Tensor<InDims...> &x, const TrainableTensorNetwork<Blocks...> &net)
+    /**
+     * `BatchMinorContract` form is part conventional and part performance-informed:
+     * `Batch` being left-aligned adopts common convention for `Tensor` shapes in ML
+     * `Minor` (contracted) axes being right-aligned reflects that `Tensor`s in `TTTN` are backed by ***row-major*** `float` arrays. Only the rightmost (minor) axes are stored contiguously in memory. To maximize vectorization optimizations for `Reduce ∘ zipWith(Map)` operations, we want the loops over contracted indices to be traversing contiguous memory. Detailed comments on this subject are resident in the code.
+     */
+    template<Block... Blocks, size_t... InDims>
+        requires std::same_as<typename TrainableTensorNetwork<Blocks...>::InputTensor, Tensor<InDims...>>
+    auto operator>>(const Tensor<InDims...>& x, const TrainableTensorNetwork<Blocks...>& net) {
+        return net.Forward(x);
+    }
+
+    // @doc: template<Block... Blocks, size_t Batch, size_t... InDims> auto operator>>(const Tensor<Batch, InDims...> &X, const TrainableTensorNetwork<Blocks...> &net)
+    /**
+     * `BatchMinorContract` form is part conventional and part performance-informed:
+     * `Batch` being left-aligned adopts common convention for `Tensor` shapes in ML
+     * `Minor` (contracted) axes being right-aligned reflects that `Tensor`s in `TTTN` are backed by ***row-major*** `float` arrays. Only the rightmost (minor) axes are stored contiguously in memory. To maximize vectorization optimizations for `Reduce ∘ zipWith(Map)` operations, we want the loops over contracted indices to be traversing contiguous memory. Detailed comments on this subject are resident in the code.
+     */
+    template<Block... Blocks, size_t Batch, size_t... InDims>
+        requires std::same_as<typename TrainableTensorNetwork<Blocks...>::InputTensor, Tensor<InDims...>>
+    auto operator>>(const Tensor<Batch, InDims...>& X, const TrainableTensorNetwork<Blocks...>& net) {
+        return net.template BatchedForward<Batch>(X);
+    }
+
 } // namespace TTTN

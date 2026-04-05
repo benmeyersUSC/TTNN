@@ -165,7 +165,7 @@ static void writeAndOpenAttnPPM(const std::string &path,
 
 template<typename Net>
 static AttnSample extractAttnSample(const Net &net, const Tensor<28, 28> &img, size_t label) {
-    const auto pred_out = net.Forward(img);
+    const auto pred_out = img >> net;
     size_t pred = 0;
     for (size_t c = 1; c < 10; ++c)
         if (pred_out.flat(c) > pred_out.flat(pred)) pred = c;
@@ -405,7 +405,7 @@ static BracketSample extractBracketSample(const Net &net,
                                           const Tensor<32, 7> &x,
                                           size_t label,
                                           const std::array<int, 32> &tokens) {
-    const auto pred_out = net.Forward(x);
+    const auto pred_out = x >> net;
     const size_t pred = pred_out.flat(1) > pred_out.flat(0) ? 1u : 0u;
     return {label, pred, tokens, net.snap()};
 }
@@ -641,7 +641,7 @@ void runSeqTasksViz() {
                 std::array<int, 32> tokens;
                 for (size_t t = 0; t < 32; ++t)
                     tokens[t] = static_cast<int>(train_data(i, t + 1));
-                const auto pred_out = net.Forward(make_input(train_data, i));
+                const auto pred_out = make_input(train_data, i) >> net;
                 const size_t pred = pred_out.flat(1) > pred_out.flat(0) ? 1u : 0u;
                 ppm_samples.push_back({lbl, pred, tokens, net.Snap()});
             }
@@ -807,7 +807,7 @@ void runMNISTDense() {
         for (size_t i = 0; i < TestN; ++i) {
             Tensor<784> x;
             for (size_t p = 0; p < 784; ++p) x.flat(p) = X_test.flat(i * 784 + p);
-            const auto out = net.Forward(x);
+            const auto out = x >> net;
             size_t pred = 0;
             for (size_t c = 1; c < 10; ++c) if (out.flat(c) > out.flat(pred)) pred = c;
             const auto label = static_cast<size_t>(test_data(i, 0));

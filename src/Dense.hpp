@@ -207,9 +207,6 @@ namespace TTTN {
         static constexpr size_t ContractSize = SeqProduct<ContractSeq_>::value;
 
     private:
-        // @doc: Param<W_Type> MapDenseMDBlock::W_
-        /** Wrap `Tensor` of type `W_Type` into `Param` object */
-        // Param<W_Type> W_;
         // @doc: Param<BiasType> MapDenseMDBlock::b_
         /** Wrap `Tensor` of type `BiasType` into `Param` object */
         Param<BiasType> b_;
@@ -226,13 +223,12 @@ namespace TTTN {
 
         // @doc: MapDenseMDBlock::MapDenseMDBlock()
         /** Default constructor, calls `XavierInitMD` on `W_` */
-        MapDenseMDBlock() { /* XavierInitMD handled by LearnedContraction ctor */ }
+        MapDenseMDBlock() = default;
 
         // @doc: OutputTensor MapDenseMDBlock::Forward(const InputTensor &x) const
         /** Compute standard `ΣΠ<N_contract>(x, W_.value)`, add `b_`, wrap in `Act` */
         OutputTensor Forward(const InputTensor &x) const {
             // [MapSeq_..., ContractSeq_...] x [PartOutDims..., ContractSeq_...] -> [MapSeq_..., PartOutDims...]
-            // auto z = ΣΠ<N_contract>(x, W_.value);
             auto z = x >> lc_;
             // add bias to each mapped copy
             ParForEach(MapVolume * PartOutSize, [&](size_t i) {
@@ -249,11 +245,6 @@ namespace TTTN {
         InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor & /*a_prev*/) {
             const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
-            // collapse both Tensors into BC_Permute form and contract
-            // W_.grad += [&]<size_t... I>(std::index_sequence<I...>) {
-            //     return Contract<AxisList<I...>{}, AxisList<I...>{}, Mul, Add>(delta_z, a_prev);
-            // }(std::make_index_sequence<N_map>{});
-
             // need loops to avoid race
             for (size_t m = 0; m < MapVolume; ++m) {
                 for (size_t i = 0; i < PartOutSize; ++i) {
@@ -261,9 +252,6 @@ namespace TTTN {
                 }
             }
 
-            // const auto W_T = PermuteFromArray<SwapNDims<N_out_part, N_contract>::value>(
-            //     W_.value, std::make_index_sequence<N_out_part + N_contract>{});
-            // return ΣΠ<N_out_part>(delta_z, W_T);
             return lc_ << delta_z;
         }
 
@@ -272,7 +260,6 @@ namespace TTTN {
         template<size_t Batch>
         auto BatchedForward(
             const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type {
-            // auto z = ΣΠ<N_contract>(X, W_.value);
             auto z = X >> lc_;
             ParForEach(Batch * MapVolume * PartOutSize, [&](size_t i) {
                 z.flat(i) += b_.value.flat(i % PartOutSize);
@@ -293,12 +280,6 @@ namespace TTTN {
             const float inv_batch = 1.f / static_cast<float>(Batch);
             const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
-            // auto localWGrad = [&]<size_t... I>(std::index_sequence<I...>) {
-            //     return Contract<AxisList<I...>{}, AxisList<I...>{}, Mul, Add>(delta_z, a_prev);
-            // }(std::make_index_sequence<1 + N_map>{});
-            // localWGrad *= inv_batch;
-            // W_.grad += localWGrad;
-
             BiasType dB_local{};
             constexpr size_t slice = MapVolume * PartOutSize;
             for (size_t bi = 0; bi < Batch; ++bi) {
@@ -309,10 +290,6 @@ namespace TTTN {
                 }
             }
             b_.grad += dB_local * inv_batch;
-
-            // const auto W_T = PermuteFromArray<SwapNDims<N_out_part, N_contract>::value>(
-            //     W_.value, std::make_index_sequence<N_out_part + N_contract>{});
-            // return ΣΠ<N_out_part>(delta_z, W_T);
             return lc_ << delta_z;
         }
     };
