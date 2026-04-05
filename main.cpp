@@ -731,9 +731,100 @@ void RunCSVClassifier(const std::string &name,
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+void runLCSmoke() {
+    std::cout << "\n=== LearnedContraction smoke test ===\n";
+
+    using Net = typename NetworkBuilder<
+        Input<128>,
+        Dense<256, ReLU>,
+        Dense<256, ReLU>,
+        Dense<256, ReLU>,
+        Dense<256, ReLU>,
+        Dense<256, ReLU>,
+        Dense<256, ReLU>,
+        Dense<256, ReLU>,
+        Dense<256, ReLU>,
+        Dense<4>
+    >::type;
+
+    Net net;
+    constexpr size_t Batch = 4;
+
+    Tensor<Batch, 128> X;
+    for (size_t i = 0; i < Tensor<Batch, 128>::Size; ++i) X.flat(i) = static_cast<float>(i % 5) * 0.1f;
+    Tensor<Batch, 4> target;
+    target.fill(0.f);
+
+    for (int step = 0; step < 100; ++step) {
+        const float loss = net.template BatchFit<MSE, Batch>(X, target, 0.001f);
+        std::cout << "  step " << step << "  loss=" << loss << "\n";
+    }
+}
+
+void runMNISTDense() {
+    std::cout << "\n=== MNIST Dense (LearnedContraction) ===\n";
+
+    auto train_data = LoadCSV<20000, 785>("data/mnist_train.csv", true);
+    auto test_data = LoadCSV<2000, 785>("data/mnist_test.csv", true);
+
+    typename NetworkBuilder<
+        Input<784>,
+        Dense<256, ReLU>,
+        Dense<64, ReLU>,
+        Dense<10>,
+        SoftmaxLayer<0>
+    >::type net;
+    std::cout << "    params: " << net.TotalParamCount << "\n\n";
+
+    constexpr size_t TrainN = 20000, TestN = 2000;
+    Tensor<TrainN, 784> X_train;
+    Tensor<TrainN, 10> Y_train;
+    for (size_t i = 0; i < TrainN; ++i) {
+        for (size_t p = 0; p < 784; ++p)
+            X_train.flat(i * 784 + p) = train_data(i, p + 1) / 255.f;
+        const auto label = static_cast<size_t>(train_data(i, 0));
+        for (size_t c = 0; c < 10; ++c)
+            Y_train(i, c) = (c == label) ? 1.f : 0.f;
+    }
+    Tensor<TestN, 784> X_test;
+    Tensor<TestN, 10> Y_test;
+    for (size_t i = 0; i < TestN; ++i) {
+        for (size_t p = 0; p < 784; ++p)
+            X_test.flat(i * 784 + p) = test_data(i, p + 1) / 255.f;
+        const auto label = static_cast<size_t>(test_data(i, 0));
+        for (size_t c = 0; c < 10; ++c)
+            Y_test(i, c) = (c == label) ? 1.f : 0.f;
+    }
+
+    std::mt19937 rng{42};
+    constexpr size_t Batch = 64;
+
+    for (int epoch = 0; epoch < 10; ++epoch) {
+        const float loss = net.template RunEpoch<CEL, Batch>(X_train, Y_train, rng, 0.001f);
+
+        // accuracy on test set
+        size_t correct = 0;
+        for (size_t i = 0; i < TestN; ++i) {
+            Tensor<784> x;
+            for (size_t p = 0; p < 784; ++p) x.flat(p) = X_test.flat(i * 784 + p);
+            const auto out = net.Forward(x);
+            size_t pred = 0;
+            for (size_t c = 1; c < 10; ++c) if (out.flat(c) > out.flat(pred)) pred = c;
+            const auto label = static_cast<size_t>(test_data(i, 0));
+            if (pred == label) ++correct;
+        }
+        std::cout << "  epoch " << epoch
+                << "  CEL=" << std::fixed << std::setprecision(4) << loss
+                << "  acc=" << std::fixed << std::setprecision(1)
+                << (100.f * correct / TestN) << "%\n";
+    }
+}
+
 int main() {
     // runMNISTAttnViz();
     // runBracketsAttnViz();
-    runSeqTasksViz();
+    // runSeqTasksViz();
+    // runLCSmoke();
+    runMNISTDense();
     return 0;
 }

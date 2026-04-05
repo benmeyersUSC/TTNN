@@ -151,6 +151,108 @@ namespace TTTN {
                 std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<Tuple> > >{});
 
 
+    template<typename InDims, typename OutDims, size_t NumFree>
+    struct LearnedContraction {
+    };
+
+    template<size_t... InDims, size_t... OutDims, size_t NumFree>
+    struct LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> {
+        using InputTensor = Tensor<InDims...>;
+        using OutputTensor = Tensor<OutDims...>;
+
+        static constexpr size_t N_contract_in = InputTensor::Rank - NumFree;
+        static constexpr size_t N_contract_out = OutputTensor::Rank - NumFree;
+
+        using InSplit = SplitAt<NumFree, InDims...>;
+        using OutSplit = SplitAt<NumFree, OutDims...>;
+        static_assert(std::is_same_v<typename InSplit::head, typename OutSplit::head>,
+                      "Free dims of InputTensor and OutputTensor must match");
+
+        using WeightSeq = ConcatSeqs<typename OutSplit::tail, typename InSplit::tail>::type;
+        using WeightTensor = SeqToTensor<WeightSeq>::type;
+        Param<WeightTensor> W_;
+        mutable InputTensor X_cache_{};
+        mutable std::vector<float> bX_buf_;
+
+
+        auto all_params() { return std::tie(W_); }
+        auto all_params() const { return std::tie(W_); }
+
+        LearnedContraction() {
+            XavierInitMD(W_.value, SeqProduct<typename InSplit::tail>::value,
+                         SeqProduct<typename OutSplit::tail>::value);
+        }
+
+        OutputTensor forward(const InputTensor &X) const {
+            X_cache_ = X;
+            return [&]<size_t... Is>(std::index_sequence<Is...>) {
+                return Contract<AxisList<(NumFree + Is)...>{}, AxisList<(N_contract_out + Is)...>{}, Mul, Add>(
+                    X, W_.value);
+            }(std::make_index_sequence<N_contract_in>{});
+        }
+
+        InputTensor backward(const OutputTensor &deltaO) {
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                W_.grad += Contract<AxisList<Is...>{}, AxisList<Is...>{}, Mul, Add>(deltaO, X_cache_);
+            }(std::make_index_sequence<NumFree>{});
+
+            return [&]<size_t... Is>(std::index_sequence<Is...>) {
+                return Contract<AxisList<Is...>{}, AxisList<(NumFree + Is)...>{}, Mul, Add>(deltaO, W_.value);
+            }(std::make_index_sequence<N_contract_out>{});
+        }
+
+        template<size_t Batch>
+        Tensor<Batch, OutDims...> batched_forward(const Tensor<Batch, InDims...> &X) const {
+            bX_buf_.assign(X.data(), X.data() + Tensor<Batch, InDims...>::Size);
+            return [&]<size_t... Is>(std::index_sequence<Is...>) {
+                return Contract<AxisList<(NumFree + 1 + Is)...>{}, AxisList<(N_contract_out + Is)...>{}, Mul, Add>(
+                    X, W_.value);
+            }(std::make_index_sequence<N_contract_in>{});
+        }
+
+        template<size_t Batch>
+        Tensor<Batch, InDims...> batched_backward(const Tensor<Batch, OutDims...> &deltaO) {
+            const float inv_batch = 1.f / static_cast<float>(Batch);
+            Tensor<Batch, InDims...> bX;
+            std::copy(bX_buf_.begin(), bX_buf_.begin() + Tensor<Batch, InDims...>::Size, bX.data());
+
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                auto localW = Contract<AxisList<Is...>{}, AxisList<Is...>{}, Mul, Add>(deltaO, bX);
+                localW *= inv_batch;
+                W_.grad += localW;
+            }(std::make_index_sequence<NumFree + 1>{});
+
+            return [&]<size_t... Is>(std::index_sequence<Is...>) {
+                return Contract<AxisList<(NumFree + 1 + Is)...>{}, AxisList<Is...>{}, Mul, Add>(deltaO, W_.value);
+            }(std::make_index_sequence<N_contract_out>{});
+        }
+    };
+
+    template<size_t... InDims, size_t... OutDims, size_t NumFree>
+    auto operator>>(const Tensor<InDims...> &X,
+                    const LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc) {
+        return lc.forward(X);
+    }
+
+    template<size_t... InDims, size_t... OutDims, size_t NumFree>
+    auto operator<<(LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc,
+                    const Tensor<OutDims...> &deltaO) {
+        return lc.backward(deltaO);
+    }
+
+    template<size_t Batch, size_t... InDims, size_t... OutDims, size_t NumFree>
+    auto operator>>(const Tensor<Batch, InDims...> &X,
+                    const LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc) {
+        return lc.template batched_forward<Batch>(X);
+    }
+
+    template<size_t Batch, size_t... InDims, size_t... OutDims, size_t NumFree>
+    auto operator<<(LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc,
+                    const Tensor<Batch, OutDims...> &deltaO) {
+        return lc.template batched_backward<Batch>(deltaO);
+    }
+
+
     // @doc: template<typename T> concept PeekableBlock
     /**
      * Opt-in `concept` for `Block`s to be able to expose their internal activations to an owning `TrainableTensorNetwork`
