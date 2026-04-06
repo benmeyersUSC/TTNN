@@ -120,12 +120,22 @@ namespace TTTN {
 
 
         // @doc: template<size_t Lo, size_t Hi, typename GradT> auto TrainableTensorNetwork::BackwardRange(const Activations &A, const GradT &grad)
+        /**
+         * `BatchMinorContract` form is part conventional and part performance-informed:
+         * `Batch` being left-aligned adopts common convention for `Tensor` shapes in ML
+         * `Minor` (contracted) axes being right-aligned reflects that `Tensor`s in `TTTN` are backed by ***row-major*** `float` arrays. Only the rightmost (minor) axes are stored contiguously in memory. To maximize vectorization optimizations for `Reduce ∘ zipWith(Map)` operations, we want the loops over contracted indices to be traversing contiguous memory. Detailed comments on this subject are resident in the code.
+         */
         template<size_t Lo, size_t Hi, typename GradT>
         auto BackwardRange(const Activations &A, const GradT &grad) {
             return mSeq_.template BackwardRange<Lo, Hi>(A, grad);
         }
 
         // @doc: template<size_t Batch, size_t Lo, size_t Hi, typename GradT> auto TrainableTensorNetwork::BatchedBackwardRange(const BatchedActivations<Batch> &A, const GradT &grad)
+        /**
+         * `BatchMinorContract` form is part conventional and part performance-informed:
+         * `Batch` being left-aligned adopts common convention for `Tensor` shapes in ML
+         * `Minor` (contracted) axes being right-aligned reflects that `Tensor`s in `TTTN` are backed by ***row-major*** `float` arrays. Only the rightmost (minor) axes are stored contiguously in memory. To maximize vectorization optimizations for `Reduce ∘ zipWith(Map)` operations, we want the loops over contracted indices to be traversing contiguous memory. Detailed comments on this subject are resident in the code.
+         */
         template<size_t Batch, size_t Lo, size_t Hi, typename GradT>
         auto BatchedBackwardRange(const BatchedActivations<Batch> &A, const GradT &grad) {
             return mSeq_.template BatchedBackwardRange<Batch, Lo, Hi>(A, grad);
@@ -317,5 +327,18 @@ namespace TTTN {
     auto operator>>(const Tensor<Batch, InDims...>& X, const TrainableTensorNetwork<Blocks...>& net) {
         return net.template BatchedForward<Batch>(X);
     }
+
+    // @doc: template<typename T> inline constexpr bool is_trainable_network_v
+    /** ###### */
+    template<typename T>
+    inline constexpr bool is_trainable_network_v = false;
+
+    template<Block... Bs>
+    inline constexpr bool is_trainable_network_v<TrainableTensorNetwork<Bs...>> = true;
+
+    // @doc: template<typename T> concept IsTrainableNetwork
+    /** ###### */
+    template<typename T>
+    concept IsTrainableNetwork = is_trainable_network_v<T>;
 
 } // namespace TTTN

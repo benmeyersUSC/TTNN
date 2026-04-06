@@ -127,6 +127,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t I, size_t Lo> auto BlockSequence::backward_range_impl(const ActivationsTuple &A, const std::tuple_element_t<I, ActivationsTuple> &delta)
+        /** Uses cached `mActs` to run `backward_impl` and returns `InputTensor` gradient for the first block */
         template<size_t I, size_t Lo>
         auto backward_range_impl(const ActivationsTuple &A,
                                  const std::tuple_element_t<I, ActivationsTuple> &delta) {
@@ -136,6 +137,10 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch, size_t I, size_t Lo> auto BlockSequence::batched_backward_range_impl(const BatchedActivationsTuple<Batch> &A, const std::tuple_element_t<I, BatchedActivationsTuple<Batch>> &delta)
+        /**
+         * Starts with `Delta` (derivative of loss w.r.t. activation `I`), recurses down to `I == 1`, returning `InputTensor` gradient
+         * At each `I`, calls `Block::Backward(delta, A[I], A[I-1])` or `Block::Backward(gradient wrt this block's output, this block's output, this block's input / previous block's output)`
+         */
         template<size_t Batch, size_t I, size_t Lo>
         auto batched_backward_range_impl(const BatchedActivationsTuple<Batch> &A,
                                           const std::tuple_element_t<I, BatchedActivationsTuple<Batch>> &delta) {
@@ -273,6 +278,7 @@ namespace TTTN {
 
 
         // @doc: template<size_t Lo, size_t Hi> auto BlockSequence::BackwardRange(const Activations &A, const std::tuple_element_t<Hi, ActivationsTuple> &grad)
+        /** Batched counterpart to `BackwardFrom` - start batched backward sweep at activation index `I` */
         template<size_t Lo, size_t Hi>
         auto BackwardRange(const Activations &A,
                            const std::tuple_element_t<Hi, ActivationsTuple> &grad) {
@@ -282,6 +288,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch, size_t Lo, size_t Hi> auto BlockSequence::BatchedBackwardRange(const BatchedActivations<Batch> &A, const std::tuple_element_t<Hi, BatchedActivationsTuple<Batch>> &grad)
+        /** Delegates to `BatchedBackwardFrom<Batch, NumBlocks>` - full batched backward from output to input */
         template<size_t Batch, size_t Lo, size_t Hi>
         auto BatchedBackwardRange(const BatchedActivations<Batch> &A,
                                    const std::tuple_element_t<Hi, BatchedActivationsTuple<Batch>> &grad) {

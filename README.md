@@ -188,7 +188,8 @@ Replace the parallel CPU dispatch (
 17. [Attention.hpp: Multi-Head Self-Attention](#attentionhpp--multi-head-self-attention)
 18. [MoreNets.hpp: More helper Block types](#morenetshpp)
 19. [TransformerBlock.hpp: Pre-norm Transformer Block](#transformerblockhpp--pre-norm-transformer-block)
-20. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
+20. [BranchTrainer.hpp: Shared-Trunk Multi-Head Training](#branchtrainerhpp--shared-trunk-multi-head-training)
+21. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
 
 ---
 
@@ -1375,24 +1376,34 @@ Defines the foundational block concepts that gate the type system and the `Activ
 
 ### Block Operators
 
-- ***operator>>*** - [`template<Block B, size_t... InDims> auto operator>>(const Tensor<InDims...> &x, const B &b)`](src/NetworkUtil.hpp)
-    - Forward pass: `InDims...` deduced from `x`, `requires B::InputTensor == Tensor<InDims...>`; routes to `b.Forward(x)`
+- ***operator>>*** - [
+  `template<Block B, size_t... InDims> auto operator>>(const Tensor<InDims...> &x, const B &b)`](src/NetworkUtil.hpp)
+    - Forward pass: `InDims...` deduced from `x`, `requires B::InputTensor == Tensor<InDims...>`; routes to
+      `b.Forward(x)`
     - Single-sample overload — batched overload selected automatically when input has a prepended batch dim
 
-- ***operator>> (batched)*** - [`template<Block B, size_t Batch, size_t... InDims> auto operator>>(const Tensor<Batch, InDims...> &X, const B &b)`](src/NetworkUtil.hpp)
-    - Batched forward pass: `Batch` and `InDims...` deduced directly from `X`, `requires B::InputTensor == Tensor<InDims...>`; routes to `b.BatchedForward<Batch>(X)`
+- ***operator>> (batched)*** - [
+  `template<Block B, size_t Batch, size_t... InDims> auto operator>>(const Tensor<Batch, InDims...> &X, const B &b)`](src/NetworkUtil.hpp)
+    - Batched forward pass: `Batch` and `InDims...` deduced directly from `X`,
+      `requires B::InputTensor == Tensor<InDims...>`; routes to `b.BatchedForward<Batch>(X)`
 
-- ***BackwardArgs*** - [`template<typename DeltaT, typename AT, typename APrevT> struct BackwardArgs`](src/NetworkUtil.hpp)
+- ***BackwardArgs*** - [
+  `template<typename DeltaT, typename AT, typename APrevT> struct BackwardArgs`](src/NetworkUtil.hpp)
     - Carrier struct bundling the three arguments to `Backward`: `delta_A`, `a`, `a_prev`
     - Used as the right-hand operand of `operator<<` on `Block`s
-    - Single-sample callsite: `block << BackwardArgs{delta_A, a, a_prev}` (implicit — no type name needed once `B` is deduced from block)
-    - Batched callsite: `block << BackwardArgs{delta_batched, a_batched, a_prev_batched}` (explicit type name required; `Batch` deduced from tensor dims)
+    - Single-sample callsite: `block << BackwardArgs{delta_A, a, a_prev}` (implicit — no type name needed once
+      `B` is deduced from block)
+    - Batched callsite: `block << BackwardArgs{delta_batched, a_batched, a_prev_batched}` (explicit type name required;
+      `Batch` deduced from tensor dims)
 
-- ***operator<<*** - [`template<Block B> auto operator<<(B &b, const BackwardArgs<B::OutputTensor, B::OutputTensor, B::InputTensor> &args)`](src/NetworkUtil.hpp)
+- ***operator<<*** - [
+  `template<Block B> auto operator<<(B &b, const BackwardArgs<B::OutputTensor, B::OutputTensor, B::InputTensor> &args)`](src/NetworkUtil.hpp)
     - Single-sample backward pass: routes to `b.Backward(args.delta_A, args.a, args.a_prev)`
 
-- ***operator<< (batched)*** - [`template<Block B, size_t Batch, size_t... OutDims, size_t... InDims> auto operator<<(B &b, const BackwardArgs<Tensor<Batch, OutDims...>, Tensor<Batch, OutDims...>, Tensor<Batch, InDims...>> &args)`](src/NetworkUtil.hpp)
-    - Batched backward pass: `Batch`, `OutDims...`, `InDims...` deduced from the `BackwardArgs` tensor types; `requires` enforces match against `B::OutputTensor`/`B::InputTensor`; routes to `b.BatchedBackward<Batch>(...)`
+- ***operator<< (batched)*** - [
+  `template<Block B, size_t Batch, size_t... OutDims, size_t... InDims> auto operator<<(B &b, const BackwardArgs<Tensor<Batch, OutDims...>, Tensor<Batch, OutDims...>, Tensor<Batch, InDims...>> &args)`](src/NetworkUtil.hpp)
+    - Batched backward pass: `Batch`, `OutDims...`, `InDims...` deduced from the `BackwardArgs` tensor types;
+      `requires` enforces match against `B::OutputTensor`/`B::InputTensor`; routes to `b.BatchedBackward<Batch>(...)`
 
 - ***PeekableBlock*** - [`template<typename T> concept PeekableBlock`](src/NetworkUtil.hpp)
     - Opt-in `concept` for `Block`s to be able to expose their internal activations to an owning
@@ -1995,6 +2006,13 @@ Thin wrapper around `BlockSequence<Blocks...>` that adds an
 - ***TrainableTensorNetwork::Snap*** - [
   `[[nodiscard]] SnapshotMap TrainableTensorNetwork::Snap() const`](src/TrainableTensorNetwork.hpp)
     - Delegates to `BlockSequence::Snap`
+
+- ***is_trainable_network_v*** - [
+  `template<typename T> inline constexpr bool is_trainable_network_v`](src/TrainableTensorNetwork.hpp)
+    - ######
+
+- ***IsTrainableNetwork*** - [`template<typename T> concept IsTrainableNetwork`](src/TrainableTensorNetwork.hpp)
+    - ######
 
 ---
 
@@ -3044,6 +3062,114 @@ Implementation is purely a composition; all detailed work is handled by denizen 
 
 - ***Transformer::Resolve*** - [`template<IsTensor InputT> using Transformer::Resolve`](src/TransformerBlock.hpp)
     - When given `IsTensor InputT`, create full `TransformerBlock<InputT, Heads, FFNHidden>`
+
+---
+
+## [BranchTrainer.hpp](src/BranchTrainer.hpp) -- Shared-Trunk Multi-Head Training
+
+A variadic utility for training a single shared trunk network with multiple independent head networks branching off at arbitrary layer indices ("taps"). Each head trains on its own loss and its own learning rate; the trunk receives the summed gradient from every active head (plus an optional trunk-output loss). Each network owns its own Adam state.
+
+---
+
+- ***NoLoss*** - [`struct NoLoss`](src/BranchTrainer.hpp)
+    - Sentinel type. Pass as `TrunkLoss` or any
+      `HeadLosses...` entry to suppress loss computation and gradient contribution for that branch.
+
+- ***is_head_branch_v*** - [`template<typename T> inline constexpr bool is_head_branch_v`](src/BranchTrainer.hpp)
+    - Type trait to SFINAE-match only `HeadBranch` objects
+
+- ***IsHeadBranch*** - [`template<typename T> concept IsHeadBranch`](src/BranchTrainer.hpp)
+    - `concept` wrapper around `is_head_branch_v`
+
+- ***HeadBranch*** - [
+  `template<size_t TapIndex, typename HeadNet, typename HeadLoss = NoLoss> requires IsTrainableNetwork<HeadNet> && (std::is_same_v<HeadLoss, NoLoss> || LossFunction<HeadLoss, typename HeadNet::OutputTensor>) struct HeadBranch`](src/BranchTrainer.hpp)
+    - Wrapper pairing a head network with its trunk tap index and loss function
+
+- ***HeadBranch::Tap*** - [`static constexpr size_t HeadBranch::Tap`](src/BranchTrainer.hpp)
+    - Index of trunk network activations to take as input to this `HeadBranch`
+
+- ***HeadBranch::Net*** - [`using HeadBranch::Net`](src/BranchTrainer.hpp)
+    - Type alias for underlying `TrainableTensorNetwork` type in this `HeadBranch`
+
+- ***HeadBranch::Loss*** - [`using HeadBranch::Loss`](src/BranchTrainer.hpp)
+    - Loss function for this head; `NoLoss` suppresses gradient contribution
+
+- ***HeadBranch::net*** - [`HeadNet HeadBranch::net`](src/BranchTrainer.hpp)
+    - Member instance of `Net` for this `HeadBranch`
+
+- ***BranchTrainer*** - [
+  `template<typename TrunkNet, typename... Heads> requires IsTrainableNetwork<TrunkNet> && (IsHeadBranch<Heads> && ...) class BranchTrainer`](src/BranchTrainer.hpp)
+    - Owns one `TrunkNet` and a `std::tuple<Heads...>` of
+      `HeadBranch` instances
+    - Tap indices must be non-decreasing (enforced by `static_assert`)
+    - Each head's
+      `InputTensor` must match the trunk activation tensor at its tap index (enforced by `static_assert`)
+
+- ***BranchTrainer::InputTensor*** - [`using BranchTrainer::InputTensor`](src/BranchTrainer.hpp)
+    - Alias for `TrunkNet::InputTensor`
+
+- ***BranchTrainer::TrunkOutputTensor*** - [`using BranchTrainer::TrunkOutputTensor`](src/BranchTrainer.hpp)
+    - Alias for `TrunkNet::OutputTensor`
+
+- ***BranchTrainer::TrunkActivations*** - [`using BranchTrainer::TrunkActivations`](src/BranchTrainer.hpp)
+    - Alias for `TrunkNet::Activations`
+
+- ***BranchTrainer::HeadTapGrads*** - [`using BranchTrainer::HeadTapGrads`](src/BranchTrainer.hpp)
+    - Tuple of per-head input-tap gradient tensors
+
+- ***BranchTrainer::HeadOutputs*** - [`using BranchTrainer::HeadOutputs`](src/BranchTrainer.hpp)
+    - Tuple of per-head output target tensors
+
+- ***BranchTrainer::trunk_*** - [`TrunkNet BranchTrainer::trunk_`](src/BranchTrainer.hpp)
+    - Member instance of `TrunkNet` type
+
+- ***BranchTrainer::heads_*** - [`std::tuple<Heads...> BranchTrainer::heads_`](src/BranchTrainer.hpp)
+    - `std::tuple` of `HeadBranch` objects
+
+- ***BranchTrainer::trunk*** - [`TrunkNet &BranchTrainer::trunk()`](src/BranchTrainer.hpp)
+    - Getter for `TrunkNet&`
+
+- ***BranchTrainer::trunk*** - [`const TrunkNet &BranchTrainer::trunk() const`](src/BranchTrainer.hpp)
+    - Getter for `const TrunkNet&`
+
+- ***BranchTrainer::head*** - [`template<size_t I> auto &BranchTrainer::head()`](src/BranchTrainer.hpp)
+    - Getter for `&` to `I`-th `HeadBranch` from `heads_`
+
+- ***BranchTrainer::head*** - [`template<size_t I> const auto &BranchTrainer::head() const`](src/BranchTrainer.hpp)
+    - Getter for `const &` to `I`-th `HeadBranch` from `heads_`
+
+
+- ***BranchTrainer::forward_heads*** - [
+  `template<size_t... I> auto BranchTrainer::forward_heads(const TrunkActivations &A, std::index_sequence<I...>) const`](src/BranchTrainer.hpp)
+    - Forward pass through all heads, returning `std::tuple` of heads' activation tuples
+
+- ***BranchTrainer::forward_heads_batched*** - [
+  `template<size_t Batch, size_t... I> auto BranchTrainer::forward_heads_batched(const TrunkNet::BatchedActivations<Batch> &A, std::index_sequence<I...>) const`](src/BranchTrainer.hpp)
+    - Batched forward pass through all heads, returning `std::tuple` of heads' batched activation tuples
+
+- ***BranchTrainer::compute_losses*** - [
+  `template<typename TrunkLoss, size_t... Is> float BranchTrainer::compute_losses(const TrunkActivations &A, const TrunkOutputTensor &trunk_target, const HeadOutputs &head_targets, std::index_sequence<Is...>) const`](src/BranchTrainer.hpp)
+    - Accumulates scalar loss contributions from trunk and all heads
+
+- ***BranchTrainer::compute_losses_batched*** - [
+  `template<typename TrunkLoss, size_t Batch, size_t... Is> float BranchTrainer::compute_losses_batched(const TrunkNet::BatchedActivations<Batch> &A, const PrependBatch<Batch, TrunkOutputTensor>::type &trunk_target, const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &head_targets, std::index_sequence<Is...>) const`](src/BranchTrainer.hpp)
+    - Batched: accumulates scalar loss contributions from trunk and all heads across the batch
+
+- ***BranchTrainer::backward_heads*** - [
+  `template<size_t I, size_t PrevTap> void BranchTrainer::backward_heads(const TrunkActivations &A, const TrunkOutputTensor &grad, const HeadTapGrads &head_tap_grads)`](src/BranchTrainer.hpp)
+    - Pure gradient propagation: chains `BackwardRange` through trunk segments, summing in precomputed per-head tap gradients
+
+- ***BranchTrainer::backward_heads_batched*** - [
+  `template<size_t Batch, size_t I, size_t PrevTap> void BranchTrainer::backward_heads_batched(const TrunkNet::BatchedActivations<Batch> &A, const PrependBatch<Batch, TrunkOutputTensor>::type &grad, const std::tuple<typename PrependBatch<Batch, typename Heads::Net::InputTensor>::type...> &head_tap_grads)`](src/BranchTrainer.hpp)
+    - Batched recursive backward: same structure as `backward_heads`, operating on `Batch`-prepended tensors
+
+- ***BranchTrainer::Fit*** - [
+  `template<typename TrunkLoss = NoLoss> float BranchTrainer::Fit(const InputTensor &x, const TrunkOutputTensor &trunk_target, float trunk_lr, const HeadOutputs &head_targets, const std::array<float, NumHeads> &head_lrs)`](src/BranchTrainer.hpp)
+    - ######
+
+- ***BranchTrainer::BatchFit*** - [
+  `template<size_t Batch, typename TrunkLoss = NoLoss> float BranchTrainer::BatchFit(const PrependBatch<Batch, InputTensor>::type &X, const PrependBatch<Batch, TrunkOutputTensor>::type &trunk_target, float trunk_lr, const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &head_targets, const std::array<float, NumHeads> &head_lrs)`](src/BranchTrainer.hpp)
+    - ######
 
 ---
 
