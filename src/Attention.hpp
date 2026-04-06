@@ -78,8 +78,16 @@ namespace TTTN {
         using Attended_Type = Tensor<Heads, SeqLen, HeadDim>;
 
     private:
+        // @doc: mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_Q_
+        /** Query projection `LearnedContraction`; weight accessed via `lc_Q_.W_` */
+        // @doc: mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_K_
+        /** Key projection `LearnedContraction`; weight accessed via `lc_K_.W_` */
+        // @doc: mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_V_
+        /** Value projection `LearnedContraction`; weight accessed via `lc_V_.W_` */
         // QKV: [SeqLen,EmbDims...] x [Heads,HeadDim,EmbDims...] -> [SeqLen,Heads,HeadDim], NFree=1 (SeqLen passes through)
         mutable LearnedContraction<InputTensor, QKV_Type, 1> lc_Q_, lc_K_, lc_V_;
+        // @doc: mutable LearnedContraction<QKV_Type, OutputTensor, 1> MultiHeadAttentionBlock::lc_O_
+        /** Output projection `LearnedContraction`; weight accessed via `lc_O_.W_` */
         // Out: [SeqLen,Heads,HeadDim] x [EmbDims...,Heads,HeadDim] -> [SeqLen,EmbDims...], NFree=1 (SeqLen passes through)
         // attended_ must be permuted to [SeqLen,Heads,HeadDim] before >> and after << in backward
         mutable LearnedContraction<QKV_Type, OutputTensor, 1> lc_O_;

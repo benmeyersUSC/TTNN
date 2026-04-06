@@ -133,81 +133,56 @@ namespace TTTN {
         }
 
 
-        // @doc: template<typename TrunkLoss, size_t... Is> requires (std::is_same_v<TrunkLoss, NoLoss> || LossFunction<TrunkLoss, typename TrunkNet::OutputTensor>) float BranchTrainer::compute_losses(const TrunkActivations &A, const TrunkOutputTensor &trunk_target, const HeadOutputs &head_targets, std::index_sequence<Is...>) const
-        /** Accumulates scalar loss contributions from trunk and all heads */
+        // @doc: template<typename TrunkLoss, size_t... Is> requires (std::is_same_v<TrunkLoss, NoLoss> || LossFunction<TrunkLoss, typename TrunkNet::OutputTensor>) float BranchTrainer::compute_losses(const TrunkOutputTensor &trunk_pred, const TrunkOutputTensor &trunk_target, const HeadOutputs &head_preds, const HeadOutputs &head_targets, std::index_sequence<Is...>) const
+        /** Accumulates scalar loss contributions from trunk and all heads using already-computed output tensors */
         template<typename TrunkLoss, size_t... Is> requires (
             std::is_same_v<TrunkLoss, NoLoss> || LossFunction<TrunkLoss, typename TrunkNet::OutputTensor>)
-        float compute_losses(const TrunkActivations &A,
+        float compute_losses(const TrunkOutputTensor &trunk_pred,
                              const TrunkOutputTensor &trunk_target,
+                             const HeadOutputs &head_preds,
                              const HeadOutputs &head_targets,
                              std::index_sequence<Is...>) const {
             float total = 0.f;
-            // if not NoLoss, get trunk loss from its Loss
-            if constexpr (!std::is_same_v<TrunkLoss, NoLoss>) {
-                total += TrunkLoss::Loss(A.template get<TrunkNet::NumBlocks>(), trunk_target);
-            }
-            // now accumulate each head's loss
+            if constexpr (!std::is_same_v<TrunkLoss, NoLoss>)
+                total += TrunkLoss::Loss(trunk_pred, trunk_target);
             ([&] {
-                // get the head
-                using HeadI = std::tuple_element_t<Is, std::tuple<Heads...> >;
-                // head loss
-                using HL = HeadI::Loss;
-                // if HL is not NoLoss
-                if constexpr (!std::is_same_v<HL, NoLoss>) {
-                    // add loss at head
-                    total += HL::Loss(
-                        // get output
-                        std::get<Is>(forward_heads(A, std::index_sequence_for<Heads...>{})).template get<
-                            HeadI::Net::NumBlocks>(),
-                        // get target
-                        std::get<Is>(head_targets));
-                }
+                using HeadI = std::tuple_element_t<Is, std::tuple<Heads...>>;
+                using HL    = typename HeadI::Loss;
+                if constexpr (!std::is_same_v<HL, NoLoss>)
+                    total += HL::Loss(std::get<Is>(head_preds), std::get<Is>(head_targets));
             }(), ...);
             return total;
         }
 
-        // @doc: template<typename TrunkLoss, size_t Batch, size_t... Is> requires (std::is_same_v<TrunkLoss, NoLoss> || LossFunction<TrunkLoss, typename TrunkNet::OutputTensor>) float BranchTrainer::compute_losses_batched(const TrunkNet::BatchedActivations<Batch> &A, const PrependBatch<Batch, TrunkOutputTensor>::type &trunk_target, const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &head_targets, std::index_sequence<Is...>) const
+        // @doc: template<typename TrunkLoss, size_t Batch, size_t... Is> requires (std::is_same_v<TrunkLoss, NoLoss> || LossFunction<TrunkLoss, typename TrunkNet::OutputTensor>) float BranchTrainer::compute_losses_batched(const PrependBatch<Batch, TrunkOutputTensor>::type &trunk_pred, const PrependBatch<Batch, TrunkOutputTensor>::type &trunk_target, const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &head_preds, const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &head_targets, std::index_sequence<Is...>) const
         /** Batched: accumulates scalar loss contributions from trunk and all heads across the batch */
         template<typename TrunkLoss, size_t Batch, size_t... Is> requires (
             std::is_same_v<TrunkLoss, NoLoss> || LossFunction<TrunkLoss, typename TrunkNet::OutputTensor>)
-        float compute_losses_batched(const TrunkNet::template BatchedActivations<Batch> &A,
+        float compute_losses_batched(const typename PrependBatch<Batch, TrunkOutputTensor>::type &trunk_pred,
                                      const typename PrependBatch<Batch, TrunkOutputTensor>::type &trunk_target,
-                                     const std::tuple<typename PrependBatch<Batch, typename
-                                         Heads::Net::OutputTensor>::type...> &head_targets,
+                                     const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &head_preds,
+                                     const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &head_targets,
                                      std::index_sequence<Is...>) const {
             float total = 0.f;
             if constexpr (!std::is_same_v<TrunkLoss, NoLoss>) {
-                // get batched output
-                const auto &trunk_out = A.template get<TrunkNet::NumBlocks>();
-                // for each batched output
                 for (size_t b = 0; b < Batch; ++b) {
-                    // define and fill Tensors for prediction and target (this should use TensorIndex)
                     TrunkOutputTensor pred_b, target_b;
                     for (size_t i = 0; i < TrunkOutputTensor::Size; ++i) {
-                        pred_b.flat(i) = trunk_out.flat(b * TrunkOutputTensor::Size + i);
+                        pred_b.flat(i)   = trunk_pred.flat(b * TrunkOutputTensor::Size + i);
                         target_b.flat(i) = trunk_target.flat(b * TrunkOutputTensor::Size + i);
                     }
-                    // compute loss for this batched answer
                     total += TrunkLoss::Loss(pred_b, target_b);
                 }
             }
             ([&] {
-                // get the head
-                using HeadI = std::tuple_element_t<Is, std::tuple<Heads...> >;
-                // head loss
-                using HL = HeadI::Loss;
-                // if HL is not NoLoss
+                using HeadI = std::tuple_element_t<Is, std::tuple<Heads...>>;
+                using HL    = typename HeadI::Loss;
                 if constexpr (!std::is_same_v<HL, NoLoss>) {
-                    // get batched activations from head
-                    const auto head_As = forward_heads_batched<Batch>(A, std::index_sequence_for<Heads...>{});
-                    // get last activation = output
-                    const auto &head_out = std::get<Is>(head_As).template get<HeadI::Net::NumBlocks>();
-                    // for each batched output
+                    const auto &head_out = std::get<Is>(head_preds);
                     for (size_t b = 0; b < Batch; ++b) {
-                        // define and fill Tensors for prediction and target (this should use TensorIndex)
                         typename HeadI::Net::OutputTensor pred_b, target_b;
                         for (size_t i = 0; i < HeadI::Net::OutputTensor::Size; ++i) {
-                            pred_b.flat(i) = head_out.flat(b * HeadI::Net::OutputTensor::Size + i);
+                            pred_b.flat(i)   = head_out.flat(b * HeadI::Net::OutputTensor::Size + i);
                             target_b.flat(i) = std::get<Is>(head_targets).flat(b * HeadI::Net::OutputTensor::Size + i);
                         }
                         total += HL::Loss(pred_b, target_b);
@@ -305,16 +280,23 @@ namespace TTTN {
                 (std::get<Is>(heads_).net.ZeroGrad(), ...);
             }(std::index_sequence_for<Heads...>{});
 
-            // get total loss via helper
+            // extract output tensors for loss computation
+            const auto &trunk_pred = A.template get<TrunkNet::NumBlocks>();
+            const HeadOutputs head_preds = [&]<size_t... Is>(std::index_sequence<Is...>) {
+                return HeadOutputs{
+                    std::get<Is>(head_As).template get<
+                        std::tuple_element_t<Is, std::tuple<Heads...>>::Net::NumBlocks>()...
+                };
+            }(std::index_sequence_for<Heads...>{});
+
             const float total_loss =
-                    compute_losses<TrunkLoss>(A, trunk_target, head_targets, std::index_sequence_for<Heads...>{});
+                    compute_losses<TrunkLoss>(trunk_pred, trunk_target, head_preds, head_targets,
+                                             std::index_sequence_for<Heads...>{});
 
             // trunk output grad
             TrunkOutputTensor trunk_grad{};
-            if constexpr (!std::is_same_v<TrunkLoss, NoLoss>) {
-                // compute gradient of trunk loss with respect to trunk output
-                trunk_grad = TrunkLoss::Grad(A.template get<TrunkNet::NumBlocks>(), trunk_target);
-            }
+            if constexpr (!std::is_same_v<TrunkLoss, NoLoss>)
+                trunk_grad = TrunkLoss::Grad(trunk_pred, trunk_target);
 
             // per-head tap grads: run each head backward, or zero if NoLoss
             HeadTapGrads head_tap_grads{};
@@ -358,32 +340,42 @@ namespace TTTN {
                        const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &
                        head_targets,
                        const std::array<float, NumHeads> &head_lrs) {
+            // full batched activations tuple from trunk
             const auto A = trunk_.template BatchedForwardAll<Batch>(X);
+            // get tuple of heads' batched activation tuples
             auto head_As = forward_heads_batched<Batch>(A, std::index_sequence_for<Heads...>{});
 
+            // zero all grads
             trunk_.ZeroGrad();
             [&]<size_t... Is>(std::index_sequence<Is...>) {
                 (std::get<Is>(heads_).net.ZeroGrad(), ...);
             }(std::index_sequence_for<Heads...>{});
 
+            // extract batched output tensors for loss computation
+            const auto &trunk_pred = A.template get<TrunkNet::NumBlocks>();
+            const auto head_preds = [&]<size_t... Is>(std::index_sequence<Is...>) {
+                return std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...>{
+                    std::get<Is>(head_As).template get<
+                        std::tuple_element_t<Is, std::tuple<Heads...>>::Net::NumBlocks>()...
+                };
+            }(std::index_sequence_for<Heads...>{});
+
             const float total_loss =
-                    compute_losses_batched<TrunkLoss, Batch>(A, trunk_target, head_targets,
+                    compute_losses_batched<TrunkLoss, Batch>(trunk_pred, trunk_target, head_preds, head_targets,
                                                              std::index_sequence_for<Heads...>{});
 
-            // batched trunk output grad (averaged over batch)
+            // batched trunk output grad — raw per-sample grads, BatchedBackward normalizes
             typename PrependBatch<Batch, TrunkOutputTensor>::type trunk_grad{};
             if constexpr (!std::is_same_v<TrunkLoss, NoLoss>) {
-                const auto &trunk_out = A.template get<TrunkNet::NumBlocks>();
                 for (size_t b = 0; b < Batch; ++b) {
                     TrunkOutputTensor pred_b, target_b;
                     for (size_t i = 0; i < TrunkOutputTensor::Size; ++i) {
-                        pred_b.flat(i) = trunk_out.flat(b * TrunkOutputTensor::Size + i);
+                        pred_b.flat(i)   = trunk_pred.flat(b * TrunkOutputTensor::Size + i);
                         target_b.flat(i) = trunk_target.flat(b * TrunkOutputTensor::Size + i);
                     }
                     const auto g = TrunkLoss::Grad(pred_b, target_b);
                     for (size_t i = 0; i < TrunkOutputTensor::Size; ++i)
-                        trunk_grad.flat(b * TrunkOutputTensor::Size + i) =
-                                g.flat(i) / static_cast<float>(Batch);
+                        trunk_grad.flat(b * TrunkOutputTensor::Size + i) = g.flat(i);
                 }
             }
 
@@ -406,8 +398,7 @@ namespace TTTN {
                             }
                             const auto g = HL::Grad(pred_b, target_b);
                             for (size_t i = 0; i < HeadI::Net::OutputTensor::Size; ++i)
-                                head_grad.flat(b * HeadI::Net::OutputTensor::Size + i) =
-                                        g.flat(i) / static_cast<float>(Batch);
+                                head_grad.flat(b * HeadI::Net::OutputTensor::Size + i) = g.flat(i);
                         }
                         std::get<Is>(head_tap_grads) =
                                 std::get<Is>(heads_).net.template BatchedBackwardRange<Batch, 0, HeadI::Net::NumBlocks>(

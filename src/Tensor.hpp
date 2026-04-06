@@ -167,10 +167,18 @@ namespace TTTN {
         Tensor &operator=(Tensor &&) noexcept = default;
 
 
+        // @doc: float* data()
+        /** Returns pointer to `Tensor`'s underlying array */
         float *data() { return storage_.ptr(); }
+        // @doc: const float* data() const
+        /** Returns `const` pointer to `Tensor`'s underlying array */
         [[nodiscard]] const float *data() const { return storage_.ptr(); }
 
+        // @doc: float& flat(size_t idx)
+        /** Returns `float&` reference to item at `idx` in underlying array */
         float &flat(size_t idx) { return storage_.ptr()[idx]; }
+        // @doc: float flat(size_t idx) const
+        /** Returns `const float&` reference to item at `idx` in underlying array */
         [[nodiscard]] float flat(size_t idx) const { return storage_.ptr()[idx]; }
 
         // implicit conversion from Rank-0 Tensor to float

@@ -447,9 +447,6 @@ namespace TTTN {
                 const auto up = Backward(dA_b, a_b, ap_b);
                 for (size_t i = 0; i < ss; ++i) result.flat(b * ss + i) = up.flat(i);
             }
-            const float inv_b = 1.f / static_cast<float>(Batch);
-            gamma_.grad = gamma_.grad * inv_b;
-            beta_.grad = beta_.grad * inv_b;
             return result;
         }
     };

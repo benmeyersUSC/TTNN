@@ -247,14 +247,8 @@ namespace TTTN {
                 return Loss::Grad(p, t);
             });
 
-            // normalize loss and gradients over batch size
-            const auto inv = 1.f / static_cast<float>(Batch);
-            loss_val *= inv;
-            // even though gradients are independently computed, when we call BatchedBackwardAll, all Batch
-            // gradients will be summed into the same Params tensors. This would distort lr relative to Batch size,
-            // which we do not want. The gradients stored into the Params (and then used for updates) will be
-            // mean gradients over the Batch.
-            grad *= inv;
+            // normalize loss over batch size (grad normalization handled inside BatchedBackwardRange)
+            loss_val /= static_cast<float>(Batch);
 
             ZeroGrad();
             BatchedBackwardAll<Batch>(A, grad);

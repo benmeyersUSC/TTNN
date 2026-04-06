@@ -2310,7 +2310,7 @@ DenseMD block which contracts the trailing (non-map) axes, doing so separately a
     - Size contracted in each copy at each **map** index product
     - `ContractSize = SeqProduct<ContractSeq_>::value`
 
-- ***MapDenseMDBlock::W_*** - [`Param<W_Type> MapDenseMDBlock::W_`](src/Dense.hpp)
+- ***MapDenseMDBlock::lc_*** - [`mutable LearnedContraction<InputTensor, OutputTensor, N_map> MapDenseMDBlock::lc_`](src/Dense.hpp)
     - Wrap `Tensor` of type `W_Type` into `Param` object
 
 - ***MapDenseMDBlock::b_*** - [`Param<BiasType> MapDenseMDBlock::b_`](src/Dense.hpp)
@@ -2403,17 +2403,17 @@ Implements scaled dot-product **mult-head self-attention
     - Attended values after softmax-weighted sum (between attention pattern and `W_O` transformation)
     - `[Heads, SeqLen, HeadDim]`
 
-- ***MultiHeadAttentionBlock::WQ_*** - [`Param<W_QKV_Type> MultiHeadAttentionBlock::WQ_`](src/Attention.hpp)
-    - Query Weight Parameter (`Param<W_QKV_Type>`)
+- ***MultiHeadAttentionBlock::lc_Q_*** - [`mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_Q_`](src/Attention.hpp)
+    - Query projection `LearnedContraction`; weight accessed via `lc_Q_.W_`
 
-- ***MultiHeadAttentionBlock::WK_*** - [`Param<W_QKV_Type> MultiHeadAttentionBlock::WK_`](src/Attention.hpp)
-    - Key Weight Parameter (`Param<W_QKV_Type>`)
+- ***MultiHeadAttentionBlock::lc_K_*** - [`mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_K_`](src/Attention.hpp)
+    - Key projection `LearnedContraction`; weight accessed via `lc_K_.W_`
 
-- ***MultiHeadAttentionBlock::WV_*** - [`Param<W_QKV_Type> MultiHeadAttentionBlock::WV_`](src/Attention.hpp)
-    - Value Weight Parameter (`Param<W_QKV_Type>`)
+- ***MultiHeadAttentionBlock::lc_V_*** - [`mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_V_`](src/Attention.hpp)
+    - Value projection `LearnedContraction`; weight accessed via `lc_V_.W_`
 
-- ***MultiHeadAttentionBlock::WO_*** - [`Param<W_O_Type> MultiHeadAttentionBlock::WO_`](src/Attention.hpp)
-    - Out projection matrix Parameter (`Param<W_O_Type>`)
+- ***MultiHeadAttentionBlock::lc_O_*** - [`mutable LearnedContraction<QKV_Type, OutputTensor, 1> MultiHeadAttentionBlock::lc_O_`](src/Attention.hpp)
+    - Output projection `LearnedContraction`; weight accessed via `lc_O_.W_`
 
 - ***MultiHeadAttentionBlock::X_cache_*** - [`mutable InputTensor MultiHeadAttentionBlock::X_cache_`](src/Attention.hpp)
     - Cached `mutable` `Tensor` for `InputTensor x`, used by `Backward`
@@ -2435,10 +2435,6 @@ Implements scaled dot-product **mult-head self-attention
   `mutable Attended_Type MultiHeadAttentionBlock::attended_`](src/Attention.hpp)
     - Cached `mutable` `Tensor` for attended embeddings, used by `Backward`
 
-- ***MultiHeadAttentionBlock::bX_buf_*** - [
-  `mutable std::vector<float> MultiHeadAttentionBlock::bX_buf_`](src/Attention.hpp)
-    - Cached `std::vector<float>` for batched `InputTensor x`, used by `BatchedBackward` (not a `Tensor` because
-      `Batch` is a function template parameter, not a class parameter)
 
 - ***MultiHeadAttentionBlock::bQ_buf_*** - [
   `mutable std::vector<float> MultiHeadAttentionBlock::bQ_buf_`](src/Attention.hpp)
@@ -3148,8 +3144,8 @@ A variadic utility for training a single shared trunk network with multiple inde
     - Batched forward pass through all heads, returning `std::tuple` of heads' batched activation tuples
 
 - ***BranchTrainer::compute_losses*** - [
-  `template<typename TrunkLoss, size_t... Is> requires (std::is_same_v<TrunkLoss, NoLoss> || LossFunction<TrunkLoss, typename TrunkNet::OutputTensor>) float BranchTrainer::compute_losses(const TrunkActivations &A, const TrunkOutputTensor &trunk_target, const HeadOutputs &head_targets, std::index_sequence<Is...>) const`](src/BranchTrainer.hpp)
-    - Accumulates scalar loss contributions from trunk and all heads
+  `template<typename TrunkLoss, size_t... Is> requires (std::is_same_v<TrunkLoss, NoLoss> || LossFunction<TrunkLoss, typename TrunkNet::OutputTensor>) float BranchTrainer::compute_losses(const TrunkOutputTensor &trunk_pred, const TrunkOutputTensor &trunk_target, const HeadOutputs &head_preds, const HeadOutputs &head_targets, std::index_sequence<Is...>) const`](src/BranchTrainer.hpp)
+    - Accumulates scalar loss contributions from trunk and all heads using already-computed output tensors
 
 - ***BranchTrainer::compute_losses_batched*** - [
   `template<typename TrunkLoss, size_t Batch, size_t... Is> requires (std::is_same_v<TrunkLoss, NoLoss> || LossFunction<TrunkLoss, typename TrunkNet::OutputTensor>) float BranchTrainer::compute_losses_batched(const TrunkNet::BatchedActivations<Batch> &A, const PrependBatch<Batch, TrunkOutputTensor>::type &trunk_target, const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &head_targets, std::index_sequence<Is...>) const`](src/BranchTrainer.hpp)

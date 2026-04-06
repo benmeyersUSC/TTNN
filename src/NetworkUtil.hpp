@@ -315,8 +315,6 @@ namespace TTTN {
          */
         template<size_t Batch>
         Tensor<Batch, InDims...> batched_backward(const Tensor<Batch, OutDims...> &deltaO) {
-            // precompute batch mean correction factor
-            const float inv_batch = 1.f / static_cast<float>(Batch);
             // load in cached batched X
             Tensor<Batch, InDims...> bX;
             std::copy(bX_buf_.begin(), bX_buf_.begin() + Tensor<Batch, InDims...>::Size, bX.data());
@@ -331,7 +329,6 @@ namespace TTTN {
                 //
                 //      -> WeightTensor<CY..., CX...>
                 auto localW = Contract<AxisList<I...>{}, AxisList<I...>{}, Mul, Add>(deltaO, bX);
-                localW *= inv_batch;
                 W_.grad += localW;
             }(std::make_index_sequence<NumFree + 1>{});
 

@@ -96,12 +96,10 @@ namespace TTTN {
         Tensor<Batch, InDims...> BatchedBackward(const Tensor<Batch, OutDims...> &delta_A,
                                                  const Tensor<Batch, OutDims...> &a,
                                                  const Tensor<Batch, InDims...> &a_prev) {
-            const float inv_batch = 1.f / static_cast<float>(Batch);
             // [Batch, OutDims...]
             const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
             b_.grad += Reduce<0, Add>(delta_z);
-            b_.grad *= inv_batch;
 
 
             // backpropagate delta_z through weights
@@ -211,6 +209,8 @@ namespace TTTN {
         /** Wrap `Tensor` of type `BiasType` into `Param` object */
         Param<BiasType> b_;
 
+        // @doc: mutable LearnedContraction<InputTensor, OutputTensor, N_map> MapDenseMDBlock::lc_
+        /** Wrap `Tensor` of type `W_Type` into `Param` object */
         mutable LearnedContraction<InputTensor, OutputTensor, N_map> lc_;
 
     public:
@@ -277,7 +277,6 @@ namespace TTTN {
                              const PrependBatch<Batch, OutputTensor>::type &a,
                              const PrependBatch<Batch, InputTensor>::type & /*a_prev*/) -> PrependBatch<Batch,
             InputTensor>::type {
-            const float inv_batch = 1.f / static_cast<float>(Batch);
             const auto delta_z = delta_A.zip(a, [](float g, float ai) { return g * Act::prime(ai); });
 
             BiasType dB_local{};
@@ -289,7 +288,7 @@ namespace TTTN {
                     }
                 }
             }
-            b_.grad += dB_local * inv_batch;
+            b_.grad += dB_local;
             return lc_ << delta_z;
         }
     };

@@ -265,7 +265,7 @@ namespace TTTN {
         /** Batched counterpart to `BackwardFrom` - start batched backward sweep at activation index `I` */
         template<size_t Batch, size_t I, typename Delta>
         void BatchedBackwardFrom(const BatchedActivations<Batch> &A, const Delta &grad) {
-            batched_backward_impl<Batch, I>(A.tuple(), grad);
+            BatchedBackwardRange<Batch, 0, I>(A, grad);
         }
 
         // @doc: template<size_t Batch> void BlockSequence::BatchedBackwardAll(const BatchedActivations<Batch> &A, const PrependBatch<Batch, OutputTensor>::type &grad)
@@ -273,7 +273,7 @@ namespace TTTN {
         template<size_t Batch>
         void BatchedBackwardAll(const BatchedActivations<Batch> &A,
                                 const PrependBatch<Batch, OutputTensor>::type &grad) {
-            BatchedBackwardFrom<Batch, N>(A, grad);
+            BatchedBackwardRange<Batch, 0, N>(A, grad);
         }
 
 
@@ -294,7 +294,11 @@ namespace TTTN {
                                    const std::tuple_element_t<Hi, BatchedActivationsTuple<Batch>> &grad) {
             static_assert(Lo <= Hi && Hi <= N, "BatchedBackwardRange: bounds out of range");
             if constexpr (Lo == Hi) return grad;
-            else return batched_backward_range_impl<Batch, Hi, Lo>(A.tuple(), grad);
+            else {
+                auto normed = grad;
+                normed *= (1.f / static_cast<float>(Batch));
+                return batched_backward_range_impl<Batch, Hi, Lo>(A.tuple(), normed);
+            }
         }
 
         // @doc: void BlockSequence::ZeroGrad()
