@@ -3148,16 +3148,17 @@ A variadic utility for training a single shared trunk network with multiple inde
     - Batched forward pass through all heads, returning `std::tuple` of heads' batched activation tuples
 
 - ***BranchTrainer::compute_losses*** - [
-  `template<typename TrunkLoss, size_t... Is> float BranchTrainer::compute_losses(const TrunkActivations &A, const TrunkOutputTensor &trunk_target, const HeadOutputs &head_targets, std::index_sequence<Is...>) const`](src/BranchTrainer.hpp)
+  `template<typename TrunkLoss, size_t... Is> requires (std::is_same_v<TrunkLoss, NoLoss> || LossFunction<TrunkLoss, typename TrunkNet::OutputTensor>) float BranchTrainer::compute_losses(const TrunkActivations &A, const TrunkOutputTensor &trunk_target, const HeadOutputs &head_targets, std::index_sequence<Is...>) const`](src/BranchTrainer.hpp)
     - Accumulates scalar loss contributions from trunk and all heads
 
 - ***BranchTrainer::compute_losses_batched*** - [
-  `template<typename TrunkLoss, size_t Batch, size_t... Is> float BranchTrainer::compute_losses_batched(const TrunkNet::BatchedActivations<Batch> &A, const PrependBatch<Batch, TrunkOutputTensor>::type &trunk_target, const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &head_targets, std::index_sequence<Is...>) const`](src/BranchTrainer.hpp)
+  `template<typename TrunkLoss, size_t Batch, size_t... Is> requires (std::is_same_v<TrunkLoss, NoLoss> || LossFunction<TrunkLoss, typename TrunkNet::OutputTensor>) float BranchTrainer::compute_losses_batched(const TrunkNet::BatchedActivations<Batch> &A, const PrependBatch<Batch, TrunkOutputTensor>::type &trunk_target, const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &head_targets, std::index_sequence<Is...>) const`](src/BranchTrainer.hpp)
     - Batched: accumulates scalar loss contributions from trunk and all heads across the batch
 
 - ***BranchTrainer::backward_heads*** - [
   `template<size_t I, size_t PrevTap> void BranchTrainer::backward_heads(const TrunkActivations &A, const TrunkOutputTensor &grad, const HeadTapGrads &head_tap_grads)`](src/BranchTrainer.hpp)
-    - Pure gradient propagation: chains `BackwardRange` through trunk segments, summing in precomputed per-head tap gradients
+    - Pure gradient propagation: chains
+      `BackwardRange` through trunk segments, summing in precomputed per-head tap gradients
 
 - ***BranchTrainer::backward_heads_batched*** - [
   `template<size_t Batch, size_t I, size_t PrevTap> void BranchTrainer::backward_heads_batched(const TrunkNet::BatchedActivations<Batch> &A, const PrependBatch<Batch, TrunkOutputTensor>::type &grad, const std::tuple<typename PrependBatch<Batch, typename Heads::Net::InputTensor>::type...> &head_tap_grads)`](src/BranchTrainer.hpp)
