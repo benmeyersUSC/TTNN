@@ -143,7 +143,7 @@ namespace TTTN {
          */
         template<size_t Batch, size_t I, size_t Lo>
         auto batched_backward_range_impl(const BatchedActivationsTuple<Batch> &A,
-                                          const std::tuple_element_t<I, BatchedActivationsTuple<Batch>> &delta) {
+                                         const std::tuple_element_t<I, BatchedActivationsTuple<Batch> > &delta) {
             const auto grad = std::get<I - 1>(mBlocks) << BackwardArgs{delta, std::get<I>(A), std::get<I - 1>(A)};
             if constexpr (I - 1 > Lo) return batched_backward_range_impl<Batch, I - 1, Lo>(A, grad);
             else return grad;
@@ -291,7 +291,7 @@ namespace TTTN {
         /** Delegates to `BatchedBackwardFrom<Batch, NumBlocks>` - full batched backward from output to input */
         template<size_t Batch, size_t Lo, size_t Hi>
         auto BatchedBackwardRange(const BatchedActivations<Batch> &A,
-                                   const std::tuple_element_t<Hi, BatchedActivationsTuple<Batch>> &grad) {
+                                  const std::tuple_element_t<Hi, BatchedActivationsTuple<Batch> > &grad) {
             static_assert(Lo <= Hi && Hi <= N, "BatchedBackwardRange: bounds out of range");
             if constexpr (Lo == Hi) return grad;
             else {
@@ -310,19 +310,24 @@ namespace TTTN {
         }
 
 
+        // @doc: void BlockSequence::peek(SnapshotMap &out, const std::string &prefix) const
+        /** Forwards peek calls from each `PeekableBlock` in `mBlocks` into `out`, keyed by `prefix + "block_N."` */
+        void peek(SnapshotMap &out, const std::string &prefix) const {
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                ([&] {
+                    if constexpr (const auto &blk = std::get<Is>(mBlocks); PeekableBlock<std::remove_cvref_t<decltype(
+                        blk)> >) {
+                        blk.peek(out, prefix + "block_" + std::to_string(Is) + ".");
+                    }
+                }(), ...);
+            }(std::make_index_sequence<N>{});
+        }
+
         // @doc: [[nodiscard]] SnapshotMap BlockSequence::Snap() const
         /** Calls `SaveAll` on each `Block::all_params()`, which calls `Tensor` binary serialization */
         [[nodiscard]] SnapshotMap Snap() const {
             SnapshotMap out;
-            [&]<size_t... Is>(std::index_sequence<Is...>) {
-                ([&] {
-                    // if-init to see if mBlocks[i], blk, (when stripped of const&) satisfies PeekableBlock concept
-                    if constexpr (const auto &blk = std::get<Is>(mBlocks); PeekableBlock<std::remove_cvref_t<decltype(
-                        blk)> >) {
-                        blk.peek(out, "block_" + std::to_string(Is) + ".");
-                    }
-                }(), ...);
-            }(std::make_index_sequence<N>{});
+            peek(out, "");
             return out;
         }
 

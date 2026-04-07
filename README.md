@@ -720,6 +720,14 @@ Default-constructible callable structs satisfying `FloatBinaryOp` or
       `Tensor`
       type from `Fn`
 
+- ***AddPositionalEncoding*** - [
+  `template<size_t SeqAxis = 0, size_t... Dims> void AddPositionalEncoding(Tensor<Dims...> &X)`](src/TensorFunctions.hpp)
+    - Add sinusoidal positional encoding in-place to `X` along `SeqAxis` (default 0)
+    - For each position `pos` along `SeqAxis` and embedding index `j` (row-major over the remaining axes):
+        - `freq = 1 / 10000^(2*(j/2) / EmbSize)`
+        - `PE[pos][j] = sin(pos * freq)` if `j` even, `cos(pos * freq)` if `j` odd
+    - PE tensor depends only on template parameters — computed once as a `static` local and added via `zip_apply`
+
 ---
 
 ## [TensorOps.hpp](src/TensorOps.hpp): Element-wise Primitives
@@ -1358,6 +1366,11 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
     - Takes any `Tensor<Batch, Dims...>` and flattens `Dims...` internally
     - NOTE: assumes ***one-hot encoding*** for labels
 
+- ***BatchAccuracy (ActivationsWrap overload)*** - [
+  `template<typename TupleT> float BatchAccuracy(const ActivationsWrap<TupleT> &A, const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels)`](src/TTTN_ML.hpp)
+    - Overload that takes a full `ActivationsWrap` and automatically uses the final activation
+    - Eliminates the need to manually index with `.get<N>()`
+
 ---
 
 ## [NetworkUtil.hpp](src/NetworkUtil.hpp): Concepts, Types, and Utilities
@@ -1836,6 +1849,10 @@ The unified sequential core shared by `TrainableTensorNetwork` and `ComposeBlock
 - ***BlockSequence::Load*** - [
   `void BlockSequence::Load(const std::string &path)`](src/BlockSequence.hpp)
     - Calls `LoadAll` on each `Block::all_params()`, which calls `Tensor` binary deserialization
+
+- ***BlockSequence::peek*** - [
+  `void BlockSequence::peek(SnapshotMap &out, const std::string &prefix) const`](src/BlockSequence.hpp)
+    - Forwards peek calls from each `PeekableBlock` in `mBlocks` into `out`, keyed by `prefix + "block_N."`
 
 - ***BlockSequence::Snap*** - [
   `[[nodiscard]] SnapshotMap BlockSequence::Snap() const`](src/BlockSequence.hpp)
@@ -2356,9 +2373,10 @@ Implements scaled dot-product **mult-head self-attention
 `mutable` members. All four weight matrices (`W_Q`, `W_K`, `W_V`, `W_O`) are updated with Adam.
 
 - ***MultiHeadAttentionBlock*** - [
-  `template<size_t SeqLen, size_t Heads, size_t... EmbDims> class MultiHeadAttentionBlock`](src/Attention.hpp)
+  `template<size_t SeqLen, size_t Heads, bool Masked, size_t... EmbDims> class MultiHeadAttentionBlock`](src/Attention.hpp)
     - `Block` implementation for **mult-head self-attention** over sequences of arbitrary-rank token embeddings
-    - Parameterized by `size_t SeqLen`, `size_t Heads`, and `size_t...EmbDims`
+    - Parameterized by `size_t SeqLen`, `size_t Heads`, `bool Masked` (causal mask), and `size_t...EmbDims`
+    - When `Masked = true`, positions `k > q` in the attention score matrix are set to `-inf` before softmax
 
 - ***MultiHeadAttentionBlock::InputTensor*** - [`using MultiHeadAttentionBlock::InputTensor`](src/Attention.hpp)
     - `InputTensor = Tensor<SeqLen, EmbDims...>`
@@ -2533,10 +2551,15 @@ Implements scaled dot-product **mult-head self-attention
     - Batched backward pass goes from `[Batch, SeqLen, EmbDims...]` -> `[Batch, SeqLen, EmbDims...]`
 
 - ***MHAttention*** - [`template<size_t Heads, size_t... EmbDims> struct MHAttention`](src/Attention.hpp)
-    - `BlockRecipe` for `MultiHeadAttentionBlock`
+    - `BlockRecipe` for unmasked `MultiHeadAttentionBlock`
     - Takes in `size_t Heads` for head count and `size_t...EmbDims` indicating the dimensionality of the embeddings
     - `InputT` passed to `Resolve` should have its first axis be `SeqLen`
-        - `Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`
+        - `Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, false, EmbDims...>`
+
+- ***MHCausalAttention*** - [`template<size_t Heads, size_t... EmbDims> struct MHCausalAttention`](src/Attention.hpp)
+    - `BlockRecipe` for causal (masked) `MultiHeadAttentionBlock`
+    - Identical to `MHAttention` but passes `Masked = true` — positions `k > q` are masked to `-inf` before softmax
+        - `Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, true, EmbDims...>`
 
 ---
 
@@ -2760,6 +2783,10 @@ InputTensor Backward(const OutputTensor &delta_A,
 - ***ParallelBlock::block_b*** - [`const BlockB &ParallelBlock::block_b() const`](src/MoreNets.hpp)
     - `const &` getter for `BlockB b_`
 
+- ***ParallelBlock::peek*** - [
+  `void ParallelBlock::peek(SnapshotMap &out, const std::string &prefix) const`](src/MoreNets.hpp)
+    - Forwards peek to `a_` and `b_` if they satisfy `PeekableBlock`; no extra prefix added (transparency layer)
+
 - ***ParallelBlock::all_params*** - [`auto ParallelBlock::all_params()`](src/MoreNets.hpp)
     - `std::tuple_cat` of `a_.all_params()` and `b_.all_params()`
 
@@ -2942,7 +2969,7 @@ InputTensor Backward(const OutputTensor &delta_A,
 
 ---
 
-## [TransformerBlock.hpp](src/TransformerBlock.hpp) -- Pre-norm Transformer Block
+## [TransformerBlock.hpp](src/TransformerBlock.hpp) -- Transformer Block (Pre/Post-norm)
 
 ```cpp
 // sequence of 28 tokens, each embedded in R^28, 7 heads, FFN projects through 64
@@ -2960,65 +2987,35 @@ net.RunEpoch<CEL, 32>(X_train, Y_train, rng, 1e-3f);
 
 ---
 
-### `class TransformerBlock<InputT, Heads, FFNHidden>`
+### `class TransformerBlock<InputT, Heads, FFNHidden, PreNorm, Masked>`
 
 Implementation is purely a composition; all detailed work is handled by denizen `Block`s.
 
 - ***TransformerBlock*** - [
-  `template<size_t SeqLen, size_t EmbDim, size_t Heads, size_t FFNHidden> class TransformerBlock<Tensor<SeqLen, EmbDim>, Heads, FFNHidden>`](src/TransformerBlock.hpp)
-    - `Block` that defines standard **Transformer Block***: LayerNorm, Multi-headed Attention, LayerNorm, FFN.
-    - Topology:
-        - `BlockSequence<`
-            - `ResidualBlock<`
-                - `BlockSequence<`
-                    - `LayerNormBlock`
-                    - `MultiHeadAttentionBlock`
-                - `>`
-            - `>`
-            - `ResidualBlock<`
-                - `BlockSequence<`
-                    - `LayerNormBlock`
-                    - `MapDenseMDBlock`
-                    - `MapDenseMDBlock`
-                - `>`
-            - `>`
-        - `>`
+  `template<size_t SeqLen, size_t EmbDim, size_t Heads, size_t FFNHidden, bool PreNorm, bool Masked> class TransformerBlock<Tensor<SeqLen, EmbDim>, Heads, FFNHidden, PreNorm, Masked>`](src/TransformerBlock.hpp)
+    - `Block` that defines standard **Transformer Block**: Multi-headed Attention + FFN with optional LayerNorm.
+    - `bool PreNorm` (default `true`): LayerNorm precedes each sub-layer inside the residual (modern default);
+      `false` matches the original 2017 paper — LayerNorm follows each residual addition.
+    - `bool Masked` (default `false`): passed through to `MultiHeadAttentionBlock` for causal masking.
+    - Pre-norm topology:  `Residual(LN → MHA)`,  `Residual(LN → FFN)`
+    - Post-norm topology: `Residual(MHA) → LN`,  `Residual(FFN) → LN`
+
+- ***TransformerBlock::MHABlock_*** - [`using TransformerBlock::MHABlock_`](src/TransformerBlock.hpp)
+    - `MultiHeadAttentionBlock<SeqLen, Heads, Masked, EmbDim>` — shared by both norm orderings
 
 - ***TransformerBlock::MHASub_*** - [`using TransformerBlock::MHASub_`](src/TransformerBlock.hpp)
-    - Multi-head attention sub-sequence, wrapped by the first `ResidualBlock`
-    - Topology:
-        - `BlockSequence<`
-            - `LayerNormBlock`
-            - `MultiHeadAttentionBlock`
-        - `>`
+    - Pre-norm MHA sub-sequence: `BlockSequence<LayerNormBlock, MHABlock_>`
+
+- ***TransformerBlock::FFNOnly_*** - [`using TransformerBlock::FFNOnly_`](src/TransformerBlock.hpp)
+    - FFN without LayerNorm (post-norm path): `BlockSequence<MapDenseMDBlock, MapDenseMDBlock>`
 
 - ***TransformerBlock::FFNSub_*** - [`using TransformerBlock::FFNSub_`](src/TransformerBlock.hpp)
-    - Feed-forward sub-sequence, wrapped by the second `ResidualBlock`
-    - Topology:
-        - `BlockSequence<`
-            - `LayerNormBlock`
-            - `MapDenseMDBlock`
-            - `MapDenseMDBlock`
-        - `>`
-    - Two `MapDenseMDBlock`s: one to map to `FFNHidden`, one to map back down to `EmbDim`
+    - Pre-norm FFN sub-sequence: `BlockSequence<LayerNormBlock, MapDenseMDBlock, MapDenseMDBlock>`
 
 - ***TransformerBlock::Inner_*** - [`using TransformerBlock::Inner_`](src/TransformerBlock.hpp)
-    - Topology:
-        - `BlockSequence<`
-            - `ResidualBlock<`
-                - `BlockSequence<`
-                    - `LayerNormBlock`
-                    - `MultiHeadAttentionBlock`
-                - `>`
-            - `>`
-            - `ResidualBlock<`
-                - `BlockSequence<`
-                    - `LayerNormBlock`
-                    - `MapDenseMDBlock`
-                    - `MapDenseMDBlock`
-                - `>`
-            - `>`
-        - `>`
+    - Full topology selected by `PreNorm`:
+        - `true`:  `BlockSequence<Residual(LN+MHA),  Residual(LN+FFN)>`
+        - `false`: `BlockSequence<Residual(MHA), LN, Residual(FFN), LN>`
 
 - ***TransformerBlock::inner_*** - [`Inner_ TransformerBlock::inner_`](src/TransformerBlock.hpp)
     - Instance of topology defined in `Inner_`
@@ -3028,6 +3025,10 @@ Implementation is purely a composition; all detailed work is handled by denizen 
 
 - ***TransformerBlock::OutputTensor*** - [`using TransformerBlock::OutputTensor`](src/TransformerBlock.hpp)
     - Alias for `Tensor<SeqLen, EmbDim>`
+
+- ***TransformerBlock::peek*** - [
+  `void TransformerBlock::peek(SnapshotMap &out, const std::string &prefix) const`](src/TransformerBlock.hpp)
+    - Forwards peek to `inner_`, propagating the prefix so nested peekable blocks (e.g. `MultiHeadAttentionBlock`) are reachable
 
 - ***TransformerBlock::all_params*** - [`auto TransformerBlock::all_params()`](src/TransformerBlock.hpp)
     - Return `std::tuple` from `inner_.all_params()`
@@ -3052,12 +3053,16 @@ Implementation is purely a composition; all detailed work is handled by denizen 
   `template<size_t Batch> auto TransformerBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type`](src/TransformerBlock.hpp)
     - Batched backward pass, simply: `inner_.template BatchedBackward<Batch>(delta_A, a, a_prev)`
 
-- ***Transformer*** - [`template<size_t Heads, size_t FFNHidden> struct Transformer`](src/TransformerBlock.hpp)
+- ***Transformer*** - [`template<size_t Heads, size_t FFNHidden, bool PreNorm, bool Masked> struct Transformer`](src/TransformerBlock.hpp)
     - `BlockRecipe` struct for building a `TransformerBlock`
-    - Parameterized (when in a `NetworkBuilder` sequence) entirely by `Heads` and `FFNHidden`, the rest is deduced
+    - Parameterized by `Heads`, `FFNHidden`, `PreNorm` (default `true`), and `Masked` (default `false`)
+    - Remaining dimensions (`SeqLen`, `EmbDim`) are deduced from `InputT` passed to `Resolve`
+
+- ***Transformer::OutputTensor*** - [`using Transformer::OutputTensor`](src/TransformerBlock.hpp)
+    - Placeholder for `BlockRecipe` concept check: `Tensor<1, Heads>` guarantees `EmbSize % Heads == 0`
 
 - ***Transformer::Resolve*** - [`template<IsTensor InputT> using Transformer::Resolve`](src/TransformerBlock.hpp)
-    - When given `IsTensor InputT`, create full `TransformerBlock<InputT, Heads, FFNHidden>`
+    - When given `IsTensor InputT`, create full `TransformerBlock<InputT, Heads, FFNHidden, PreNorm, Masked>`
 
 ---
 

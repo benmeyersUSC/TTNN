@@ -5,80 +5,53 @@
 #include "MoreNets.hpp"
 
 namespace TTTN {
-    template<typename InputT, size_t Heads, size_t FFNHidden>
+    template<typename InputT, size_t Heads, size_t FFNHidden, bool PreNorm = true, bool Masked = false>
     class TransformerBlock;
 
-    // @doc: template<size_t SeqLen, size_t EmbDim, size_t Heads, size_t FFNHidden> class TransformerBlock<Tensor<SeqLen, EmbDim>, Heads, FFNHidden>
+    // @doc: template<size_t SeqLen, size_t EmbDim, size_t Heads, size_t FFNHidden, bool PreNorm, bool Masked> class TransformerBlock<Tensor<SeqLen, EmbDim>, Heads, FFNHidden, PreNorm, Masked>
     /**
-     * `Block` that defines standard **Transformer Block***: LayerNorm, Multi-headed Attention, LayerNorm, FFN.
-     * Topology:
-     * `BlockSequence<`
-     * `ResidualBlock<`
-     * `BlockSequence<`
-     * `LayerNormBlock`
-     * `MultiHeadAttentionBlock`
-     * `>`
-     * `>`
-     * `ResidualBlock<`
-     * `BlockSequence<`
-     * `LayerNormBlock`
-     * `MapDenseMDBlock`
-     * `MapDenseMDBlock`
-     * `>`
-     * `>`
-     * `>`
+     * `Block` that defines standard **Transformer Block**: Multi-headed Attention + FFN with optional LayerNorm.
+     * `bool PreNorm` (default `true`): LayerNorm precedes each sub-layer inside the residual (modern default); `false` matches the original 2017 paper — LayerNorm follows each residual addition.
+     * `bool Masked` (default `false`): passed through to `MultiHeadAttentionBlock` for causal masking.
+     * Pre-norm topology:  `Residual(LN → MHA)`,  `Residual(LN → FFN)`
+     * Post-norm topology: `Residual(MHA) → LN`,  `Residual(FFN) → LN`
      */
-    template<size_t SeqLen, size_t EmbDim, size_t Heads, size_t FFNHidden>
-    class TransformerBlock<Tensor<SeqLen, EmbDim>, Heads, FFNHidden> {
+    template<size_t SeqLen, size_t EmbDim, size_t Heads, size_t FFNHidden, bool PreNorm, bool Masked>
+    class TransformerBlock<Tensor<SeqLen, EmbDim>, Heads, FFNHidden, PreNorm, Masked> {
+        // @doc: using TransformerBlock::MHABlock_
+        /** `MultiHeadAttentionBlock<SeqLen, Heads, Masked, EmbDim>` — shared by both norm orderings */
+        using MHABlock_ = MultiHeadAttentionBlock<SeqLen, Heads, Masked, EmbDim>;
+
         // @doc: using TransformerBlock::MHASub_
-        /**
-         * Multi-head attention sub-sequence, wrapped by the first `ResidualBlock`
-         * Topology:
-         * `BlockSequence<`
-         * `LayerNormBlock`
-         * `MultiHeadAttentionBlock`
-         * `>`
-         */
-        using MHASub_ = BlockSequence<
-            LayerNormBlock<SeqLen, EmbDim>,
-            MultiHeadAttentionBlock<SeqLen, Heads, EmbDim>
+        /** Pre-norm MHA sub-sequence: `BlockSequence<LayerNormBlock, MHABlock_>` */
+        using MHASub_ = BlockSequence<LayerNormBlock<SeqLen, EmbDim>, MHABlock_>;
+
+        // @doc: using TransformerBlock::FFNOnly_
+        /** FFN without LayerNorm (post-norm path): `BlockSequence<MapDenseMDBlock, MapDenseMDBlock>` */
+        using FFNOnly_ = BlockSequence<
+            MapDenseMDBlock<Tensor<SeqLen, EmbDim>, Tensor<FFNHidden>, 1, ReLU>,
+            MapDenseMDBlock<Tensor<SeqLen, FFNHidden>, Tensor<EmbDim>, 1>
         >;
+
         // @doc: using TransformerBlock::FFNSub_
-        /**
-         * Feed-forward sub-sequence, wrapped by the second `ResidualBlock`
-         * Topology:
-         * `BlockSequence<`
-         * `LayerNormBlock`
-         * `MapDenseMDBlock`
-         * `MapDenseMDBlock`
-         * `>`
-         * Two `MapDenseMDBlock`s: one to map to `FFNHidden`, one to map back down to `EmbDim`
-         */
+        /** Pre-norm FFN sub-sequence: `BlockSequence<LayerNormBlock, MapDenseMDBlock, MapDenseMDBlock>` */
         using FFNSub_ = BlockSequence<
             LayerNormBlock<SeqLen, EmbDim>,
             MapDenseMDBlock<Tensor<SeqLen, EmbDim>, Tensor<FFNHidden>, 1, ReLU>,
             MapDenseMDBlock<Tensor<SeqLen, FFNHidden>, Tensor<EmbDim>, 1>
         >;
+
         // @doc: using TransformerBlock::Inner_
         /**
-         * Topology:
-         * `BlockSequence<`
-         * `ResidualBlock<`
-         * `BlockSequence<`
-         * `LayerNormBlock`
-         * `MultiHeadAttentionBlock`
-         * `>`
-         * `>`
-         * `ResidualBlock<`
-         * `BlockSequence<`
-         * `LayerNormBlock`
-         * `MapDenseMDBlock`
-         * `MapDenseMDBlock`
-         * `>`
-         * `>`
-         * `>`
+         * Full topology selected by `PreNorm`:
+         * `true`:  `BlockSequence<Residual(LN+MHA),  Residual(LN+FFN)>`
+         * `false`: `BlockSequence<Residual(MHA), LN, Residual(FFN), LN>`
          */
-        using Inner_ = BlockSequence<ResidualBlock<MHASub_>, ResidualBlock<FFNSub_> >;
+        using Inner_ = std::conditional_t<PreNorm,
+            BlockSequence<ResidualBlock<MHASub_>, ResidualBlock<FFNSub_>>,
+            BlockSequence<ResidualBlock<MHABlock_>, LayerNormBlock<SeqLen, EmbDim>,
+                          ResidualBlock<FFNOnly_>,  LayerNormBlock<SeqLen, EmbDim>>
+        >;
 
         // @doc: Inner_ TransformerBlock::inner_
         /** Instance of topology defined in `Inner_` */
@@ -91,6 +64,10 @@ namespace TTTN {
         // @doc: using TransformerBlock::OutputTensor
         /** Alias for `Tensor<SeqLen, EmbDim>` */
         using OutputTensor = Tensor<SeqLen, EmbDim>;
+
+        // @doc: void TransformerBlock::peek(SnapshotMap &out, const std::string &prefix) const
+        /** Forwards peek to `inner_`, propagating the prefix so nested peekable blocks (e.g. `MultiHeadAttentionBlock`) are reachable */
+        void peek(SnapshotMap &out, const std::string &prefix) const { inner_.peek(out, prefix); }
 
         // @doc: auto TransformerBlock::all_params()
         /** Return `std::tuple` from `inner_.all_params()` */
@@ -131,16 +108,21 @@ namespace TTTN {
     };
 
 
-    // @doc: template<size_t Heads, size_t FFNHidden> struct Transformer
+    // @doc: template<size_t Heads, size_t FFNHidden, bool PreNorm, bool Masked> struct Transformer
     /**
      * `BlockRecipe` struct for building a `TransformerBlock`
-     * Parameterized (when in a `NetworkBuilder` sequence) entirely by `Heads` and `FFNHidden`, the rest is deduced
+     * Parameterized by `Heads`, `FFNHidden`, `PreNorm` (default `true`), and `Masked` (default `false`)
+     * Remaining dimensions (`SeqLen`, `EmbDim`) are deduced from `InputT` passed to `Resolve`
      */
-    template<size_t Heads, size_t FFNHidden>
+    template<size_t Heads, size_t FFNHidden, bool PreNorm = true, bool Masked = false>
     struct Transformer {
+        // @doc: using Transformer::OutputTensor
+        /** Placeholder for `BlockRecipe` concept check: `Tensor<1, Heads>` guarantees `EmbSize % Heads == 0` */
+        using OutputTensor = Tensor<1, Heads>;
+
         // @doc: template<IsTensor InputT> using Transformer::Resolve
-        /** When given `IsTensor InputT`, create full `TransformerBlock<InputT, Heads, FFNHidden>` */
+        /** When given `IsTensor InputT`, create full `TransformerBlock<InputT, Heads, FFNHidden, PreNorm, Masked>` */
         template<IsTensor InputT>
-        using Resolve = TransformerBlock<InputT, Heads, FFNHidden>;
+        using Resolve = TransformerBlock<InputT, Heads, FFNHidden, PreNorm, Masked>;
     };
 } // namespace TTTN

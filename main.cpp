@@ -465,7 +465,14 @@ static void writeSeqAttnPPM(const std::string &dir,
 
     for (size_t si = 0; si < n; ++si) {
         const auto &s = samples[si];
-        const auto &e = s.snaps.at("block_1.attn_weights");
+        const SnapshotEntry *ep = nullptr;
+        for (const auto &[k, v]: s.snaps)
+            if (k.find("attn_weights") != std::string::npos) {
+                ep = &v;
+                break;
+            }
+        if (!ep) continue;
+        const auto &e = *ep;
 
         const std::string path = dir + "/attn_" + std::to_string(si) + "_lbl" +
                                  std::to_string(s.label) + ".ppm";
@@ -517,9 +524,7 @@ void runSeqTasksViz() {
     using SeqNet = typename NetworkBuilder<
         Input<32, 8>,
         MapDense<1, Tensor<32> >,
-        MHAttention<4, 32>,
-        MapDense<1, Tensor<64>, ReLU>,
-        MapDense<1, Tensor<32> >,
+        Transformer<4, 64>,
         Dense<2>,
         SoftmaxLayer<0>
     >::type;
@@ -527,7 +532,7 @@ void runSeqTasksViz() {
     constexpr size_t TrainN = 10000, TestN = 1000, Cols = 33;
     constexpr size_t Batch = 32;
     constexpr size_t EvalN = 500;
-    constexpr int Epochs = 18;
+    constexpr int Epochs = 10;
     constexpr float LR = 0.0005f;
 
     auto make_input = [](const auto &ds, size_t row) {
@@ -585,7 +590,7 @@ void runSeqTasksViz() {
                 for (size_t c = 0; c < 2; ++c) Ye(b, c) = (c == label) ? 1.f : 0.f;
             }
             const auto A = net.template BatchedForwardAll<EvalN>(Xe);
-            return BatchAccuracy(A.template get<6>(), Ye);
+            return BatchAccuracy(A, Ye);
         };
 
         for (int epoch = 0; epoch < Epochs; ++epoch) {
@@ -611,7 +616,7 @@ void runSeqTasksViz() {
             }
             const auto At = net.template BatchedForwardAll<1000>(Xt);
             std::cout << "\n  test accuracy: " << std::setprecision(1)
-                    << BatchAccuracy(At.template get<6>(), Yt) << "%\n";
+                    << BatchAccuracy(At, Yt) << "%\n";
         }
 
         // pick top-3 longest sequences per class for richer attention patterns
@@ -704,7 +709,8 @@ void RunCSVClassifier(const std::string &name,
             for (size_t p = 0; p < Features; ++p) Xe(b, p) = eval(b, p + 1) / norm;
             for (size_t c = 0; c < NumClasses; ++c) Ye(b, c) = (c == label) ? 1.f : 0.f;
         }
-        return BatchAccuracy(net.template BatchedForwardAll<EvalN>(Xe).template get<4>(), Ye);
+        const auto A = net.template BatchedForwardAll<EvalN>(Xe);
+        return BatchAccuracy(A, Ye);
     };
 
     for (int epoch = 0; epoch < epochs; ++epoch) {
@@ -724,9 +730,10 @@ void RunCSVClassifier(const std::string &name,
         for (size_t p = 0; p < Features; ++p) Xt(b, p) = raw(b, p + 1) / norm;
         for (size_t c = 0; c < NumClasses; ++c) Yt(b, c) = (c == label) ? 1.f : 0.f;
     }
+    const auto At = net.template BatchedForwardAll<TestBatch>(Xt);
     std::cout << "\n  test accuracy (" << TestBatch << " held-out): "
             << std::fixed << std::setprecision(1)
-            << BatchAccuracy(net.template BatchedForwardAll<TestBatch>(Xt).template get<4>(), Yt) << "%\n";
+            << BatchAccuracy(At, Yt) << "%\n";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

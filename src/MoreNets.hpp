@@ -145,6 +145,13 @@ namespace TTTN {
             return (a_ << BackwardArgs{delta_A, a_out_, a_prev}) + (b_ << BackwardArgs{delta_A, b_out_, a_prev});
         }
 
+        // @doc: void ParallelBlock::peek(SnapshotMap &out, const std::string &prefix) const
+        /** Forwards peek to `a_` and `b_` if they satisfy `PeekableBlock`; no extra prefix added (transparency layer) */
+        void peek(SnapshotMap &out, const std::string &prefix) const {
+            if constexpr (PeekableBlock<BlockA>) a_.peek(out, prefix);
+            if constexpr (PeekableBlock<BlockB>) b_.peek(out, prefix);
+        }
+
         // @doc: template<size_t Batch> auto ParallelBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type
         /**
          * Call `BatchedForward` on `a_` and `b_` and return their sum

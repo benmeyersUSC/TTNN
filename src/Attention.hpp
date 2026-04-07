@@ -1,14 +1,16 @@
 #pragma once
+#include <limits>
 #include "TensorContract.hpp"
 #include "NetworkUtil.hpp"
 
 namespace TTTN {
-    // @doc: template<size_t SeqLen, size_t Heads, size_t... EmbDims> class MultiHeadAttentionBlock
+    // @doc: template<size_t SeqLen, size_t Heads, bool Masked, size_t... EmbDims> class MultiHeadAttentionBlock
     /**
      * `Block` implementation for **mult-head self-attention** over sequences of arbitrary-rank token embeddings
-     * Parameterized by `size_t SeqLen`, `size_t Heads`, and `size_t...EmbDims`
+     * Parameterized by `size_t SeqLen`, `size_t Heads`, `bool Masked` (causal mask), and `size_t...EmbDims`
+     * When `Masked = true`, positions `k > q` in the attention score matrix are set to `-inf` before softmax
      */
-    template<size_t SeqLen, size_t Heads, size_t... EmbDims>
+    template<size_t SeqLen, size_t Heads, bool Masked, size_t... EmbDims>
     class MultiHeadAttentionBlock {
     public:
         // @doc: using MultiHeadAttentionBlock::InputTensor
@@ -206,6 +208,14 @@ namespace TTTN {
             auto rawQK = BatchContract<AxisList<1>{}, AxisList<1>{}, AxisList<2>{}, AxisList<2>{}, Mul, Add>(Q_, K_);
             rawQK *= inv_sqrt;
             // rawQK: [Heads, SeqLen_Q, SeqLen_K]
+            if constexpr (Masked) {
+                constexpr float neg_inf = -std::numeric_limits<float>::infinity();
+                for (size_t h = 0; h < Heads; ++h) {
+                    for (size_t q = 0; q < SeqLen - 1; ++q) {
+                        std::fill_n(&rawQK(h, q, q + 1), SeqLen - q - 1, neg_inf);
+                    }
+                }
+            }
             // softmax needs to apply 'over the keys', so index 2
             attn_weights_ = Softmax<2>(rawQK);
 
@@ -332,7 +342,7 @@ namespace TTTN {
             const float inv_sqrt = 1.f / std::sqrt(static_cast<float>(HeadDim));
 
             // [Batch, SeqLen, EmbDims...] x [Heads, HeadDim, EmbDims...] -> [Batch, SeqLen, Heads, HeadDim]
-            const auto bQ = X >> lc_Q_;  // lc_Q_ caches X in its bX_buf_ for W grad in backward
+            const auto bQ = X >> lc_Q_; // lc_Q_ caches X in its bX_buf_ for W grad in backward
             const auto bK = X >> lc_K_;
             const auto bV = X >> lc_V_;
             // bQ/bK/bV are LC *outputs* — must cache separately for attention score backward
@@ -344,6 +354,16 @@ namespace TTTN {
             auto scores = BatchContract<AxisList<0, 2>{}, AxisList<0, 2>{}, AxisList<3>{}, AxisList<3>{}, Mul,
                 Add>(bQ, bK);
             scores *= inv_sqrt;
+            if constexpr (Masked) {
+                constexpr float neg_inf = -std::numeric_limits<float>::infinity();
+                for (size_t b = 0; b < Batch; ++b) {
+                    for (size_t h = 0; h < Heads; ++h) {
+                        for (size_t q = 0; q < SeqLen - 1; ++q) {
+                            std::fill_n(&scores(b, h, q, q + 1), SeqLen - q - 1, neg_inf);
+                        }
+                    }
+                }
+            }
 
             // softmax over SeqLen_K
             const auto b_attn = Softmax<3>(scores);
@@ -412,16 +432,30 @@ namespace TTTN {
 
     // @doc: template<size_t Heads, size_t... EmbDims> struct MHAttention
     /**
-     * `BlockRecipe` for `MultiHeadAttentionBlock`
+     * `BlockRecipe` for unmasked `MultiHeadAttentionBlock`
      * Takes in `size_t Heads` for head count and `size_t...EmbDims` indicating the dimensionality of the embeddings
      * `InputT` passed to `Resolve` should have its first axis be `SeqLen`
-     * `Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>`
+     * `Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, false, EmbDims...>`
      */
     template<size_t Heads, size_t... EmbDims>
     struct MHAttention {
         using OutputTensor = Tensor<1, EmbDims...>;
 
         template<typename InputT> requires IsTensor<InputT>
-        using Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, EmbDims...>;
+        using Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, false, EmbDims...>;
+    };
+
+    // @doc: template<size_t Heads, size_t... EmbDims> struct MHCausalAttention
+    /**
+     * `BlockRecipe` for causal (masked) `MultiHeadAttentionBlock`
+     * Identical to `MHAttention` but passes `Masked = true` — positions `k > q` are masked to `-inf` before softmax
+     * `Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, true, EmbDims...>`
+     */
+    template<size_t Heads, size_t... EmbDims>
+    struct MHCausalAttention {
+        using OutputTensor = Tensor<1, EmbDims...>;
+
+        template<typename InputT> requires IsTensor<InputT>
+        using Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, true, EmbDims...>;
     };
 } // namespace TTTN

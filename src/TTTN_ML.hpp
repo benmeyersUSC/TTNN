@@ -297,4 +297,16 @@ namespace TTTN {
         // correct n out of total
         return 100.f * n / static_cast<float>(Batch);
     }
+
+    // @doc: template<typename TupleT> float BatchAccuracy(const ActivationsWrap<TupleT> &A, const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels)
+    /**
+     * Overload that takes a full `ActivationsWrap` and automatically uses the final activation
+     * Eliminates the need to manually index with `.get<N>()`
+     */
+    template<typename TupleT>
+    float BatchAccuracy(const ActivationsWrap<TupleT> &A,
+                        const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels) {
+        constexpr size_t Last = std::tuple_size_v<TupleT> - 1;
+        return BatchAccuracy(A.template get<Last>(), labels);
+    }
 };

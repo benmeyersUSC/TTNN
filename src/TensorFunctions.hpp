@@ -387,4 +387,44 @@ namespace TTTN {
         }
         return result;
     }
+
+
+    // @doc: template<size_t SeqAxis = 0, size_t... Dims> void AddPositionalEncoding(Tensor<Dims...> &X)
+    /**
+     * Add sinusoidal positional encoding in-place to `X` along `SeqAxis` (default 0)
+     * For each position `pos` along `SeqAxis` and embedding index `j` (row-major over the remaining axes):
+     * `freq = 1 / 10000^(2*(j/2) / EmbSize)`
+     * `PE[pos][j] = sin(pos * freq)` if `j` even, `cos(pos * freq)` if `j` odd
+     * PE tensor depends only on template parameters — computed once as a `static` local and added via `zip_apply`
+     */
+    template<size_t SeqAxis = 0, size_t... Dims>
+    void AddPositionalEncoding(Tensor<Dims...> &X) {
+        using T = Tensor<Dims...>;
+        static_assert(T::Rank >= 1, "AddPositionalEncoding requires Rank >= 1");
+        static_assert(SeqAxis < T::Rank, "SeqAxis out of range");
+        constexpr size_t SeqLen = T::Shape[SeqAxis];
+        constexpr size_t EmbSize = T::Size / SeqLen;
+        static const T pe = [] {
+            T p;
+            for (size_t flat = 0; flat < T::Size; ++flat) {
+                const auto multi = T::FlatToMulti(flat);
+                const size_t pos = multi[SeqAxis];
+                size_t emb_idx = 0, stride = 1;
+                for (size_t d = T::Rank; d-- > 0;) {
+                    if (d == SeqAxis) continue;
+                    emb_idx += multi[d] * stride;
+                    stride *= T::Shape[d];
+                }
+                const float freq = 1.f / std::pow(
+                                       10000.f,
+                                       static_cast<float>(2 * (static_cast<double>(emb_idx) / 2.0)) / static_cast<float>
+                                       (EmbSize));
+                p.flat(flat) = (emb_idx % 2 == 0)
+                                   ? std::sin(static_cast<float>(pos) * freq)
+                                   : std::cos(static_cast<float>(pos) * freq);
+            }
+            return p;
+        }();
+        X.zip_apply(pe, Add{});
+    }
 }
