@@ -87,25 +87,31 @@ namespace TTTN {
     }
 
 
-    // @doc: template<size_t Axis, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...> &x)
+    // @doc: template<size_t Axis, float Temp = 1.f, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...> &x)
     /**
-     * Given an `Axis` on which to normalize, perform `Softmax` normalization
-     * Elegantly calls `BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(x))` to first map to `a = e^(x - max)` and then to `b = a / sum(a)`
+     * Given an `Axis` on which to normalize, perform `Softmax` normalization with optional temperature `Temp` (default `1.f`)
+     * When `Temp != 1`, input is scaled by `1/Temp` before the standard softmax: `softmax(x / Temp)`
+     * Elegantly calls `BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(scaled))` to first map to `a = e^(x - max)` and then to `b = a / sum(a)`
      * Shape-preserving
      */
-    template<size_t Axis, size_t... Dims>
+    template<size_t Axis, float Temp = 1.f, size_t... Dims>
     Tensor<Dims...> Softmax(const Tensor<Dims...> &x) {
-        return BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(x));
+        if constexpr (Temp == 1.f) {
+            return BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(x));
+        } else {
+            return BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(x * (1.f / Temp)));
+        }
     }
 
-    // @doc: template<size_t Axis, size_t... Dims> Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a)
+    // @doc: template<size_t Axis, float Temp = 1.f, size_t... Dims> Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a)
     /**
-     * Computes derivative of `Softmax`
+     * Computes derivative of `Softmax` with optional temperature `Temp` (default `1.f`)
+     * By the chain rule, `d softmax(x/T)/dx = (1/T) * J_softmax(x/T)`, so the result is scaled by `1/Temp`
      * Calls (efficient equivalent of) `a * BroadcastMap<Axis, Sub>(grad, BroadcastReduce<Axis, Add, Mul>(a, grad))`
-     * Generalization of `a * (g - (g . a))`
+     * Generalization of `a * (g - (g . a))`, scaled by `1/Temp`
      * Shape-preserving
      */
-    template<size_t Axis, size_t... Dims>
+    template<size_t Axis, float Temp = 1.f, size_t... Dims>
     Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a) {
         // sum of elementwise products along Axis
         auto axisDots = Reduce<Axis, Add>(a * grad);
@@ -115,17 +121,18 @@ namespace TTTN {
         BroadcastApply<Axis, Sub>(g, axisDots);
         // multiply by activation inplace
         g *= a;
+        if constexpr (Temp != 1.f) g *= (1.f / Temp);
         return g;
     }
 
 
-    template<size_t Axis, typename TensorT>
+    template<size_t Axis, float Temp, typename TensorT>
     class SoftmaxBlock;
 
-    // @doc: template<size_t Axis, size_t... Dims> class SoftmaxBlock<Axis, Tensor<Dims...> >
-    /** Class representing the concrete block of a  `Softmax` layer in a `TrainableTensorNetwork`, satisfying the `Block` `concept` */
-    template<size_t Axis, size_t... Dims>
-    class SoftmaxBlock<Axis, Tensor<Dims...> > {
+    // @doc: template<size_t Axis, float Temp, size_t... Dims> class SoftmaxBlock<Axis, Temp, Tensor<Dims...> >
+    /** Class representing the concrete block of a `Softmax` layer in a `TrainableTensorNetwork`, satisfying the `Block` `concept`; `Temp` is the softmax temperature (default `1.f` via `SoftmaxLayer`) */
+    template<size_t Axis, float Temp, size_t... Dims>
+    class SoftmaxBlock<Axis, Temp, Tensor<Dims...> > {
     public:
         using InputTensor = Tensor<Dims...>;
         using OutputTensor = Tensor<Dims...>;
@@ -139,50 +146,50 @@ namespace TTTN {
         auto all_params() const { return std::tuple<>{}; }
 
         // @doc: OutputTensor SoftmaxBlock::Forward(const InputTensor &x) const
-        /** Calls `Softmax<Axis>(x)` */
+        /** Calls `Softmax<Axis, Temp>(x)` */
         OutputTensor Forward(const InputTensor &x) const {
-            return Softmax<Axis>(x);
+            return Softmax<Axis, Temp>(x);
         }
 
         // @doc: InputTensor SoftmaxBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor & /*a_prev*/)
-        /** Calls `SoftmaxPrime<Axis>(delta_A, a)` */
+        /** Calls `SoftmaxPrime<Axis, Temp>(delta_A, a)` */
         InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor & /*a_prev*/) {
-            return SoftmaxPrime<Axis>(delta_A, a);
+            return SoftmaxPrime<Axis, Temp>(delta_A, a);
         }
 
         // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::BatchedForward(const Tensor<Batch, Dims...> &X) const
         /**
-         * Calls `Softmax<Axis + 1>(X)`
+         * Calls `Softmax<Axis + 1, Temp>(X)`
          * NOTE: assumes first axis is `Batch` axis
          */
         template<size_t Batch>
         Tensor<Batch, Dims...> BatchedForward(const Tensor<Batch, Dims...> &X) const {
-            return Softmax<Axis + 1>(X);
+            return Softmax<Axis + 1, Temp>(X);
         }
 
         // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::BatchedBackward(const Tensor<Batch, Dims...> &delta_A, const Tensor<Batch, Dims...> &a, const Tensor<Batch, Dims...> & /*a_prev*/)
         /**
-         * Calls `SoftmaxPrime<Axis + 1>(delta_A, a)`
+         * Calls `SoftmaxPrime<Axis + 1, Temp>(delta_A, a)`
          * NOTE: assumes first axis is `Batch` axis
          */
         template<size_t Batch>
         Tensor<Batch, Dims...> BatchedBackward(const Tensor<Batch, Dims...> &delta_A, const Tensor<Batch, Dims...> &a,
                                                const Tensor<Batch, Dims...> & /*a_prev*/) {
-            return SoftmaxPrime<Axis + 1>(delta_A, a);
+            return SoftmaxPrime<Axis + 1, Temp>(delta_A, a);
         }
     };
 
 
-    // @doc: template<size_t Axis> struct SoftmaxLayer
+    // @doc: template<size_t Axis, float Temp = 1.f> struct SoftmaxLayer
     /**
      * `BlockRecipe`-compliant recipe struct to create `Block SoftmaxBlock`
-     * Pass in `Axis` of normalization and `Tensor` type whose shape will be preserved from input to output will be deduced
+     * Pass in `Axis` of normalization and optional `Temp` (softmax temperature, default `1.f`); tensor shape is deduced from `InputT`
      */
-    template<size_t Axis>
+    template<size_t Axis, float Temp = 1.f>
     struct SoftmaxLayer {
         using OutputTensor = Tensor<1>; // this is just for the concepts in TTN...InputT == OutputT
         template<typename InputT>
-        using Resolve = SoftmaxBlock<Axis, InputT>;
+        using Resolve = SoftmaxBlock<Axis, Temp, InputT>;
     };
 
 

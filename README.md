@@ -1259,50 +1259,51 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 ### Softmax (Axis-Generalized)
 
 - ***Softmax*** — [
-  `template<size_t Axis, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...> &x)`](src/TTTN_ML.hpp)
-    - Given an `Axis` on which to normalize, perform `Softmax` normalization
+  `template<size_t Axis, float Temp = 1.f, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...> &x)`](src/TTTN_ML.hpp)
+    - Given an `Axis` on which to normalize, perform `Softmax` normalization with optional temperature `Temp` (default `1.f`)
+    - When `Temp != 1`, input is scaled by `1/Temp` before the standard softmax: `softmax(x / Temp)`
     - Elegantly calls
-      `BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(x))` to first map to
+      `BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(scaled))` to first map to
       `a = e^(x - max)` and then to `b = a / sum(a)`
     - Shape-preserving
 
 - ***SoftmaxPrime*** — [
-  `template<size_t Axis, size_t... Dims> Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a)`](src/TTTN_ML.hpp)
-    - Computes derivative of `Softmax`
+  `template<size_t Axis, float Temp = 1.f, size_t... Dims> Tensor<Dims...> SoftmaxPrime(const Tensor<Dims...> &grad, const Tensor<Dims...> &a)`](src/TTTN_ML.hpp)
+    - Computes derivative of `Softmax` with optional temperature `Temp` (default `1.f`)
+    - By the chain rule, `d softmax(x/T)/dx = (1/T) * J_softmax(x/T)`, so the result is scaled by `1/Temp`
     - Calls (efficient equivalent of) `a * BroadcastMap<Axis, Sub>(grad, BroadcastReduce<Axis, Add, Mul>(a, grad))`
-        - Generalization of `a * (g - (g . a))`
+        - Generalization of `a * (g - (g . a))`, scaled by `1/Temp`
     - Shape-preserving
 
 - ***SoftmaxBlock*** - [
-  `template<size_t Axis, size_t... Dims> class SoftmaxBlock<Axis, Tensor<Dims...> >`](src/TTTN_ML.hpp)
-    - Class representing the concrete block of a  `Softmax` layer in a `TrainableTensorNetwork`, satisfying the
-      `Block` `concept`
+  `template<size_t Axis, float Temp, size_t... Dims> class SoftmaxBlock<Axis, Temp, Tensor<Dims...> >`](src/TTTN_ML.hpp)
+    - Class representing the concrete block of a `Softmax` layer in a `TrainableTensorNetwork`, satisfying the
+      `Block` `concept`; `Temp` is the softmax temperature (default `1.f` via `SoftmaxLayer`)
 
 - ***SoftmaxBlock::Forward*** — [`OutputTensor SoftmaxBlock::Forward(const InputTensor &x) const`](src/TTTN_ML.hpp)
-    - Calls `Softmax<Axis>(x)`
+    - Calls `Softmax<Axis, Temp>(x)`
 
 - ***SoftmaxBlock::Backward*** — [
   `InputTensor SoftmaxBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor & /*a_prev*/)`](src/TTTN_ML.hpp)
-    - Calls `SoftmaxPrime<Axis>(delta_A, a)`
+    - Calls `SoftmaxPrime<Axis, Temp>(delta_A, a)`
 
 - ***SoftmaxBlock::BatchedForward*** — [
   `template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::BatchedForward(const Tensor<Batch, Dims...> &X) const`](src/TTTN_ML.hpp)
-    - Calls `Softmax<Axis + 1>(X)`
+    - Calls `Softmax<Axis + 1, Temp>(X)`
     - NOTE: assumes first axis is `Batch` axis
 
 - ***SoftmaxBlock::BatchedBackward*** — [
   `template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::BatchedBackward(const Tensor<Batch, Dims...> &delta_A, const Tensor<Batch, Dims...> &a, const Tensor<Batch, Dims...> & /*a_prev*/)`](src/TTTN_ML.hpp)
-    - Calls `SoftmaxPrime<Axis + 1>(delta_A, a)`
+    - Calls `SoftmaxPrime<Axis + 1, Temp>(delta_A, a)`
     - NOTE: assumes first axis is `Batch` axis
 
 - ***SoftmaxBlock::all_params*** — [`auto all_params()`](src/TTTN_ML.hpp)
     - Returns `std::tuple<>{}` (no parameters)
 
 
-- ***SoftmaxLayer*** - [`template<size_t Axis> struct SoftmaxLayer`](src/TTTN_ML.hpp)
+- ***SoftmaxLayer*** - [`template<size_t Axis, float Temp = 1.f> struct SoftmaxLayer`](src/TTTN_ML.hpp)
     - `BlockRecipe`-compliant recipe struct to create `Block SoftmaxBlock`
-    - Pass in `Axis` of normalization and
-      `Tensor` type whose shape will be preserved from input to output will be deduced
+    - Pass in `Axis` of normalization and optional `Temp` (softmax temperature, default `1.f`); tensor shape is deduced from `InputT`
 
 ---
 
