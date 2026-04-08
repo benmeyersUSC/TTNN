@@ -110,6 +110,34 @@ We align the shared axis `K`, then map + reduce:
     
     C[i,j] = ⊕ₖ f(A[i,k], B[k,j])
 
+## Why Strictly Typed Tensors for ML?
+
+*Why strictly typed ML? You'll need everything specified at runtime!*
+**Exactly!** Machine learning is not about dynamic architectures or programmatic changing of
+***shape***. We certainly have values to dynamically compute and change at runtime; this is
+*everything*. But in machine learning, the
+***shape*** of what you're doing is something that should be known before the program runs. This is because **the
+program you're really running is *gradient descent*. You have to write a program that type checks in the language of
+gradient descent via linear algebra.** You are instantiating an infrastructure into which can be seeded and nurtured a
+***phenomenon***.
+
+You have to just build the antenna to tap into this latent dynamical homeostatic pattern given to us by mathematics.
+
+With ML, you have to represent a decision to be made numerically. *It is surprisingly easy.*
+But it makes sense that it's easy because mathematics is a formalism of clear thinking and strict-but-dynamic representation. It is highly expressive and its representational capability is second to none.
+**It is second to no other formalism.**
+
+You represent your decision numerically, you marry mappings together so that gradients can communicate. You define a measure of success that is differentiated directly back to the output of the model, which, internally, aligns its gradients. And there you have it.
+
+Because you have represented your problem space through numbers and the choice through arithmetic, you inherit the analytical techniques that have already grown into the formalism given by numbers. You can use mathematics to tell you exactly how to let signal flow and collect in a large network which constitutes your choice-making engine. Calculus is the lens you use to see the essence of the decision being modeled as made take root. You literally see the competency you seek to master represented as arterial subnetworks which carry information magnitude through the network.
+
+The point is: you build an antenna, you make sure all the wires are connected forward and backward locally, then you invite the latent space to do its natural dance.
+
+You must simply build the flower bed, plant the seeds, ensure intermittent water access and sunshine, and the latent chemistry takes it from there. The
+***flowerbed*** is the `TrainableTensorNetwork` ***type***, the ***water*** may be the
+***optimizer*** and its flow rate is the ***learning rate***, and the ***sunshine*** is the set of
+***target variables***, shining down through the `LossFunction`.
+
 ## Future Directions
 
 ### Interpretability API
@@ -1260,7 +1288,8 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 
 - ***Softmax*** — [
   `template<size_t Axis, float Temp = 1.f, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...> &x)`](src/TTTN_ML.hpp)
-    - Given an `Axis` on which to normalize, perform `Softmax` normalization with optional temperature `Temp` (default `1.f`)
+    - Given an `Axis` on which to normalize, perform `Softmax` normalization with optional temperature `Temp` (default
+      `1.f`)
     - When `Temp != 1`, input is scaled by `1/Temp` before the standard softmax: `softmax(x / Temp)`
     - Elegantly calls
       `BroadcastReduceMove<Axis, Div, Add>(BroadcastReduce<Axis, Compose<Exp, Sub>, Max>(scaled))` to first map to
@@ -1303,7 +1332,8 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 
 - ***SoftmaxLayer*** - [`template<size_t Axis, float Temp = 1.f> struct SoftmaxLayer`](src/TTTN_ML.hpp)
     - `BlockRecipe`-compliant recipe struct to create `Block SoftmaxBlock`
-    - Pass in `Axis` of normalization and optional `Temp` (softmax temperature, default `1.f`); tensor shape is deduced from `InputT`
+    - Pass in `Axis` of normalization and optional `Temp` (softmax temperature, default
+      `1.f`); tensor shape is deduced from `InputT`
 
 ---
 
@@ -1524,10 +1554,12 @@ All Adam hyperparameters and per-network bias-correction state in one place. TTN
 
 
 - ***Param::save*** - [`void Param::save(std::ofstream &f) const`](src/NetworkUtil.hpp)
-    - Calls `Tensor::Save` on `value`, `m`, and `v` — full Adam state round-trip so incremental training resumes cleanly across runs
+    - Calls `Tensor::Save` on `value`, `m`, and
+      `v` — full Adam state round-trip so incremental training resumes cleanly across runs
 
 - ***Param::load*** - [`void Param::load(std::ifstream &f)`](src/NetworkUtil.hpp)
-    - Calls `Tensor::Load` on `value`, `m`, and `v` — full Adam state round-trip so incremental training resumes cleanly across runs
+    - Calls `Tensor::Load` on `value`, `m`, and
+      `v` — full Adam state round-trip so incremental training resumes cleanly across runs
 
 ### Free Concepts and Functions on Param
 
@@ -2015,13 +2047,17 @@ Thin wrapper around `BlockSequence<Blocks...>` that adds an
 
 - ***TrainableTensorNetwork::Save*** - [
   `void TrainableTensorNetwork::Save(const std::string &path) const`](src/TrainableTensorNetwork.hpp)
-    - Delegates block params (including per-`Param` Adam moments `m`, `v`) to `BlockSequence::Save`, then reopens the file in append mode and writes the `mAdam_` POD trailer (`beta1`, `beta2`, `eps`, `mCorr`, `vCorr`, `t`)
+    - Delegates block params (including per-`Param` Adam moments `m`, `v`) to
+      `BlockSequence::Save`, then reopens the file in append mode and writes the `mAdam_` POD trailer (`beta1`, `beta2`,
+      `eps`, `mCorr`, `vCorr`, `t`)
     - Single-file format: `[block0 params][block1 params]...[blockN params][AdamState]`
     - Full optimizer round-trip — incremental training across runs resumes exactly where it left off
 
 - ***TrainableTensorNetwork::Load*** - [
   `void TrainableTensorNetwork::Load(const std::string &path)`](src/TrainableTensorNetwork.hpp)
-    - Delegates block params to `BlockSequence::Load` (compile-time shapes determine exact byte count consumed), then seeks to `end - sizeof(AdamState)` and reads the trailer back into `mAdam_`
+    - Delegates block params to
+      `BlockSequence::Load` (compile-time shapes determine exact byte count consumed), then seeks to
+      `end - sizeof(AdamState)` and reads the trailer back into `mAdam_`
     - Inverse of `Save` — restores weights, per-parameter Adam moments, and global Adam state in one call
 
 - ***TrainableTensorNetwork::Snap*** - [
@@ -2331,7 +2367,8 @@ DenseMD block which contracts the trailing (non-map) axes, doing so separately a
     - Size contracted in each copy at each **map** index product
     - `ContractSize = SeqProduct<ContractSeq_>::value`
 
-- ***MapDenseMDBlock::lc_*** - [`mutable LearnedContraction<InputTensor, OutputTensor, N_map> MapDenseMDBlock::lc_`](src/Dense.hpp)
+- ***MapDenseMDBlock::lc_*** - [
+  `mutable LearnedContraction<InputTensor, OutputTensor, N_map> MapDenseMDBlock::lc_`](src/Dense.hpp)
     - Wrap `Tensor` of type `W_Type` into `Param` object
 
 - ***MapDenseMDBlock::b_*** - [`Param<BiasType> MapDenseMDBlock::b_`](src/Dense.hpp)
@@ -2425,16 +2462,20 @@ Implements scaled dot-product **mult-head self-attention
     - Attended values after softmax-weighted sum (between attention pattern and `W_O` transformation)
     - `[Heads, SeqLen, HeadDim]`
 
-- ***MultiHeadAttentionBlock::lc_Q_*** - [`mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_Q_`](src/Attention.hpp)
+- ***MultiHeadAttentionBlock::lc_Q_*** - [
+  `mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_Q_`](src/Attention.hpp)
     - Query projection `LearnedContraction`; weight accessed via `lc_Q_.W_`
 
-- ***MultiHeadAttentionBlock::lc_K_*** - [`mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_K_`](src/Attention.hpp)
+- ***MultiHeadAttentionBlock::lc_K_*** - [
+  `mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_K_`](src/Attention.hpp)
     - Key projection `LearnedContraction`; weight accessed via `lc_K_.W_`
 
-- ***MultiHeadAttentionBlock::lc_V_*** - [`mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_V_`](src/Attention.hpp)
+- ***MultiHeadAttentionBlock::lc_V_*** - [
+  `mutable LearnedContraction<InputTensor, QKV_Type, 1> MultiHeadAttentionBlock::lc_V_`](src/Attention.hpp)
     - Value projection `LearnedContraction`; weight accessed via `lc_V_.W_`
 
-- ***MultiHeadAttentionBlock::lc_O_*** - [`mutable LearnedContraction<QKV_Type, OutputTensor, 1> MultiHeadAttentionBlock::lc_O_`](src/Attention.hpp)
+- ***MultiHeadAttentionBlock::lc_O_*** - [
+  `mutable LearnedContraction<QKV_Type, OutputTensor, 1> MultiHeadAttentionBlock::lc_O_`](src/Attention.hpp)
     - Output projection `LearnedContraction`; weight accessed via `lc_O_.W_`
 
 - ***MultiHeadAttentionBlock::X_cache_*** - [`mutable InputTensor MultiHeadAttentionBlock::X_cache_`](src/Attention.hpp)
@@ -3032,7 +3073,8 @@ Implementation is purely a composition; all detailed work is handled by denizen 
 
 - ***TransformerBlock::peek*** - [
   `void TransformerBlock::peek(SnapshotMap &out, const std::string &prefix) const`](src/TransformerBlock.hpp)
-    - Forwards peek to `inner_`, propagating the prefix so nested peekable blocks (e.g. `MultiHeadAttentionBlock`) are reachable
+    - Forwards peek to `inner_`, propagating the prefix so nested peekable blocks (e.g.
+      `MultiHeadAttentionBlock`) are reachable
 
 - ***TransformerBlock::all_params*** - [`auto TransformerBlock::all_params()`](src/TransformerBlock.hpp)
     - Return `std::tuple` from `inner_.all_params()`
@@ -3057,7 +3099,8 @@ Implementation is purely a composition; all detailed work is handled by denizen 
   `template<size_t Batch> auto TransformerBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type`](src/TransformerBlock.hpp)
     - Batched backward pass, simply: `inner_.template BatchedBackward<Batch>(delta_A, a, a_prev)`
 
-- ***Transformer*** - [`template<size_t Heads, size_t FFNHidden, bool PreNorm, bool Masked> struct Transformer`](src/TransformerBlock.hpp)
+- ***Transformer*** - [
+  `template<size_t Heads, size_t FFNHidden, bool PreNorm, bool Masked> struct Transformer`](src/TransformerBlock.hpp)
     - `BlockRecipe` struct for building a `TransformerBlock`
     - Parameterized by `Heads`, `FFNHidden`, `PreNorm` (default `true`), and `Masked` (default `false`)
     - Remaining dimensions (`SeqLen`, `EmbDim`) are deduced from `InputT` passed to `Resolve`
