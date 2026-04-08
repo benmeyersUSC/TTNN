@@ -58,13 +58,17 @@ namespace TTTN {
             });
         }
 
-        // @doc: void Param::save(std::ofstream &f) const
-        /** Call `Tensor::Save` on `value` */
-        void save(std::ofstream &f) const { value.Save(f); }
+        void save(std::ofstream &f) const {
+            value.Save(f);
+            m.Save(f);
+            v.Save(f);
+        }
 
-        // @doc: void Param::save(std::ifstream &f)
-        /** Call `Tensor::Load` on `value` */
-        void load(std::ifstream &f) { value.Load(f); }
+        void load(std::ifstream &f) {
+            value.Load(f);
+            m.Load(f);
+            v.Load(f);
+        }
     };
 
     template<typename T>

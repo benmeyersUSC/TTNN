@@ -161,13 +161,23 @@ namespace TTTN {
         /** Delegates to `BlockSequence::Snap` */
         [[nodiscard]] SnapshotMap Snap() const { return mSeq_.Snap(); }
 
-        // @doc: void TrainableTensorNetwork::Save(const std::string &path) const
-        /** Delegates to `BlockSequence::Save` */
-        void Save(const std::string &path) const { mSeq_.Save(path); }
+        void Save(const std::string &path) const {
+            mSeq_.Save(path);
+            std::ofstream f(path, std::ios::binary | std::ios::app);
+            if (!f) throw std::runtime_error("Cannot append Adam state: " + path);
+            f.write(reinterpret_cast<const char*>(&mAdam_), sizeof(AdamState));
+        }
 
-        // @doc: void TrainableTensorNetwork::Load(const std::string &path)
-        /** Delegates to `BlockSequence::Load` */
-        void Load(const std::string &path) { mSeq_.Load(path); }
+        void Load(const std::string &path) {
+            mSeq_.Load(path);
+            std::ifstream f(path, std::ios::binary);
+            if (!f) throw std::runtime_error("Cannot read Adam state: " + path);
+            // seek to the Adam trailer at EOF - sizeof(AdamState)
+            f.seekg(0, std::ios::end);
+            const auto end = f.tellg();
+            f.seekg(end - static_cast<std::streamoff>(sizeof(AdamState)));
+            f.read(reinterpret_cast<char*>(&mAdam_), sizeof(AdamState));
+        }
 
 
         // @doc: void TrainableTensorNetwork::TrainStep(const InputTensor &x, const OutputTensor &grad, const float lr)

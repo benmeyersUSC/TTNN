@@ -1524,10 +1524,10 @@ All Adam hyperparameters and per-network bias-correction state in one place. TTN
 
 
 - ***Param::save*** - [`void Param::save(std::ofstream &f) const`](src/NetworkUtil.hpp)
-    - Call `Tensor::Save` on `value`
+    - Calls `Tensor::Save` on `value`, `m`, and `v` — full Adam state round-trip so incremental training resumes cleanly across runs
 
-- ***Param::save*** - [`void Param::save(std::ifstream &f)`](src/NetworkUtil.hpp)
-    - Call `Tensor::Load` on `value`
+- ***Param::load*** - [`void Param::load(std::ifstream &f)`](src/NetworkUtil.hpp)
+    - Calls `Tensor::Load` on `value`, `m`, and `v` — full Adam state round-trip so incremental training resumes cleanly across runs
 
 ### Free Concepts and Functions on Param
 
@@ -2015,11 +2015,14 @@ Thin wrapper around `BlockSequence<Blocks...>` that adds an
 
 - ***TrainableTensorNetwork::Save*** - [
   `void TrainableTensorNetwork::Save(const std::string &path) const`](src/TrainableTensorNetwork.hpp)
-    - Delegates to `BlockSequence::Save`
+    - Delegates block params (including per-`Param` Adam moments `m`, `v`) to `BlockSequence::Save`, then reopens the file in append mode and writes the `mAdam_` POD trailer (`beta1`, `beta2`, `eps`, `mCorr`, `vCorr`, `t`)
+    - Single-file format: `[block0 params][block1 params]...[blockN params][AdamState]`
+    - Full optimizer round-trip — incremental training across runs resumes exactly where it left off
 
 - ***TrainableTensorNetwork::Load*** - [
   `void TrainableTensorNetwork::Load(const std::string &path)`](src/TrainableTensorNetwork.hpp)
-    - Delegates to `BlockSequence::Load`
+    - Delegates block params to `BlockSequence::Load` (compile-time shapes determine exact byte count consumed), then seeks to `end - sizeof(AdamState)` and reads the trailer back into `mAdam_`
+    - Inverse of `Save` — restores weights, per-parameter Adam moments, and global Adam state in one call
 
 - ***TrainableTensorNetwork::Snap*** - [
   `[[nodiscard]] SnapshotMap TrainableTensorNetwork::Snap() const`](src/TrainableTensorNetwork.hpp)
