@@ -282,6 +282,39 @@ namespace TTTN {
     };
 
 
+    template<size_t PadId>
+    struct SequenceCEL {
+        template<size_t SeqLen, size_t Vocab>
+        static Tensor<> Loss(const Tensor<SeqLen, Vocab> &pred, const Tensor<SeqLen, Vocab> &target) {
+            static_assert(PadId < Vocab, "PadId out of Vocab range");
+            // mask[t] = 1 - target[t, PadId]; 1 at non-PAD positions, 0 at PAD positions
+            Tensor<SeqLen> mask;
+            for (size_t t = 0; t < SeqLen; ++t) mask.flat(t) = 1.f - target.flat(t * Vocab + PadId);
+            const float n_nonpad = std::max(Reduce<0, Add>(mask), 1.f);
+            // per-position CE: -sum_v target[t,v] * log(clamp(pred[t,v]))  ->  Tensor<SeqLen>
+            const auto logp = Map<Compose<Log, Clamp<EPS> > >(pred);
+            const auto per_pos = Reduce<1, Add>(target * logp) * -1.f;
+            Tensor<> s;
+            s.flat(0) = Reduce<0, Add>(per_pos * mask) / n_nonpad;
+            return s;
+        }
+
+        template<size_t SeqLen, size_t Vocab>
+        static Tensor<SeqLen, Vocab> Grad(const Tensor<SeqLen, Vocab> &pred, const Tensor<SeqLen, Vocab> &target) {
+            static_assert(PadId < Vocab, "PadId out of Vocab range");
+            Tensor<SeqLen> mask;
+            for (size_t t = 0; t < SeqLen; ++t) mask.flat(t) = 1.f - target.flat(t * Vocab + PadId);
+            const float n_nonpad = std::max(Reduce<0, Add>(mask), 1.f);
+            // base grad: -target / clamp(pred), normalized by non-PAD count
+            auto g = Zip<Compose<Neg, Div> >(target, Map<Clamp<EPS> >(pred));
+            g *= (1.f / n_nonpad);
+            // zero out PAD positions: broadcast mask along Vocab axis (axis 1)
+            BroadcastApply<1, Mul>(g, mask);
+            return g;
+        }
+    };
+
+
     // @doc: template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels)
     /**
      * Computes accuracy for `Tensor`s organized in a batched `Tensor`

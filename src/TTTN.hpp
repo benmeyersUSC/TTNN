@@ -10,4 +10,5 @@
 #include "TransformerBlock.hpp"
 #include "DataIO.hpp"
 #include "BranchTrainer.hpp"
+#include "EncoderDecoder.hpp"
 
