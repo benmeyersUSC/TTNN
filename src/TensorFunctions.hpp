@@ -427,4 +427,25 @@ namespace TTTN {
         }();
         X.zip_apply(pe, Add{});
     }
+
+
+    // @doc: template<size_t InSeqLen, size_t OutSeqLen, size_t EmbDim> static void Unpack(const Tensor<InSeqLen + OutSeqLen, EmbDim> &x, Tensor<OutSeqLen, EmbDim> &q_out, Tensor<InSeqLen, EmbDim> &kv_out)
+    /** Unpack a packed `Tensor` into denizen sub-`Tensor`s passed by reference */
+    template<size_t InSeqLen, size_t OutSeqLen, size_t EmbDim>
+    static void Unpack(const Tensor<InSeqLen + OutSeqLen, EmbDim> &x, Tensor<OutSeqLen, EmbDim> &q_out,
+                       Tensor<InSeqLen, EmbDim> &kv_out) {
+        std::copy_n(x.data(), Tensor<OutSeqLen, EmbDim>::Size, q_out.data());
+        std::copy_n(x.data() + Tensor<OutSeqLen, EmbDim>::Size, Tensor<InSeqLen, EmbDim>::Size, kv_out.data());
+    }
+
+    // @doc: template<size_t InSeqLen, size_t OutSeqLen, size_t EmbDim> static Tensor<InSeqLen + OutSeqLen, EmbDim> Pack(const Tensor<OutSeqLen, EmbDim> &q, const Tensor<InSeqLen, EmbDim> &kv)
+    /** Pack two `Tensor`s with a shared dimension (`size_t EmbDim`) into composite `Tensor<q::Shape[0] + kv::Shape[0], EmbDims>` */
+    template<size_t InSeqLen, size_t OutSeqLen, size_t EmbDim>
+    static Tensor<InSeqLen + OutSeqLen, EmbDim> Pack(const Tensor<OutSeqLen, EmbDim> &q,
+                                                     const Tensor<InSeqLen, EmbDim> &kv) {
+        Tensor<InSeqLen + OutSeqLen, EmbDim> out{};
+        std::copy_n(q.data(), Tensor<OutSeqLen, EmbDim>::Size, out.data());
+        std::copy_n(kv.data(), Tensor<InSeqLen, EmbDim>::Size, out.data() + Tensor<OutSeqLen, EmbDim>::Size);
+        return out;
+    }
 }

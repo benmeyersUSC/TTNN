@@ -756,6 +756,16 @@ Default-constructible callable structs satisfying `FloatBinaryOp` or
         - `PE[pos][j] = sin(pos * freq)` if `j` even, `cos(pos * freq)` if `j` odd
     - PE tensor depends only on template parameters — computed once as a `static` local and added via `zip_apply`
 
+
+- ***Unpack*** - [
+  `template<size_t InSeqLen, size_t OutSeqLen, size_t EmbDim> static void Unpack(const Tensor<InSeqLen + OutSeqLen, EmbDim> &x, Tensor<OutSeqLen, EmbDim> &q_out, Tensor<InSeqLen, EmbDim> &kv_out)`](src/TensorFunctions.hpp)
+    - Unpack a packed `Tensor` into denizen sub-`Tensor`s passed by reference
+
+- ***Pack*** - [
+  `template<size_t InSeqLen, size_t OutSeqLen, size_t EmbDim> static Tensor<InSeqLen + OutSeqLen, EmbDim> Pack(const Tensor<OutSeqLen, EmbDim> &q, const Tensor<InSeqLen, EmbDim> &kv)`](src/TensorFunctions.hpp)
+    - Pack two `Tensor`s with a shared dimension (`size_t EmbDim`) into composite
+      `Tensor<q::Shape[0] + kv::Shape[0], EmbDims>`
+
 ---
 
 ## [TensorOps.hpp](src/TensorOps.hpp): Element-wise Primitives
@@ -1392,17 +1402,25 @@ Defined in [TTTN_ML.hpp](src/TTTN_ML.hpp). Each tag satisfies both `FloatUnaryOp
 #### `template<size_t PadId> struct SequenceCEL`
 
 - ***SequenceCEL*** - [`template<size_t PadId> struct SequenceCEL`](src/TTTN_ML.hpp)
-    - `LossFunction`-shaped struct for ***Sequence Cross Entropy*** with PAD masking — designed for autoregressive / encoder-decoder transformer training where target sequences are padded out to a fixed length
-    - `PadId` is a compile-time template parameter; positions whose target one-hot is `1` at index `PadId` are excluded from both the loss value and the gradient
-    - Loss is normalized by the count of non-PAD positions in the sample (not by `SeqLen`), so each sample contributes equally regardless of how much of its sequence is real
+    - `LossFunction`-shaped struct for***Sequence Cross Entropy
+      *** with PAD masking — designed for autoregressive / encoder-decoder transformer training where target sequences are padded out to a fixed length
+    - `PadId` is a compile-time template parameter; positions whose target one-hot is `1` at index
+      `PadId` are excluded from both the loss value and the gradient
+    - Loss is normalized by the count of non-PAD positions in the sample (not by
+      `SeqLen`), so each sample contributes equally regardless of how much of its sequence is real
 
 - ***SequenceCEL::Loss*** - [
   `template<size_t SeqLen, size_t Vocab> static Tensor<> SequenceCEL::Loss(const Tensor<SeqLen, Vocab> &pred, const Tensor<SeqLen, Vocab> &target)`](src/TTTN_ML.hpp)
-    - Builds `mask: Tensor<SeqLen>` as `1 - target[t, PadId]`, computes per-position CE `-sum_v target[t,v] * log(clamp(pred[t,v]))` via `Reduce<1, Add>(target * Map<Compose<Log, Clamp<EPS>>>(pred)) * -1`, then sums `per_pos * mask` and divides by the non-PAD count (clamped to `>= 1` to avoid division by zero on all-PAD samples)
+    - Builds `mask: Tensor<SeqLen>` as `1 - target[t, PadId]`, computes per-position CE
+      `-sum_v target[t,v] * log(clamp(pred[t,v]))` via
+      `Reduce<1, Add>(target * Map<Compose<Log, Clamp<EPS>>>(pred)) * -1`, then sums
+      `per_pos * mask` and divides by the non-PAD count (clamped to `>= 1` to avoid division by zero on all-PAD samples)
 
 - ***SequenceCEL::Grad*** - [
   `template<size_t SeqLen, size_t Vocab> static Tensor<SeqLen, Vocab> SequenceCEL::Grad(const Tensor<SeqLen, Vocab> &pred, const Tensor<SeqLen, Vocab> &target)`](src/TTTN_ML.hpp)
-    - Same `mask`/`n_nonpad` setup as `Loss`. Computes base grad `-target / clamp(pred)` via `Zip<Compose<Neg, Div>>`, scales by `1 / n_nonpad`, then zeros out PAD-position rows by `BroadcastApply<1, Mul>(g, mask)` (broadcasting the per-position mask along the `Vocab` axis)
+    - Same `mask`/`n_nonpad` setup as `Loss`. Computes base grad `-target / clamp(pred)` via
+      `Zip<Compose<Neg, Div>>`, scales by `1 / n_nonpad`, then zeros out PAD-position rows by
+      `BroadcastApply<1, Mul>(g, mask)` (broadcasting the per-position mask along the `Vocab` axis)
 
 #### `BatchAccuracy`
 
