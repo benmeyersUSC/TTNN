@@ -164,14 +164,12 @@ namespace TTTN {
         void Save(const std::string &path) const {
             mSeq_.Save(path);
             std::ofstream f(path, std::ios::binary | std::ios::app);
-            if (!f) throw std::runtime_error("Cannot append Adam state: " + path);
             f.write(reinterpret_cast<const char*>(&mAdam_), sizeof(AdamState));
         }
 
         void Load(const std::string &path) {
             mSeq_.Load(path);
             std::ifstream f(path, std::ios::binary);
-            if (!f) throw std::runtime_error("Cannot read Adam state: " + path);
             // seek to the Adam trailer at EOF - sizeof(AdamState)
             f.seekg(0, std::ios::end);
             const auto end = f.tellg();

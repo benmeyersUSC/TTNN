@@ -434,6 +434,115 @@ namespace TTTN {
     };
 
 
+    template<size_t SeqLenQ, size_t SeqLenKV, size_t Heads, size_t EmbDim>
+    class MultiHeadCrossAttentionBlock {
+    public:
+        // Block concept surface: packed input [Q rows ; KV rows], single-EmbDim trailing axis
+        using InputTensor  = Tensor<SeqLenQ + SeqLenKV, EmbDim>;
+        using OutputTensor = Tensor<SeqLenQ, EmbDim>;
+
+        // internal half-tensor types (the unpacked views the block actually operates on)
+        using QSideTensor  = Tensor<SeqLenQ,  EmbDim>;
+        using KVSideTensor = Tensor<SeqLenKV, EmbDim>;
+
+        static constexpr size_t EmbSize = EmbDim;
+        static constexpr size_t HeadDim = EmbDim / Heads;
+        static_assert(EmbDim % Heads == 0,
+                      "Heads must be a factor of EmbDim");
+
+        using W_Q_Type   = Tensor<Heads, HeadDim, EmbDim>;
+        using W_KV_Type  = Tensor<Heads, HeadDim, EmbDim>;
+        using W_O_Type   = Tensor<EmbDim, Heads, HeadDim>;
+
+        using QProj_Type  = Tensor<SeqLenQ,  Heads, HeadDim>;
+        using KVProj_Type = Tensor<SeqLenKV, Heads, HeadDim>;
+        using Scores_Type = Tensor<Heads, SeqLenQ, SeqLenKV>;
+        using Attended_Type = Tensor<Heads, SeqLenQ, HeadDim>;
+
+    private:
+        // Q projection: Tensor<SeqLenQ, EmbDim> -> Tensor<SeqLenQ, Heads, HeadDim>
+        mutable LearnedContraction<QSideTensor,  QProj_Type,  1> lc_Q_;
+        // K, V projections: Tensor<SeqLenKV, EmbDim> -> Tensor<SeqLenKV, Heads, HeadDim>
+        mutable LearnedContraction<KVSideTensor, KVProj_Type, 1> lc_K_, lc_V_;
+        // O projection: Tensor<SeqLenQ, Heads, HeadDim> -> Tensor<SeqLenQ, EmbDim>
+        mutable LearnedContraction<QProj_Type,   OutputTensor, 1> lc_O_;
+
+        // forward caches (mirroring MultiHeadAttentionBlock conventions)
+        mutable QSideTensor   Q_in_cache_{};
+        mutable KVSideTensor  KV_in_cache_{};
+        mutable QProj_Type    Q_{};
+        mutable KVProj_Type   K_{};
+        mutable KVProj_Type   V_{};
+        mutable Scores_Type   attn_weights_{};
+        mutable Attended_Type attended_{};
+
+    public:
+        auto all_params()       { return std::tie(lc_Q_.W_, lc_K_.W_, lc_V_.W_, lc_O_.W_); }
+        auto all_params() const { return std::tie(lc_Q_.W_, lc_K_.W_, lc_V_.W_, lc_O_.W_); }
+
+        const Scores_Type &attn_weights() const { return attn_weights_; }
+
+        void peek(SnapshotMap &out, const std::string &prefix) const {
+            snap_add(out, prefix + "cross_attn_weights", attn_weights_);
+        }
+
+        MultiHeadCrossAttentionBlock() = default;
+
+        // ---- helpers: split a packed input into its Q-side and KV-side halves, and stitch back ----
+        static void Unpack(const InputTensor &x, QSideTensor &q_out, KVSideTensor &kv_out) {
+            std::copy_n(x.data(),                      QSideTensor::Size,  q_out.data());
+            std::copy_n(x.data() + QSideTensor::Size,  KVSideTensor::Size, kv_out.data());
+        }
+        static InputTensor Pack(const QSideTensor &q, const KVSideTensor &kv) {
+            InputTensor out{};
+            std::copy_n(q.data(),  QSideTensor::Size,  out.data());
+            std::copy_n(kv.data(), KVSideTensor::Size, out.data() + QSideTensor::Size);
+            return out;
+        }
+
+        // ---- Block::Forward ----
+        OutputTensor Forward(const InputTensor &/*x*/) const {
+            // TODO: Unpack(x, Q_in_cache_, KV_in_cache_);
+            //       Q_ = Q_in_cache_  >> lc_Q_;
+            //       K_ = KV_in_cache_ >> lc_K_;
+            //       V_ = KV_in_cache_ >> lc_V_;
+            //       scores = BatchContract<...>(Q_, K_) * inv_sqrt;   // [Heads, SeqLenQ, SeqLenKV]
+            //       attn_weights_ = Softmax<2>(scores);
+            //       attended_ = BatchContract<...>(attn_weights_, V_); // [Heads, SeqLenQ, HeadDim]
+            //       return Permute<1,0,2>(attended_) >> lc_O_;
+            return OutputTensor{};
+        }
+
+        // ---- Block::Backward — returns packed [dQ_in ; dKV_in] ----
+        InputTensor Backward(const OutputTensor &/*delta_A*/,
+                             const OutputTensor &/*a*/,
+                             const InputTensor  &/*a_prev*/) {
+            // TODO: mirror MultiHeadAttentionBlock::Backward, but Q and KV come from different sources:
+            //       - dQ_side  flows through lc_Q_ << ... -> QSideTensor
+            //       - dKV_side accumulates lc_K_ << ... and lc_V_ << ... -> KVSideTensor
+            //       - return Pack(dQ_side, dKV_side)
+            return InputTensor{};
+        }
+
+        // ---- batched variants ----
+        template<size_t Batch>
+        Tensor<Batch, SeqLenQ, EmbDim> BatchedForward(
+            const Tensor<Batch, SeqLenQ + SeqLenKV, EmbDim> &/*X*/) const {
+            // TODO: batched analogue of Forward; split along axis 1 into [B, SeqLenQ, EmbDim] and [B, SeqLenKV, EmbDim]
+            return Tensor<Batch, SeqLenQ, EmbDim>{};
+        }
+
+        template<size_t Batch>
+        Tensor<Batch, SeqLenQ + SeqLenKV, EmbDim> BatchedBackward(
+            const Tensor<Batch, SeqLenQ, EmbDim> &/*delta_A*/,
+            const Tensor<Batch, SeqLenQ, EmbDim> &/*a*/,
+            const Tensor<Batch, SeqLenQ + SeqLenKV, EmbDim> &/*a_prev*/) {
+            // TODO: batched analogue of Backward; stitch dQ and dKV halves back into a [B, SeqLenQ+SeqLenKV, EmbDim] tensor
+            return Tensor<Batch, SeqLenQ + SeqLenKV, EmbDim>{};
+        }
+    };
+
+
     // @doc: template<size_t Heads, size_t... EmbDims> struct MHAttention
     /**
      * `BlockRecipe` for unmasked `MultiHeadAttentionBlock`
