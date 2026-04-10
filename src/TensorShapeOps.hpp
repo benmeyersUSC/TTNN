@@ -292,4 +292,23 @@ namespace TTTN {
     struct PrependOnes<N, Tensor<Dims...> > {
         using type = PrependOnes<N - 1, Tensor<1, Dims...> >::type;
     };
+
+
+    template<size_t Axis, size_t NewVal, typename T>
+    struct ReplaceAxisDims;
+
+    // @doc: template<size_t Axis, size_t NewVal, size_t... Dims> struct ReplaceAxisDims<Axis, NewVal, Tensor<Dims...>>
+    /** Helper to define a `Tensor` type, whose shape is `size_t...Dims` reorganized according to the indices specified by `size_t...Perm` */
+    template<size_t Axis, size_t NewVal, size_t... Dims>
+    struct ReplaceAxisDims<Axis, NewVal, Tensor<Dims...>> {
+        static_assert(Axis < sizeof...(Dims), "Axis out of range");
+        struct Holder {
+            static constexpr auto value = [] {
+                std::array<size_t, sizeof...(Dims)> r = {Dims...};
+                r[Axis] = NewVal;
+                return r;
+            }();
+        };
+        using type = ArrayToTensor<Holder, std::make_index_sequence<sizeof...(Dims)>>::type;
+    };
 }

@@ -429,23 +429,75 @@ namespace TTTN {
     }
 
 
-    // @doc: template<size_t InSeqLen, size_t OutSeqLen, size_t EmbDim> static void Unpack(const Tensor<InSeqLen + OutSeqLen, EmbDim> &x, Tensor<OutSeqLen, EmbDim> &q_out, Tensor<InSeqLen, EmbDim> &kv_out)
-    /** Unpack a packed `Tensor` into denizen sub-`Tensor`s passed by reference */
-    template<size_t InSeqLen, size_t OutSeqLen, size_t EmbDim>
-    static void Unpack(const Tensor<InSeqLen + OutSeqLen, EmbDim> &x, Tensor<OutSeqLen, EmbDim> &q_out,
-                       Tensor<InSeqLen, EmbDim> &kv_out) {
-        std::copy_n(x.data(), Tensor<OutSeqLen, EmbDim>::Size, q_out.data());
-        std::copy_n(x.data() + Tensor<OutSeqLen, EmbDim>::Size, Tensor<InSeqLen, EmbDim>::Size, kv_out.data());
+    // @doc: template<size_t Axis, size_t... ADims, size_t... BDims> auto ConcatAxis(const Tensor<ADims...> &a, const Tensor<BDims...> &b)
+    /** Apply a `FloatUnaryOp` inplace */
+    template<size_t Axis, size_t... ADims, size_t... BDims>
+    auto ConcatAxis(const Tensor<ADims...> &a, const Tensor<BDims...> &b) {
+        constexpr size_t Rank = sizeof...(ADims);
+        static_assert(sizeof...(BDims) == Rank, "ConcatAxis: rank must match");
+        static_assert(Axis < Rank, "ConcatAxis: Axis out of range");
+        constexpr std::array<size_t, Rank> ad = {ADims...};
+        constexpr std::array<size_t, Rank> bd = {BDims...};
+        static_assert([] {
+            constexpr std::array<size_t, Rank> a = {ADims...}, b = {BDims...};
+            for (size_t i = 0; i < Rank; ++i)
+                if (i != Axis && a[i] != b[i]) return false;
+            return true;
+        }(), "ConcatAxis: all dims except Axis must match");
+
+        using ResultT = ReplaceAxisDims<Axis, ad[Axis] + bd[Axis], Tensor<ADims...>>::type;
+        ResultT out;
+
+        constexpr size_t trailing = [] {
+            constexpr std::array<size_t, Rank> d = {ADims...};
+            size_t p = 1;
+            for (size_t i = Axis + 1; i < Rank; ++i) p *= d[i];
+            return p;
+        }();
+        constexpr size_t a_slab = ad[Axis] * trailing;
+        constexpr size_t b_slab = bd[Axis] * trailing;
+        constexpr size_t out_slab = a_slab + b_slab;
+        constexpr size_t leading = Tensor<ADims...>::Size / a_slab;
+
+        for (size_t i = 0; i < leading; ++i) {
+            std::copy_n(a.data() + i * a_slab, a_slab, out.data() + i * out_slab);
+            std::copy_n(b.data() + i * b_slab, b_slab, out.data() + i * out_slab + a_slab);
+        }
+        return out;
     }
 
-    // @doc: template<size_t InSeqLen, size_t OutSeqLen, size_t EmbDim> static Tensor<InSeqLen + OutSeqLen, EmbDim> Pack(const Tensor<OutSeqLen, EmbDim> &q, const Tensor<InSeqLen, EmbDim> &kv)
-    /** Pack two `Tensor`s with a shared dimension (`size_t EmbDim`) into composite `Tensor<q::Shape[0] + kv::Shape[0], EmbDims>` */
-    template<size_t InSeqLen, size_t OutSeqLen, size_t EmbDim>
-    static Tensor<InSeqLen + OutSeqLen, EmbDim> Pack(const Tensor<OutSeqLen, EmbDim> &q,
-                                                     const Tensor<InSeqLen, EmbDim> &kv) {
-        Tensor<InSeqLen + OutSeqLen, EmbDim> out{};
-        std::copy_n(q.data(), Tensor<OutSeqLen, EmbDim>::Size, out.data());
-        std::copy_n(kv.data(), Tensor<InSeqLen, EmbDim>::Size, out.data() + Tensor<OutSeqLen, EmbDim>::Size);
-        return out;
+    // @doc: template<size_t Axis, size_t SplitN, size_t... Dims> auto SplitAxis(const Tensor<Dims...> &src)
+    /**
+     * Collapse `Tensor<Dims...>` to rank-1 `Tensor<Size>`
+     * Convenience wrapper around `Reshape<Size>`
+     */
+    template<size_t Axis, size_t SplitN, size_t... Dims>
+    auto SplitAxis(const Tensor<Dims...> &src) {
+        constexpr size_t Rank = sizeof...(Dims);
+        static_assert(Axis < Rank, "SplitAxis: Axis out of range");
+        constexpr std::array<size_t, Rank> dims = {Dims...};
+        static_assert(SplitN <= dims[Axis], "SplitAxis: SplitN exceeds axis dim");
+
+        using A = ReplaceAxisDims<Axis, SplitN, Tensor<Dims...>>::type;
+        using B = ReplaceAxisDims<Axis, dims[Axis] - SplitN, Tensor<Dims...>>::type;
+        A a;
+        B b;
+
+        constexpr size_t trailing = [] {
+            constexpr std::array<size_t, Rank> d = {Dims...};
+            size_t p = 1;
+            for (size_t i = Axis + 1; i < Rank; ++i) p *= d[i];
+            return p;
+        }();
+        constexpr size_t a_slab = SplitN * trailing;
+        constexpr size_t b_slab = (dims[Axis] - SplitN) * trailing;
+        constexpr size_t src_slab = a_slab + b_slab;
+        constexpr size_t leading = Tensor<Dims...>::Size / src_slab;
+
+        for (size_t i = 0; i < leading; ++i) {
+            std::copy_n(src.data() + i * src_slab, a_slab, a.data() + i * a_slab);
+            std::copy_n(src.data() + i * src_slab + a_slab, b_slab, b.data() + i * b_slab);
+        }
+        return std::pair{a, b};
     }
 }

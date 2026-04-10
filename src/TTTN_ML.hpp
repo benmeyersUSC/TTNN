@@ -290,7 +290,7 @@ namespace TTTN {
             // mask[t] = 1 - target[t, PadId]; 1 at non-PAD positions, 0 at PAD positions
             Tensor<SeqLen> mask;
             for (size_t t = 0; t < SeqLen; ++t) mask.flat(t) = 1.f - target.flat(t * Vocab + PadId);
-            const float n_nonpad = std::max(Reduce<0, Add>(mask), 1.f);
+            const float n_nonpad = std::max(Reduce<0, Add>(mask).flat(0), 1.f);
             // per-position CE: -sum_v target[t,v] * log(clamp(pred[t,v]))  ->  Tensor<SeqLen>
             const auto logp = Map<Compose<Log, Clamp<EPS> > >(pred);
             const auto per_pos = Reduce<1, Add>(target * logp) * -1.f;
@@ -304,13 +304,95 @@ namespace TTTN {
             static_assert(PadId < Vocab, "PadId out of Vocab range");
             Tensor<SeqLen> mask;
             for (size_t t = 0; t < SeqLen; ++t) mask.flat(t) = 1.f - target.flat(t * Vocab + PadId);
-            const float n_nonpad = std::max(Reduce<0, Add>(mask), 1.f);
+            const float n_nonpad = std::max(Reduce<0, Add>(mask).flat(0), 1.f);
             // base grad: -target / clamp(pred), normalized by non-PAD count
             auto g = Zip<Compose<Neg, Div> >(target, Map<Clamp<EPS> >(pred));
             g *= (1.f / n_nonpad);
             // zero out PAD positions: broadcast mask along Vocab axis (axis 1)
             BroadcastApply<1, Mul>(g, mask);
             return g;
+        }
+    };
+
+
+    // Sequence loss for networks whose output is raw logits [SeqLen, Vocab].
+    // Applies Softmax<1> per row internally, then token-wise CEL with PAD masking.
+    // Grad uses the combined softmax+CEL identity: (probs - target) / n_nonpad.
+    // Satisfies LossFunction<SequenceSoftmaxCEL<PadId>, Tensor<SeqLen,Vocab>>.
+    // Use with TrainableTensorNetwork::Fit when the last block outputs logits.
+    template<size_t PadId = 0>
+    struct SequenceSoftmaxCEL {
+        template<size_t SeqLen, size_t Vocab>
+        static Tensor<> Loss(const Tensor<SeqLen, Vocab> &logits, const Tensor<SeqLen, Vocab> &target) {
+            static_assert(PadId < Vocab, "PadId out of Vocab range");
+            return SequenceCEL<PadId>::Loss(Softmax<1>(logits), target);
+        }
+
+        template<size_t SeqLen, size_t Vocab>
+        static Tensor<SeqLen, Vocab> Grad(const Tensor<SeqLen, Vocab> &logits, const Tensor<SeqLen, Vocab> &target) {
+            static_assert(PadId < Vocab, "PadId out of Vocab range");
+            const auto probs = Softmax<1>(logits);
+            Tensor<SeqLen> mask;
+            for (size_t t = 0; t < SeqLen; ++t) mask.flat(t) = 1.f - target.flat(t * Vocab + PadId);
+            const float n_nonpad = std::max(Reduce<0, Add>(mask).flat(0), 1.f);
+            auto grad = (probs - target) * (1.f / n_nonpad);
+            BroadcastApply<1, Mul>(grad, mask);
+            return grad;
+        }
+    };
+
+
+    // General token-wise averaged loss wrapping any LossFunction.
+    // Applies L per-token position, averages over non-PAD positions.
+    // PAD detection: target[t, PadId] == 1 (one-hot convention).
+    // Satisfies LossFunction<TokenWiseLoss<L,PadId>, Tensor<SeqLen,Vocab>>.
+    template<typename L, size_t PadId = 0>
+    struct TokenWiseLoss {
+        template<size_t SeqLen, size_t Vocab>
+        requires LossFunction<L, Tensor<Vocab>>
+        static Tensor<> Loss(const Tensor<SeqLen, Vocab> &pred, const Tensor<SeqLen, Vocab> &target) {
+            float n_nonpad = 0.f;
+            for (size_t t = 0; t < SeqLen; ++t)
+                n_nonpad += 1.f - target.flat(t * Vocab + PadId);
+            n_nonpad = std::max(n_nonpad, 1.f);
+
+            float total = 0.f;
+            for (size_t t = 0; t < SeqLen; ++t) {
+                if (target.flat(t * Vocab + PadId) > 0.5f) continue;
+                Tensor<Vocab> pred_t, tgt_t;
+                for (size_t v = 0; v < Vocab; ++v) {
+                    pred_t.flat(v) = pred.flat(t * Vocab + v);
+                    tgt_t.flat(v) = target.flat(t * Vocab + v);
+                }
+                total += L::Loss(pred_t, tgt_t).flat(0);
+            }
+            Tensor<> s;
+            s.flat(0) = total / n_nonpad;
+            return s;
+        }
+
+        template<size_t SeqLen, size_t Vocab>
+        requires LossFunction<L, Tensor<Vocab>>
+        static Tensor<SeqLen, Vocab> Grad(const Tensor<SeqLen, Vocab> &pred, const Tensor<SeqLen, Vocab> &target) {
+            float n_nonpad = 0.f;
+            for (size_t t = 0; t < SeqLen; ++t)
+                n_nonpad += 1.f - target.flat(t * Vocab + PadId);
+            n_nonpad = std::max(n_nonpad, 1.f);
+
+            Tensor<SeqLen, Vocab> grad;
+            grad.fill(0.f);
+            for (size_t t = 0; t < SeqLen; ++t) {
+                if (target.flat(t * Vocab + PadId) > 0.5f) continue;
+                Tensor<Vocab> pred_t, tgt_t;
+                for (size_t v = 0; v < Vocab; ++v) {
+                    pred_t.flat(v) = pred.flat(t * Vocab + v);
+                    tgt_t.flat(v) = target.flat(t * Vocab + v);
+                }
+                const auto g_t = L::Grad(pred_t, tgt_t);
+                for (size_t v = 0; v < Vocab; ++v)
+                    grad.flat(t * Vocab + v) = g_t.flat(v) / n_nonpad;
+            }
+            return grad;
         }
     };
 

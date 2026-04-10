@@ -42,7 +42,6 @@ namespace TTTN {
         /** Size of parameter `Tensor` */
         static constexpr size_t Size = TensorT::Size;
 
-
         // @doc: void Param::zero_grad()
         /** Fill `grad` with `0.f` */
         void zero_grad() { grad.fill(0.f); }
@@ -124,6 +123,41 @@ namespace TTTN {
     template<IsParamTuple Tuple>
     void LoadAll(Tuple &&params, std::ifstream &f) {
         std::apply([&](auto &... p) { (p.load(f), ...); }, params);
+    }
+
+    // ---- free size queries ----
+    // bytes(x) / floats(x) work for any IsTensor, IsParam, or type with all_params().
+    // No per-class implementation needed — types get coverage by satisfying a concept.
+
+    // Leaf: raw Tensor storage
+    template<IsTensor T>
+    constexpr size_t bytes(const T&)  { return T::Size * sizeof(float); }
+    template<IsTensor T>
+    constexpr size_t floats(const T&) { return T::Size; }
+
+    // Leaf: Param stores value + grad + m + v (4 float tensors)
+    template<IsParam T>
+    constexpr size_t bytes(const T&)  { return 4 * T::Size * sizeof(float); }
+    template<IsParam T>
+    constexpr size_t floats(const T&) { return 4 * T::Size; }
+
+    // Interior: anything with all_params() -> IsParamTuple (blocks, sequences, networks, ...)
+    // Sums bytes()/floats() over every Param in the tuple.
+    template<typename T>
+        requires (!IsTensor<T> && !IsParam<T> &&
+                  requires(const T& t) { { t.all_params() } -> IsParamTuple; })
+    size_t bytes(const T& obj) {
+        return std::apply(
+            [](auto&&... ps) -> size_t { return (bytes(ps) + ... + size_t{0}); },
+            obj.all_params());
+    }
+    template<typename T>
+        requires (!IsTensor<T> && !IsParam<T> &&
+                  requires(const T& t) { { t.all_params() } -> IsParamTuple; })
+    size_t floats(const T& obj) {
+        return std::apply(
+            [](auto&&... ps) -> size_t { return (floats(ps) + ... + size_t{0}); },
+            obj.all_params());
     }
 
 

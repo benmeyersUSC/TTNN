@@ -356,4 +356,18 @@ namespace TTTN {
             }(std::make_index_sequence<N>{});
         }
     };
+
+    template<template<typename...> class Seq, typename B, typename Idx>
+    struct RepeatSeqImpl;
+
+    template<template<typename... Bs> class Seq, typename B, size_t... Is>
+        requires Block<B>
+    struct RepeatSeqImpl<Seq, B, std::index_sequence<Is...> > {
+        template<size_t>
+        using Same = B;
+        using type = Seq<Same<Is>...>;
+    };
+
+    template<typename B, size_t N> requires Block<B>
+    using RepeatedBlockSequence = RepeatSeqImpl<BlockSequence, B, std::make_index_sequence<N> >::type;
 } // namespace TTTN
