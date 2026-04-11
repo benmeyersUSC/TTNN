@@ -204,7 +204,9 @@ namespace TTTN {
             IsTensor<TensorT> &&
             requires
             {
-                { L::Loss(std::declval<const TensorT &>(), std::declval<const TensorT &>()) } -> std::same_as<Tensor<>>;
+                {
+                    L::Loss(std::declval<const TensorT &>(), std::declval<const TensorT &>())
+                } -> std::same_as<Tensor<> >;
                 { L::Grad(std::declval<const TensorT &>(), std::declval<const TensorT &>()) } -> std::same_as<TensorT>;
             };
 
@@ -220,7 +222,9 @@ namespace TTTN {
         template<size_t... Dims>
         static Tensor<> Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             static constexpr float Inv = 1.f / Tensor<Dims...>::Size;
-            Tensor<> s; s.flat(0) = Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv; return s;
+            Tensor<> s;
+            s.flat(0) = Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv;
+            return s;
         }
 
         // @doc: template<size_t... Dims> static Tensor<Dims...> MSE::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
@@ -244,8 +248,9 @@ namespace TTTN {
         template<size_t... Dims>
         static Tensor<> Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             const auto p_c = Map<Clamp<EPS, 1.f - EPS> >(pred);
-            Tensor<> s; s.flat(0) = -(Collapse<Mul, Add>(target, Map<Log>(p_c)) +
-                                      Collapse<Mul, Add>(Map<OneMinus>(target), Map<Compose<Log, OneMinus> >(p_c)));
+            Tensor<> s;
+            s.flat(0) = -(Collapse<Mul, Add>(target, Map<Log>(p_c)) +
+                          Collapse<Mul, Add>(Map<OneMinus>(target), Map<Compose<Log, OneMinus> >(p_c)));
             return s;
         }
 
@@ -270,7 +275,9 @@ namespace TTTN {
          */
         template<size_t... Dims>
         static Tensor<> Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
-            Tensor<> s; s.flat(0) = Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f; return s;
+            Tensor<> s;
+            s.flat(0) = Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f;
+            return s;
         }
 
         // @doc: template<size_t... Dims> static Tensor<Dims...> CEL::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
@@ -349,7 +356,7 @@ namespace TTTN {
     template<typename L, size_t PadId = 0>
     struct TokenWiseLoss {
         template<size_t SeqLen, size_t Vocab>
-        requires LossFunction<L, Tensor<Vocab>>
+            requires LossFunction<L, Tensor<Vocab> >
         static Tensor<> Loss(const Tensor<SeqLen, Vocab> &pred, const Tensor<SeqLen, Vocab> &target) {
             float n_nonpad = 0.f;
             for (size_t t = 0; t < SeqLen; ++t)
@@ -372,7 +379,7 @@ namespace TTTN {
         }
 
         template<size_t SeqLen, size_t Vocab>
-        requires LossFunction<L, Tensor<Vocab>>
+            requires LossFunction<L, Tensor<Vocab> >
         static Tensor<SeqLen, Vocab> Grad(const Tensor<SeqLen, Vocab> &pred, const Tensor<SeqLen, Vocab> &target) {
             float n_nonpad = 0.f;
             for (size_t t = 0; t < SeqLen; ++t)
@@ -397,14 +404,14 @@ namespace TTTN {
     };
 
 
-    // @doc: template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels)
+    // @doc: template<size_t Batch, size_t N> float OneHotAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels)
     /**
      * Computes accuracy for `Tensor`s organized in a batched `Tensor`
      * Takes any `Tensor<Batch, Dims...>` and flattens `Dims...` internally
      * NOTE: assumes ***one-hot encoding*** for labels
      */
     template<size_t Batch, size_t... Dims>
-    float BatchAccuracy(const Tensor<Batch, Dims...> &pred, const Tensor<Batch, Dims...> &labels) {
+    float OneHotAccuracy(const Tensor<Batch, Dims...> &pred, const Tensor<Batch, Dims...> &labels) {
         constexpr size_t InnerSize = (Dims * ... * 1);
         // flatten to become [Batch x FlatPredVector]
         const auto p = Reshape<Batch, InnerSize>(pred);
@@ -420,15 +427,15 @@ namespace TTTN {
         return 100.f * n / static_cast<float>(Batch);
     }
 
-    // @doc: template<typename TupleT> float BatchAccuracy(const ActivationsWrap<TupleT> &A, const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels)
+    // @doc: template<typename TupleT> float OneHotAccuracy(const ActivationsWrap<TupleT> &A, const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels)
     /**
      * Overload that takes a full `ActivationsWrap` and automatically uses the final activation
      * Eliminates the need to manually index with `.get<N>()`
      */
     template<typename TupleT>
-    float BatchAccuracy(const ActivationsWrap<TupleT> &A,
-                        const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels) {
+    float OneHotAccuracy(const ActivationsWrap<TupleT> &A,
+                         const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels) {
         constexpr size_t Last = std::tuple_size_v<TupleT> - 1;
-        return BatchAccuracy(A.template get<Last>(), labels);
+        return OneHotAccuracy(A.template get<Last>(), labels);
     }
 };

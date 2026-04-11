@@ -86,17 +86,17 @@ namespace TTTN {
                 Tensor<Batch, TgtLen, EmbDim> BatchedForward(
                     const Tensor<Batch, TgtLen, EmbDim> &x,
                     const Tensor<Batch, SrcLen, EmbDim> &enc_out) const {
-                    auto selfed  = rmmha_.template BatchedForward<Batch>(x);
+                    auto selfed = rmmha_.template BatchedForward<Batch>(x);
                     auto crossed = mhca_.template BatchedForward<Batch>(ConcatAxis<1>(selfed, enc_out)) + selfed;
                     return rffn_.template BatchedForward<Batch>(crossed);
                 }
 
                 // returns (d_x, d_enc_out_layer)
                 template<size_t Batch>
-                std::pair<Tensor<Batch, TgtLen, EmbDim>, Tensor<Batch, SrcLen, EmbDim>>
+                std::pair<Tensor<Batch, TgtLen, EmbDim>, Tensor<Batch, SrcLen, EmbDim> >
                 BatchedBackward(const Tensor<Batch, TgtLen, EmbDim> &d_out) {
                     auto d_crossed = rffn_.template BatchedBackward<Batch>(d_out, {}, {});
-                    auto d_packed  = mhca_.template BatchedBackward<Batch>(d_crossed, {}, {});
+                    auto d_packed = mhca_.template BatchedBackward<Batch>(d_crossed, {}, {});
                     auto [d_selfed, d_enc] = SplitAxis<1, TgtLen>(d_packed);
                     d_selfed += d_crossed;
                     auto d_x = rmmha_.template BatchedBackward<Batch>(d_selfed, {}, {});
@@ -158,7 +158,7 @@ namespace TTTN {
 
             // ---- batched backward: reverse accumulation of d_enc_out ----
             template<size_t Batch>
-            std::pair<Tensor<Batch, TgtLen, EmbDim>, Tensor<Batch, SrcLen, EmbDim>>
+            std::pair<Tensor<Batch, TgtLen, EmbDim>, Tensor<Batch, SrcLen, EmbDim> >
             BatchedBackward(const Tensor<Batch, TgtLen, EmbDim> &d_out) {
                 Tensor<Batch, TgtLen, EmbDim> d_x = d_out;
                 Tensor<Batch, SrcLen, EmbDim> d_enc_accum{};
@@ -201,10 +201,10 @@ namespace TTTN {
         mutable DecHidden dec_out_{};
 
         // batched caches (std::vector<float> because Batch is a function template param)
-        mutable std::vector<float> b_src_oh_{};   // Tensor<Batch, SrcLen, VocabSize>
-        mutable std::vector<float> b_tgt_oh_{};   // Tensor<Batch, TgtLen, VocabSize>
-        mutable std::vector<float> b_src_emb_{};  // Tensor<Batch, SrcLen, EmbDim> with PE (enc a_prev)
-        mutable std::vector<float> b_dec_out_{};  // Tensor<Batch, TgtLen, EmbDim> (pre-projection)
+        mutable std::vector<float> b_src_oh_{}; // Tensor<Batch, SrcLen, VocabSize>
+        mutable std::vector<float> b_tgt_oh_{}; // Tensor<Batch, TgtLen, VocabSize>
+        mutable std::vector<float> b_src_emb_{}; // Tensor<Batch, SrcLen, EmbDim> with PE (enc a_prev)
+        mutable std::vector<float> b_dec_out_{}; // Tensor<Batch, TgtLen, EmbDim> (pre-projection)
 
         // embedding lookup: [SeqLen, VocabSize] x [VocabSize, EmbDim] -> [SeqLen, EmbDim]
         template<size_t SeqLen>
@@ -236,7 +236,7 @@ namespace TTTN {
         template<size_t Batch, size_t SeqLen>
         static EmbedTable BatchEmbedGrad(
             const Tensor<Batch, SeqLen, VocabSize> &oh,
-            const Tensor<Batch, SeqLen, EmbDim>   &h) {
+            const Tensor<Batch, SeqLen, EmbDim> &h) {
             return Contract<AxisList<0>{}, AxisList<0>{}, Mul, Add>(
                 Reshape<Batch * SeqLen, VocabSize>(oh),
                 Reshape<Batch * SeqLen, EmbDim>(h));
@@ -248,7 +248,7 @@ namespace TTTN {
         template<size_t Batch, size_t SeqLen>
         static void BatchAddPE(Tensor<Batch, SeqLen, EmbDim> &X) {
             Tensor<SeqLen, EmbDim> pe{};
-            AddPositionalEncoding(pe);   // adds to zeros → pe holds raw PE values
+            AddPositionalEncoding(pe); // adds to zeros → pe holds raw PE values
             constexpr size_t SliceSize = SeqLen * EmbDim;
             for (size_t b = 0; b < Batch; ++b)
                 for (size_t i = 0; i < SliceSize; ++i)
@@ -313,8 +313,8 @@ namespace TTTN {
         template<size_t Batch>
         Tensor<Batch, TgtLen, VocabSize> BatchedForward(
             const Tensor<Batch, SrcLen + TgtLen, VocabSize> &X) const {
-            using BSrcOH  = Tensor<Batch, SrcLen, VocabSize>;
-            using BTgtOH  = Tensor<Batch, TgtLen, VocabSize>;
+            using BSrcOH = Tensor<Batch, SrcLen, VocabSize>;
+            using BTgtOH = Tensor<Batch, TgtLen, VocabSize>;
             using BSrcEmb = Tensor<Batch, SrcLen, EmbDim>;
             // 1. split packed input
             auto [b_src_oh, b_tgt_oh] = SplitAxis<1, SrcLen>(X);
@@ -323,7 +323,7 @@ namespace TTTN {
             // 2. embed src + PE
             auto b_src_emb = BatchEmbed<Batch, SrcLen>(b_src_oh, embed_.value);
             BatchAddPE<Batch, SrcLen>(b_src_emb);
-            batch_cache_store(b_src_emb, b_src_emb_);  // needed for enc backward a_prev
+            batch_cache_store(b_src_emb, b_src_emb_); // needed for enc backward a_prev
             // 3. encode
             auto b_enc_out = enc_.template BatchedForward<Batch>(b_src_emb);
             // 4. embed tgt + PE
@@ -342,12 +342,12 @@ namespace TTTN {
             const Tensor<Batch, TgtLen, VocabSize> &delta_A,
             const Tensor<Batch, TgtLen, VocabSize> & /*a*/,
             const Tensor<Batch, SrcLen + TgtLen, VocabSize> & /*a_prev*/) {
-            using BSrcOH  = Tensor<Batch, SrcLen, VocabSize>;
-            using BTgtOH  = Tensor<Batch, TgtLen, VocabSize>;
+            using BSrcOH = Tensor<Batch, SrcLen, VocabSize>;
+            using BTgtOH = Tensor<Batch, TgtLen, VocabSize>;
             using BSrcEmb = Tensor<Batch, SrcLen, EmbDim>;
             using BDecOut = Tensor<Batch, TgtLen, EmbDim>;
-            const auto b_src_oh  = batch_cache_load<BSrcOH>(b_src_oh_);
-            const auto b_tgt_oh  = batch_cache_load<BTgtOH>(b_tgt_oh_);
+            const auto b_src_oh = batch_cache_load<BSrcOH>(b_src_oh_);
+            const auto b_tgt_oh = batch_cache_load<BTgtOH>(b_tgt_oh_);
             const auto b_src_emb = batch_cache_load<BSrcEmb>(b_src_emb_);
             const auto b_dec_out = batch_cache_load<BDecOut>(b_dec_out_);
 

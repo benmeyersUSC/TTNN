@@ -2155,17 +2155,17 @@ namespace TTTN {
                 Tensor<Batch, TgtLen, EmbDim> BatchedForward(
                     const Tensor<Batch, TgtLen, EmbDim> &x,
                     const Tensor<Batch, SrcLen, EmbDim> &enc_out) const {
-                    auto selfed  = rmmha_.template BatchedForward<Batch>(x);
+                    auto selfed = rmmha_.template BatchedForward<Batch>(x);
                     auto crossed = mhca_.template BatchedForward<Batch>(ConcatAxis<1>(selfed, enc_out)) + selfed;
                     return rffn_.template BatchedForward<Batch>(crossed);
                 }
 
                 // returns (d_x, d_enc_out_layer)
                 template<size_t Batch>
-                std::pair<Tensor<Batch, TgtLen, EmbDim>, Tensor<Batch, SrcLen, EmbDim>>
+                std::pair<Tensor<Batch, TgtLen, EmbDim>, Tensor<Batch, SrcLen, EmbDim> >
                 BatchedBackward(const Tensor<Batch, TgtLen, EmbDim> &d_out) {
                     auto d_crossed = rffn_.template BatchedBackward<Batch>(d_out, {}, {});
-                    auto d_packed  = mhca_.template BatchedBackward<Batch>(d_crossed, {}, {});
+                    auto d_packed = mhca_.template BatchedBackward<Batch>(d_crossed, {}, {});
                     auto [d_selfed, d_enc] = SplitAxis<1, TgtLen>(d_packed);
                     d_selfed += d_crossed;
                     auto d_x = rmmha_.template BatchedBackward<Batch>(d_selfed, {}, {});
@@ -2227,7 +2227,7 @@ namespace TTTN {
 
             // ---- batched backward: reverse accumulation of d_enc_out ----
             template<size_t Batch>
-            std::pair<Tensor<Batch, TgtLen, EmbDim>, Tensor<Batch, SrcLen, EmbDim>>
+            std::pair<Tensor<Batch, TgtLen, EmbDim>, Tensor<Batch, SrcLen, EmbDim> >
             BatchedBackward(const Tensor<Batch, TgtLen, EmbDim> &d_out) {
                 Tensor<Batch, TgtLen, EmbDim> d_x = d_out;
                 Tensor<Batch, SrcLen, EmbDim> d_enc_accum{};
@@ -2270,10 +2270,10 @@ namespace TTTN {
         mutable DecHidden dec_out_{};
 
         // batched caches (std::vector<float> because Batch is a function template param)
-        mutable std::vector<float> b_src_oh_{};   // Tensor<Batch, SrcLen, VocabSize>
-        mutable std::vector<float> b_tgt_oh_{};   // Tensor<Batch, TgtLen, VocabSize>
-        mutable std::vector<float> b_src_emb_{};  // Tensor<Batch, SrcLen, EmbDim> with PE (enc a_prev)
-        mutable std::vector<float> b_dec_out_{};  // Tensor<Batch, TgtLen, EmbDim> (pre-projection)
+        mutable std::vector<float> b_src_oh_{}; // Tensor<Batch, SrcLen, VocabSize>
+        mutable std::vector<float> b_tgt_oh_{}; // Tensor<Batch, TgtLen, VocabSize>
+        mutable std::vector<float> b_src_emb_{}; // Tensor<Batch, SrcLen, EmbDim> with PE (enc a_prev)
+        mutable std::vector<float> b_dec_out_{}; // Tensor<Batch, TgtLen, EmbDim> (pre-projection)
 
         // embedding lookup: [SeqLen, VocabSize] x [VocabSize, EmbDim] -> [SeqLen, EmbDim]
         template<size_t SeqLen>
@@ -2305,7 +2305,7 @@ namespace TTTN {
         template<size_t Batch, size_t SeqLen>
         static EmbedTable BatchEmbedGrad(
             const Tensor<Batch, SeqLen, VocabSize> &oh,
-            const Tensor<Batch, SeqLen, EmbDim>   &h) {
+            const Tensor<Batch, SeqLen, EmbDim> &h) {
             return Contract<AxisList<0>{}, AxisList<0>{}, Mul, Add>(
                 Reshape<Batch * SeqLen, VocabSize>(oh),
                 Reshape<Batch * SeqLen, EmbDim>(h));
@@ -2317,7 +2317,7 @@ namespace TTTN {
         template<size_t Batch, size_t SeqLen>
         static void BatchAddPE(Tensor<Batch, SeqLen, EmbDim> &X) {
             Tensor<SeqLen, EmbDim> pe{};
-            AddPositionalEncoding(pe);   // adds to zeros → pe holds raw PE values
+            AddPositionalEncoding(pe); // adds to zeros → pe holds raw PE values
             constexpr size_t SliceSize = SeqLen * EmbDim;
             for (size_t b = 0; b < Batch; ++b)
                 for (size_t i = 0; i < SliceSize; ++i)
@@ -2382,8 +2382,8 @@ namespace TTTN {
         template<size_t Batch>
         Tensor<Batch, TgtLen, VocabSize> BatchedForward(
             const Tensor<Batch, SrcLen + TgtLen, VocabSize> &X) const {
-            using BSrcOH  = Tensor<Batch, SrcLen, VocabSize>;
-            using BTgtOH  = Tensor<Batch, TgtLen, VocabSize>;
+            using BSrcOH = Tensor<Batch, SrcLen, VocabSize>;
+            using BTgtOH = Tensor<Batch, TgtLen, VocabSize>;
             using BSrcEmb = Tensor<Batch, SrcLen, EmbDim>;
             // 1. split packed input
             auto [b_src_oh, b_tgt_oh] = SplitAxis<1, SrcLen>(X);
@@ -2392,7 +2392,7 @@ namespace TTTN {
             // 2. embed src + PE
             auto b_src_emb = BatchEmbed<Batch, SrcLen>(b_src_oh, embed_.value);
             BatchAddPE<Batch, SrcLen>(b_src_emb);
-            batch_cache_store(b_src_emb, b_src_emb_);  // needed for enc backward a_prev
+            batch_cache_store(b_src_emb, b_src_emb_); // needed for enc backward a_prev
             // 3. encode
             auto b_enc_out = enc_.template BatchedForward<Batch>(b_src_emb);
             // 4. embed tgt + PE
@@ -2411,12 +2411,12 @@ namespace TTTN {
             const Tensor<Batch, TgtLen, VocabSize> &delta_A,
             const Tensor<Batch, TgtLen, VocabSize> & /*a*/,
             const Tensor<Batch, SrcLen + TgtLen, VocabSize> & /*a_prev*/) {
-            using BSrcOH  = Tensor<Batch, SrcLen, VocabSize>;
-            using BTgtOH  = Tensor<Batch, TgtLen, VocabSize>;
+            using BSrcOH = Tensor<Batch, SrcLen, VocabSize>;
+            using BTgtOH = Tensor<Batch, TgtLen, VocabSize>;
             using BSrcEmb = Tensor<Batch, SrcLen, EmbDim>;
             using BDecOut = Tensor<Batch, TgtLen, EmbDim>;
-            const auto b_src_oh  = batch_cache_load<BSrcOH>(b_src_oh_);
-            const auto b_tgt_oh  = batch_cache_load<BTgtOH>(b_tgt_oh_);
+            const auto b_src_oh = batch_cache_load<BSrcOH>(b_src_oh_);
+            const auto b_tgt_oh = batch_cache_load<BTgtOH>(b_tgt_oh_);
             const auto b_src_emb = batch_cache_load<BSrcEmb>(b_src_emb_);
             const auto b_dec_out = batch_cache_load<BDecOut>(b_dec_out_);
 
@@ -4102,7 +4102,9 @@ namespace TTTN {
             IsTensor<TensorT> &&
             requires
             {
-                { L::Loss(std::declval<const TensorT &>(), std::declval<const TensorT &>()) } -> std::same_as<Tensor<>>;
+                {
+                    L::Loss(std::declval<const TensorT &>(), std::declval<const TensorT &>())
+                } -> std::same_as<Tensor<> >;
                 { L::Grad(std::declval<const TensorT &>(), std::declval<const TensorT &>()) } -> std::same_as<TensorT>;
             };
 
@@ -4118,7 +4120,9 @@ namespace TTTN {
         template<size_t... Dims>
         static Tensor<> Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             static constexpr float Inv = 1.f / Tensor<Dims...>::Size;
-            Tensor<> s; s.flat(0) = Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv; return s;
+            Tensor<> s;
+            s.flat(0) = Collapse<Compose<Sq, Sub>, Add>(pred, target) * Inv;
+            return s;
         }
 
         // @doc: template<size_t... Dims> static Tensor<Dims...> MSE::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
@@ -4142,8 +4146,9 @@ namespace TTTN {
         template<size_t... Dims>
         static Tensor<> Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
             const auto p_c = Map<Clamp<EPS, 1.f - EPS> >(pred);
-            Tensor<> s; s.flat(0) = -(Collapse<Mul, Add>(target, Map<Log>(p_c)) +
-                                      Collapse<Mul, Add>(Map<OneMinus>(target), Map<Compose<Log, OneMinus> >(p_c)));
+            Tensor<> s;
+            s.flat(0) = -(Collapse<Mul, Add>(target, Map<Log>(p_c)) +
+                          Collapse<Mul, Add>(Map<OneMinus>(target), Map<Compose<Log, OneMinus> >(p_c)));
             return s;
         }
 
@@ -4168,7 +4173,9 @@ namespace TTTN {
          */
         template<size_t... Dims>
         static Tensor<> Loss(const Tensor<Dims...> &pred, const Tensor<Dims...> &target) {
-            Tensor<> s; s.flat(0) = Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f; return s;
+            Tensor<> s;
+            s.flat(0) = Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS> > >(pred)) * -1.f;
+            return s;
         }
 
         // @doc: template<size_t... Dims> static Tensor<Dims...> CEL::Grad(const Tensor<Dims...> &pred, const Tensor<Dims...> &target)
@@ -4247,7 +4254,7 @@ namespace TTTN {
     template<typename L, size_t PadId = 0>
     struct TokenWiseLoss {
         template<size_t SeqLen, size_t Vocab>
-        requires LossFunction<L, Tensor<Vocab>>
+            requires LossFunction<L, Tensor<Vocab> >
         static Tensor<> Loss(const Tensor<SeqLen, Vocab> &pred, const Tensor<SeqLen, Vocab> &target) {
             float n_nonpad = 0.f;
             for (size_t t = 0; t < SeqLen; ++t)
@@ -4270,7 +4277,7 @@ namespace TTTN {
         }
 
         template<size_t SeqLen, size_t Vocab>
-        requires LossFunction<L, Tensor<Vocab>>
+            requires LossFunction<L, Tensor<Vocab> >
         static Tensor<SeqLen, Vocab> Grad(const Tensor<SeqLen, Vocab> &pred, const Tensor<SeqLen, Vocab> &target) {
             float n_nonpad = 0.f;
             for (size_t t = 0; t < SeqLen; ++t)
@@ -4295,14 +4302,14 @@ namespace TTTN {
     };
 
 
-    // @doc: template<size_t Batch, size_t N> float BatchAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels)
+    // @doc: template<size_t Batch, size_t N> float OneHotAccuracy(const Tensor<Batch, N> &pred, const Tensor<Batch, N> &labels)
     /**
      * Computes accuracy for `Tensor`s organized in a batched `Tensor`
      * Takes any `Tensor<Batch, Dims...>` and flattens `Dims...` internally
      * NOTE: assumes ***one-hot encoding*** for labels
      */
     template<size_t Batch, size_t... Dims>
-    float BatchAccuracy(const Tensor<Batch, Dims...> &pred, const Tensor<Batch, Dims...> &labels) {
+    float OneHotAccuracy(const Tensor<Batch, Dims...> &pred, const Tensor<Batch, Dims...> &labels) {
         constexpr size_t InnerSize = (Dims * ... * 1);
         // flatten to become [Batch x FlatPredVector]
         const auto p = Reshape<Batch, InnerSize>(pred);
@@ -4318,16 +4325,16 @@ namespace TTTN {
         return 100.f * n / static_cast<float>(Batch);
     }
 
-    // @doc: template<typename TupleT> float BatchAccuracy(const ActivationsWrap<TupleT> &A, const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels)
+    // @doc: template<typename TupleT> float OneHotAccuracy(const ActivationsWrap<TupleT> &A, const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels)
     /**
      * Overload that takes a full `ActivationsWrap` and automatically uses the final activation
      * Eliminates the need to manually index with `.get<N>()`
      */
     template<typename TupleT>
-    float BatchAccuracy(const ActivationsWrap<TupleT> &A,
-                        const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels) {
+    float OneHotAccuracy(const ActivationsWrap<TupleT> &A,
+                     const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels) {
         constexpr size_t Last = std::tuple_size_v<TupleT> - 1;
-        return BatchAccuracy(A.template get<Last>(), labels);
+        return OneHotAccuracy(A.template get<Last>(), labels);
     }
 };
 
@@ -7606,7 +7613,7 @@ void runSeqTasksViz() {
                 for (size_t c = 0; c < 2; ++c) Ye(b, c) = (c == label) ? 1.f : 0.f;
             }
             const auto A = net.template BatchedForwardAll<EvalN>(Xe);
-            return BatchAccuracy(A, Ye);
+            return OneHotAccuracy(A, Ye);
         };
 
         for (int epoch = 0; epoch < Epochs; ++epoch) {
@@ -7632,7 +7639,7 @@ void runSeqTasksViz() {
             }
             const auto At = net.template BatchedForwardAll<1000>(Xt);
             std::cout << "\n  test accuracy: " << std::setprecision(1)
-                    << BatchAccuracy(At, Yt) << "%\n";
+                    << OneHotAccuracy(At, Yt) << "%\n";
         }
 
         // pick top-3 longest sequences per class for richer attention patterns
@@ -7726,7 +7733,7 @@ void RunCSVClassifier(const std::string &name,
             for (size_t c = 0; c < NumClasses; ++c) Ye(b, c) = (c == label) ? 1.f : 0.f;
         }
         const auto A = net.template BatchedForwardAll<EvalN>(Xe);
-        return BatchAccuracy(A, Ye);
+        return OneHotAccuracy(A, Ye);
     };
 
     for (int epoch = 0; epoch < epochs; ++epoch) {
@@ -7749,7 +7756,7 @@ void RunCSVClassifier(const std::string &name,
     const auto At = net.template BatchedForwardAll<TestBatch>(Xt);
     std::cout << "\n  test accuracy (" << TestBatch << " held-out): "
             << std::fixed << std::setprecision(1)
-            << BatchAccuracy(At, Yt) << "%\n";
+            << OneHotAccuracy(At, Yt) << "%\n";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7854,64 +7861,108 @@ void runMNISTDense() {
 //   - backprops combined (probs - target) / n_nonpad gradient
 //   - steps Adam and updates all params
 
-void runSeqTranslation() {
-    std::cout << "\n=== Sequence Translation: single vs batched timing ===\n";
-
-    using Block = EncoderDecoderBlock<128, 384, 72, 256, 8, 512, 3, 3, 0>;
-    using Net   = TrainableTensorNetwork<Block>;
-    constexpr size_t SrcLen = 128, TgtLen = 384, Vocab = 72, PadId = 0;
-    constexpr int    Steps  = 100;
-    constexpr float  LR     = 3e-4f;
-
-    // build one sample
-    Tensor<SrcLen, Vocab> src_oh;
-    Tensor<TgtLen, Vocab> tgt_oh;
-    src_oh.fill(0.f); tgt_oh.fill(0.f);
-    for (size_t t = 0; t < SrcLen; ++t) src_oh(t, 1 + t % 71) = 1.f;
-    for (size_t t = 0; t < 100;    ++t) tgt_oh(t, 1 + t % 71) = 1.f;
-    for (size_t t = 100; t < TgtLen; ++t) tgt_oh(t, PadId)    = 1.f;
-    const auto inp = ConcatAxis<0>(src_oh, tgt_oh);
-    constexpr size_t Batch      = 10;
-
-    // ── single-sample: Steps steps, 1 sample each ─────────────────────────────
-    std::cout << "\n-- single-sample (" << Steps << " steps) --\n";
-    {
-        Net net;
-        timed("single total", [&]() -> int {
-            for (int s = 0; s < Steps*Batch; ++s) {
-                const float loss = net.template Fit<SequenceSoftmaxCEL<PadId>>(inp, tgt_oh, LR);
-                std::cout << "  step " << std::setw(2) << s
-                          << "  loss=" << std::fixed << std::setprecision(4) << loss << "\n";
-            }
-            return 0;
-        });
-    }
-
-    // ── batched: same total tokens, fewer steps ────────────────────────────────
-    // Batch=4 means 4 identical samples per step, Steps/4 steps → same token count
-    constexpr int    BatchSteps = Steps; // same step count but 4x data per step
-
-    // build batched input/target by stacking the same sample Batch times
-    Tensor<Batch, SrcLen + TgtLen, Vocab> X_batch;
-    Tensor<Batch, TgtLen, Vocab>          Y_batch;
+// Build a stacked batch tensor from one sample, run BatchFit N/B steps, return ms.
+template<size_t Batch, size_t N, size_t SrcLen, size_t TgtLen, size_t Vocab, size_t PadId, typename Net>
+double runBatched(Net &net,
+                  const Tensor<SrcLen + TgtLen, Vocab> &inp,
+                  const Tensor<TgtLen, Vocab> &tgt_oh,
+                  float LR) {
+    static_assert(N % Batch == 0);
+    Tensor<Batch, SrcLen + TgtLen, Vocab> X;
+    Tensor<Batch, TgtLen, Vocab> Y;
     for (size_t b = 0; b < Batch; ++b) {
         for (size_t i = 0; i < (SrcLen + TgtLen) * Vocab; ++i)
-            X_batch.flat(b * (SrcLen + TgtLen) * Vocab + i) = inp.flat(i);
+            X.flat(b * (SrcLen + TgtLen) * Vocab + i) = inp.flat(i);
         for (size_t i = 0; i < TgtLen * Vocab; ++i)
-            Y_batch.flat(b * TgtLen * Vocab + i) = tgt_oh.flat(i);
+            Y.flat(b * TgtLen * Vocab + i) = tgt_oh.flat(i);
     }
+    using Clock = std::chrono::high_resolution_clock;
+    const auto t0 = Clock::now();
+    for (size_t s = 0; s < N / Batch; ++s)
+        net.template BatchFit<SequenceSoftmaxCEL<PadId>, Batch>(X, Y, LR);
+    const auto t1 = Clock::now();
+    return std::chrono::duration<double, std::milli>(t1 - t0).count();
+}
 
-    std::cout << "\n-- batched (Batch=" << Batch << ", " << BatchSteps << " steps) --\n";
+// Sweep batch sizes 1/4/8/20/40 over N total examples.
+// inp and tgt are passed in as concrete types from the caller so Net::InputTensor matches exactly.
+template<typename Net, size_t PadId, size_t N, size_t SrcTgtLen, size_t Vocab, size_t TgtLen>
+void batchSweep(const char *label,
+                const Tensor<SrcTgtLen, Vocab> &inp,
+                const Tensor<TgtLen, Vocab> &tgt,
+                float LR) {
+    std::cout << "\n" << label << "  (N=" << N << " examples each)\n";
+
+    auto row = [&](size_t B, size_t steps, double ms) {
+        std::cout << "  batch=" << std::setw(2) << B
+                << "  steps=" << std::setw(3) << steps
+                << "  ms/example=" << std::setw(7) << std::fixed << std::setprecision(2)
+                << ms / static_cast<double>(N) << "\n";
+    };
+
+    using Clock = std::chrono::high_resolution_clock;
     {
         Net net;
-        timed("batched total", [&]() -> int {
-            for (int s = 0; s < BatchSteps; ++s) {
-                const float loss = net.template BatchFit<SequenceSoftmaxCEL<PadId>, Batch>(X_batch, Y_batch, LR);
-                std::cout << "  step " << std::setw(2) << s
-                          << "  loss=" << std::fixed << std::setprecision(4) << loss << "\n";
-            }
-            return 0;
-        });
+        const auto t0 = Clock::now();
+        for (size_t s = 0; s < N; ++s)
+            net.template Fit<SequenceSoftmaxCEL<PadId> >(inp, tgt, LR);
+        row(1, N, std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+    }
+
+    {
+        Net net;
+        row(4, N / 4, runBatched<4, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
+    }
+    {
+        Net net;
+        row(8, N / 8, runBatched<8, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
+    }
+    {
+        Net net;
+        row(20, N / 20, runBatched<20, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
+    }
+    {
+        Net net;
+        row(40, N / 40, runBatched<40, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
+    }
+}
+
+void runSeqTranslation() {
+    constexpr float LR = 3e-4f;
+    constexpr size_t N = 40;
+
+    // ── ProCC model (big: 60 MB) ──────────────────────────────────────────────
+    {
+        constexpr size_t SrcLen = 128, TgtLen = 384, Vocab = 72, PadId = 0;
+        Tensor<SrcLen, Vocab> src;
+        Tensor<TgtLen, Vocab> tgt;
+        src.fill(0.f);
+        tgt.fill(0.f);
+        for (size_t t = 0; t < SrcLen; ++t) src(t, 1 + t % 71) = 1.f;
+        for (size_t t = 0; t < TgtLen / 4; ++t) tgt(t, 1 + t % 71) = 1.f;
+        for (size_t t = TgtLen / 4; t < TgtLen; ++t) tgt(t, PadId) = 1.f;
+        const auto inp = ConcatAxis<0>(src, tgt);
+        using Net = TrainableTensorNetwork<EncoderDecoderBlock<SrcLen, TgtLen, Vocab, 256, 8, 512, 3, 3, PadId> >;
+        batchSweep<Net, PadId, N>(
+            "=== ProCC model  (SrcLen=128 TgtLen=384 EmbDim=256 Heads=8 Layers=3)",
+            inp, tgt, LR);
+    }
+
+    // ── Small model (fits in L2: EmbDim=32, short seqs) ──────────────────────
+    {
+        constexpr size_t SrcLen = 16, TgtLen = 32, Vocab = 16, PadId = 0;
+        Tensor<SrcLen, Vocab> src;
+        Tensor<TgtLen, Vocab> tgt;
+        src.fill(0.f);
+        tgt.fill(0.f);
+        for (size_t t = 0; t < SrcLen; ++t) src(t, 1 + t % 15) = 1.f;
+        for (size_t t = 0; t < TgtLen / 4; ++t) tgt(t, 1 + t % 15) = 1.f;
+        for (size_t t = TgtLen / 4; t < TgtLen; ++t) tgt(t, PadId) = 1.f;
+        const auto inp = ConcatAxis<0>(src, tgt);
+        using Net = TrainableTensorNetwork<EncoderDecoderBlock<SrcLen, TgtLen, Vocab, 32, 4, 64, 2, 2, PadId> >;
+        batchSweep<Net, PadId, N>(
+            "=== Small model  (SrcLen=16  TgtLen=32  EmbDim=32  Heads=4 Layers=2)",
+            inp, tgt, LR);
     }
 }
 

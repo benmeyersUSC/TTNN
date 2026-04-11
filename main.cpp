@@ -603,7 +603,7 @@ void runSeqTasksViz() {
                 for (size_t c = 0; c < 2; ++c) Ye(b, c) = (c == label) ? 1.f : 0.f;
             }
             const auto A = net.template BatchedForwardAll<EvalN>(Xe);
-            return BatchAccuracy(A, Ye);
+            return OneHotAccuracy(A, Ye);
         };
 
         for (int epoch = 0; epoch < Epochs; ++epoch) {
@@ -629,7 +629,7 @@ void runSeqTasksViz() {
             }
             const auto At = net.template BatchedForwardAll<1000>(Xt);
             std::cout << "\n  test accuracy: " << std::setprecision(1)
-                    << BatchAccuracy(At, Yt) << "%\n";
+                    << OneHotAccuracy(At, Yt) << "%\n";
         }
 
         // pick top-3 longest sequences per class for richer attention patterns
@@ -723,7 +723,7 @@ void RunCSVClassifier(const std::string &name,
             for (size_t c = 0; c < NumClasses; ++c) Ye(b, c) = (c == label) ? 1.f : 0.f;
         }
         const auto A = net.template BatchedForwardAll<EvalN>(Xe);
-        return BatchAccuracy(A, Ye);
+        return OneHotAccuracy(A, Ye);
     };
 
     for (int epoch = 0; epoch < epochs; ++epoch) {
@@ -746,7 +746,7 @@ void RunCSVClassifier(const std::string &name,
     const auto At = net.template BatchedForwardAll<TestBatch>(Xt);
     std::cout << "\n  test accuracy (" << TestBatch << " held-out): "
             << std::fixed << std::setprecision(1)
-            << BatchAccuracy(At, Yt) << "%\n";
+            << OneHotAccuracy(At, Yt) << "%\n";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -853,13 +853,13 @@ void runMNISTDense() {
 
 // Build a stacked batch tensor from one sample, run BatchFit N/B steps, return ms.
 template<size_t Batch, size_t N, size_t SrcLen, size_t TgtLen, size_t Vocab, size_t PadId, typename Net>
-double runBatched(Net& net,
-                  const Tensor<SrcLen + TgtLen, Vocab>& inp,
-                  const Tensor<TgtLen, Vocab>& tgt_oh,
+double runBatched(Net &net,
+                  const Tensor<SrcLen + TgtLen, Vocab> &inp,
+                  const Tensor<TgtLen, Vocab> &tgt_oh,
                   float LR) {
     static_assert(N % Batch == 0);
     Tensor<Batch, SrcLen + TgtLen, Vocab> X;
-    Tensor<Batch, TgtLen, Vocab>          Y;
+    Tensor<Batch, TgtLen, Vocab> Y;
     for (size_t b = 0; b < Batch; ++b) {
         for (size_t i = 0; i < (SrcLen + TgtLen) * Vocab; ++i)
             X.flat(b * (SrcLen + TgtLen) * Vocab + i) = inp.flat(i);
@@ -877,30 +877,44 @@ double runBatched(Net& net,
 // Sweep batch sizes 1/4/8/20/40 over N total examples.
 // inp and tgt are passed in as concrete types from the caller so Net::InputTensor matches exactly.
 template<typename Net, size_t PadId, size_t N, size_t SrcTgtLen, size_t Vocab, size_t TgtLen>
-void batchSweep(const char* label,
-                const Tensor<SrcTgtLen, Vocab>& inp,
-                const Tensor<TgtLen, Vocab>& tgt,
+void batchSweep(const char *label,
+                const Tensor<SrcTgtLen, Vocab> &inp,
+                const Tensor<TgtLen, Vocab> &tgt,
                 float LR) {
     std::cout << "\n" << label << "  (N=" << N << " examples each)\n";
 
     auto row = [&](size_t B, size_t steps, double ms) {
         std::cout << "  batch=" << std::setw(2) << B
-                  << "  steps=" << std::setw(3) << steps
-                  << "  ms/example=" << std::setw(7) << std::fixed << std::setprecision(2)
-                  << ms / static_cast<double>(N) << "\n";
+                << "  steps=" << std::setw(3) << steps
+                << "  ms/example=" << std::setw(7) << std::fixed << std::setprecision(2)
+                << ms / static_cast<double>(N) << "\n";
     };
 
     using Clock = std::chrono::high_resolution_clock;
-    { Net net;
-      const auto t0 = Clock::now();
-      for (size_t s = 0; s < N; ++s)
-          net.template Fit<SequenceSoftmaxCEL<PadId>>(inp, tgt, LR);
-      row(1, N, std::chrono::duration<double,std::milli>(Clock::now()-t0).count()); }
+    {
+        Net net;
+        const auto t0 = Clock::now();
+        for (size_t s = 0; s < N; ++s)
+            net.template Fit<SequenceSoftmaxCEL<PadId> >(inp, tgt, LR);
+        row(1, N, std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+    }
 
-    { Net net; row(4,  N/4,  runBatched<4,  N, SrcTgtLen-TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR)); }
-    { Net net; row(8,  N/8,  runBatched<8,  N, SrcTgtLen-TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR)); }
-    { Net net; row(20, N/20, runBatched<20, N, SrcTgtLen-TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR)); }
-    { Net net; row(40, N/40, runBatched<40, N, SrcTgtLen-TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR)); }
+    {
+        Net net;
+        row(4, N / 4, runBatched<4, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
+    }
+    {
+        Net net;
+        row(8, N / 8, runBatched<8, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
+    }
+    {
+        Net net;
+        row(20, N / 20, runBatched<20, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
+    }
+    {
+        Net net;
+        row(40, N / 40, runBatched<40, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
+    }
 }
 
 void runSeqTranslation() {
@@ -909,14 +923,16 @@ void runSeqTranslation() {
 
     // ── ProCC model (big: 60 MB) ──────────────────────────────────────────────
     {
-        constexpr size_t SrcLen=128, TgtLen=384, Vocab=72, PadId=0;
-        Tensor<SrcLen,Vocab> src; Tensor<TgtLen,Vocab> tgt;
-        src.fill(0.f); tgt.fill(0.f);
-        for (size_t t=0; t<SrcLen; ++t) src(t, 1+t%71) = 1.f;
-        for (size_t t=0; t<TgtLen/4; ++t) tgt(t, 1+t%71) = 1.f;
-        for (size_t t=TgtLen/4; t<TgtLen; ++t) tgt(t, PadId) = 1.f;
+        constexpr size_t SrcLen = 128, TgtLen = 384, Vocab = 72, PadId = 0;
+        Tensor<SrcLen, Vocab> src;
+        Tensor<TgtLen, Vocab> tgt;
+        src.fill(0.f);
+        tgt.fill(0.f);
+        for (size_t t = 0; t < SrcLen; ++t) src(t, 1 + t % 71) = 1.f;
+        for (size_t t = 0; t < TgtLen / 4; ++t) tgt(t, 1 + t % 71) = 1.f;
+        for (size_t t = TgtLen / 4; t < TgtLen; ++t) tgt(t, PadId) = 1.f;
         const auto inp = ConcatAxis<0>(src, tgt);
-        using Net = TrainableTensorNetwork<EncoderDecoderBlock<SrcLen,TgtLen,Vocab,256,8,512,3,3,PadId>>;
+        using Net = TrainableTensorNetwork<EncoderDecoderBlock<SrcLen, TgtLen, Vocab, 256, 8, 512, 3, 3, PadId> >;
         batchSweep<Net, PadId, N>(
             "=== ProCC model  (SrcLen=128 TgtLen=384 EmbDim=256 Heads=8 Layers=3)",
             inp, tgt, LR);
@@ -924,14 +940,16 @@ void runSeqTranslation() {
 
     // ── Small model (fits in L2: EmbDim=32, short seqs) ──────────────────────
     {
-        constexpr size_t SrcLen=16, TgtLen=32, Vocab=16, PadId=0;
-        Tensor<SrcLen,Vocab> src; Tensor<TgtLen,Vocab> tgt;
-        src.fill(0.f); tgt.fill(0.f);
-        for (size_t t=0; t<SrcLen; ++t) src(t, 1+t%15) = 1.f;
-        for (size_t t=0; t<TgtLen/4; ++t) tgt(t, 1+t%15) = 1.f;
-        for (size_t t=TgtLen/4; t<TgtLen; ++t) tgt(t, PadId) = 1.f;
+        constexpr size_t SrcLen = 16, TgtLen = 32, Vocab = 16, PadId = 0;
+        Tensor<SrcLen, Vocab> src;
+        Tensor<TgtLen, Vocab> tgt;
+        src.fill(0.f);
+        tgt.fill(0.f);
+        for (size_t t = 0; t < SrcLen; ++t) src(t, 1 + t % 15) = 1.f;
+        for (size_t t = 0; t < TgtLen / 4; ++t) tgt(t, 1 + t % 15) = 1.f;
+        for (size_t t = TgtLen / 4; t < TgtLen; ++t) tgt(t, PadId) = 1.f;
         const auto inp = ConcatAxis<0>(src, tgt);
-        using Net = TrainableTensorNetwork<EncoderDecoderBlock<SrcLen,TgtLen,Vocab,32,4,64,2,2,PadId>>;
+        using Net = TrainableTensorNetwork<EncoderDecoderBlock<SrcLen, TgtLen, Vocab, 32, 4, 64, 2, 2, PadId> >;
         batchSweep<Net, PadId, N>(
             "=== Small model  (SrcLen=16  TgtLen=32  EmbDim=32  Heads=4 Layers=2)",
             inp, tgt, LR);
