@@ -35,6 +35,22 @@ namespace TTTN {
             TransformerBlock<EncHidden, Heads, FFNHidden, /*PreNorm=*/true, /*Masked=*/false>,
             NEnc
         >;
+        
+        // embedding lookup: [SeqLen, VocabSize] x [VocabSize, EmbDim] -> [SeqLen, EmbDim]
+        template<size_t SeqLen>
+        static Tensor<SeqLen, EmbDim> Embed(const Tensor<SeqLen, VocabSize> &oh, const EmbedTable &E) {
+            return Contract<AxisList<1>{}, AxisList<0>{}, Mul, Add>(oh, E);
+        }
+
+                // batched embedding lookup: [Batch, SeqLen, VocabSize] x [VocabSize, EmbDim] -> [Batch, SeqLen, EmbDim]
+        // flatten to [Batch*SeqLen, Vocab], use single-sample Contract, reshape back
+        template<size_t Batch, size_t SeqLen>
+        static Tensor<Batch, SeqLen, EmbDim> BatchEmbed(
+            const Tensor<Batch, SeqLen, VocabSize> &oh, const EmbedTable &E) {
+            const auto flat = Contract<AxisList<1>{}, AxisList<0>{}, Mul, Add>(
+                Reshape<Batch * SeqLen, VocabSize>(oh), E);
+            return Reshape<Batch, SeqLen, EmbDim>(flat);
+        }
 
     private:
         // shared embedding table (src embed, tgt embed, and tied output projection)
@@ -206,21 +222,8 @@ namespace TTTN {
         mutable std::vector<float> b_src_emb_{}; // Tensor<Batch, SrcLen, EmbDim> with PE (enc a_prev)
         mutable std::vector<float> b_dec_out_{}; // Tensor<Batch, TgtLen, EmbDim> (pre-projection)
 
-        // embedding lookup: [SeqLen, VocabSize] x [VocabSize, EmbDim] -> [SeqLen, EmbDim]
-        template<size_t SeqLen>
-        static Tensor<SeqLen, EmbDim> Embed(const Tensor<SeqLen, VocabSize> &oh, const EmbedTable &E) {
-            return Contract<AxisList<1>{}, AxisList<0>{}, Mul, Add>(oh, E);
-        }
+        
 
-        // batched embedding lookup: [Batch, SeqLen, VocabSize] x [VocabSize, EmbDim] -> [Batch, SeqLen, EmbDim]
-        // flatten to [Batch*SeqLen, Vocab], use single-sample Contract, reshape back
-        template<size_t Batch, size_t SeqLen>
-        static Tensor<Batch, SeqLen, EmbDim> BatchEmbed(
-            const Tensor<Batch, SeqLen, VocabSize> &oh, const EmbedTable &E) {
-            const auto flat = Contract<AxisList<1>{}, AxisList<0>{}, Mul, Add>(
-                Reshape<Batch * SeqLen, VocabSize>(oh), E);
-            return Reshape<Batch, SeqLen, EmbDim>(flat);
-        }
 
         // batched weight-tied projection: [Batch, SeqLen, EmbDim] x [VocabSize, EmbDim] -> [Batch, SeqLen, VocabSize]
         template<size_t Batch, size_t SeqLen>
