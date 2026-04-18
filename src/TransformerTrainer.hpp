@@ -54,7 +54,17 @@ namespace TTTN {
         float RL_LR_MAX,
         float RL_RAMP_SIZE,
         size_t RL_K,
-        float RL_BaselineDecay
+        float RL_BaselineDecay,
+
+        // SS
+        float SS_RAMP_START,
+        float SS_RAMP_END,
+        float SS_MIN,
+        float SS_MAX,
+
+        // LEN CURRICULUM
+        float TGT_LEN_RAMP,
+        size_t TGT_LEN_MIN
     >
     class TransformerTrainer {
         using BlockT = EncoderDecoderBlock<SrcLen, TgtLen, Token::COUNT, EmbeddingDimension, NumHeads, FFNSize, NEnc,
@@ -124,7 +134,42 @@ namespace TTTN {
         static float RLLR(const long total_seen) {
             static constexpr float RL_Epoch_Inv = 1.f / (RL_RAMP_SIZE * ExamplesPerEpoch);
             const float t = std::clamp(static_cast<float>(total_seen) * RL_Epoch_Inv, 0.f, 1.f);
-            return TF_LR_MAX + (TF_LR_MIN - TF_LR_MAX) * t;
+            return RL_LR_MAX + (RL_LR_MIN - RL_LR_MAX) * t;
+        }
+
+        static constexpr float EX_EP_INV = 1.f / ExamplesPerEpoch;
+
+        static float ScheduledSamplingRate(const long total_seen) {
+            const float epoch = static_cast<float>(total_seen) * EX_EP_INV;
+
+            if (epoch < SS_RAMP_START) {
+                return 0.f;
+            }
+            return std::clamp((epoch - SS_RAMP_START) / (SS_RAMP_END - SS_RAMP_START), std::max(0.f, SS_MIN),
+                              std::min(1.f, SS_MAX));
+        }
+
+        static int MaxAsmLength(const long total_seen) {
+            const float epoch = static_cast<float>(total_seen) * EX_EP_INV;
+            if (epoch >= TGT_LEN_RAMP) {
+                return TgtLen;
+            }
+            static constexpr float tlri = 1.f / TGT_LEN_MIN;
+            return std::min(static_cast<int>(TgtLen),
+                            static_cast<int>(TGT_LEN_MIN + (TgtLen - TGT_LEN_MIN) * epoch * tlri));
+        }
+
+        std::string EpochBar(const long total_seen, const int width = 64) {
+            const long in_ep = total_seen % ExamplesPerEpoch;
+            const float frac = static_cast<float>(in_ep) / ExamplesPerEpoch;
+            const int fill = static_cast<int>(frac * width);
+            std::string bar = "[";
+            for (int i = 0; i < width; ++i) {
+                bar += (i < fill ? '#' : ' ');
+            }
+            char tail[64];
+            std::snprintf(tail, sizeof(tail), "] %5ld/%d", in_ep, EXAMPLES_PER_EPOCH);
+            return bar + tail;
         }
     };
 }
