@@ -6,96 +6,95 @@
 
 #include "TrainableTensorNetwork.hpp"
 
-
-struct DataCursor {
-    int lap = 0;
-    int step = 0;
-    long total_seen = 0;
-
-    struct ChunkRef {
-        int subset;
-        int row;
-    };
-
-    void Load(std::string_view path) {
-        std::ifstream f(path.data());
-        if (!f) return;
-        f >> lap >> step >> total_seen; // read the file right in
-    }
-
-    void Save(std::string_view path) const {
-        std::ofstream f(path.data());
-        f << lap << " " << step << " " << total_seen << "\n";
-    }
-
-    static int ChunksPerLap(int n_subsets, int subset_size, int chunk_size) {
-        return n_subsets * (subset_size / chunk_size);
-    }
-
-    static std::vector<int> LapPermutation(int lap_n, int n_chunks) {
-        std::vector<int> perm(n_chunks);
-        std::iota(perm.begin(), perm.end(), 0);
-        std::mt19937 rng(static_cast<uint32_t>(0xC0FFEE ^ lap_n));
-        std::ranges::shuffle(perm, rng);
-        return perm;
-    }
-
-    static ChunkRef DecodeChunk(int idx, int n_subsets, int subset_size, int chunk_size) {
-        const int chunks_per_subset = subset_size / chunk_size;
-        return ChunkRef{
-            idx / chunks_per_subset, // subset
-            (idx % chunks_per_subset) * chunk_size // row
-        };
-    }
-
-    ChunkRef CurrentChunk(int n_subsets, int subset_size, int chunk_size) const {
-        const int n = ChunksPerLap(n_subsets, subset_size, chunk_size);
-        const auto perm = LapPermutation(lap, n);
-        return DecodeChunk(perm[step], n_subsets, subset_size, chunk_size);
-    }
-
-    void Advance(int chunk_size, int n_subsets, int subset_size) {
-        int n = ChunksPerLap(n_subsets, subset_size, chunk_size);
-        ++step;
-        if (step >= n) {
-            step = 0;
-            ++lap;
-        }
-    }
-
-    void PrintCursor(const int n_subsets,
-                     int subset_size, int chunk_size) const {
-        const int n = ChunksPerLap(n_subsets, subset_size, chunk_size);
-        auto [subset, row] = CurrentChunk(n_subsets, subset_size, chunk_size);
-        double pct = n ? (100.0 * step) / n : 0.0;
-        std::cout << "[cursor] lap=" << lap
-                << "  step=" << step << "/" << n
-                << "  (" << pct << "% of lap)"
-                << "  total_seen=" << total_seen
-                << "  next: subset" << subset << " row " << row
-                << "\n";
-    }
-};
-
-
-template<typename T>
-concept IsEnum = std::is_enum_v<T>;
-
-template<typename T>
-concept TokenEnum =
-        // T must be an enum value
-        std::is_enum_v<T> && requires
-        {
-            // and we must have PAD, BOS tokens and a COUNT value (always last!)
-            { T::PAD } -> std::same_as<T>;
-            { T::BOS } -> std::same_as<T>;
-            { T::EOS } -> std::same_as<T>;
-            { T::COUNT } -> std::same_as<T>;
-        };
-
-
 namespace
 TTTN {
+    struct DataCursor {
+        int lap = 0;
+        int step = 0;
+        long total_seen = 0;
+
+        struct ChunkRef {
+            int subset;
+            int row;
+        };
+
+        void Load(std::string_view path) {
+            std::ifstream f(path.data());
+            if (!f) return;
+            f >> lap >> step >> total_seen; // read the file right in
+        }
+
+        void Save(std::string_view path) const {
+            std::ofstream f(path.data());
+            f << lap << " " << step << " " << total_seen << "\n";
+        }
+
+        static int ChunksPerLap(int n_subsets, int subset_size, int chunk_size) {
+            return n_subsets * (subset_size / chunk_size);
+        }
+
+        static std::vector<int> LapPermutation(int lap_n, int n_chunks) {
+            std::vector<int> perm(n_chunks);
+            std::iota(perm.begin(), perm.end(), 0);
+            std::mt19937 rng(static_cast<uint32_t>(0xC0FFEE ^ lap_n));
+            std::ranges::shuffle(perm, rng);
+            return perm;
+        }
+
+        static ChunkRef DecodeChunk(int idx, int n_subsets, int subset_size, int chunk_size) {
+            const int chunks_per_subset = subset_size / chunk_size;
+            return ChunkRef{
+                idx / chunks_per_subset, // subset
+                (idx % chunks_per_subset) * chunk_size // row
+            };
+        }
+
+        ChunkRef CurrentChunk(int n_subsets, int subset_size, int chunk_size) const {
+            const int n = ChunksPerLap(n_subsets, subset_size, chunk_size);
+            const auto perm = LapPermutation(lap, n);
+            return DecodeChunk(perm[step], n_subsets, subset_size, chunk_size);
+        }
+
+        void Advance(int chunk_size, int n_subsets, int subset_size) {
+            int n = ChunksPerLap(n_subsets, subset_size, chunk_size);
+            ++step;
+            if (step >= n) {
+                step = 0;
+                ++lap;
+            }
+        }
+
+        void PrintCursor(const int n_subsets,
+                         int subset_size, int chunk_size) const {
+            const int n = ChunksPerLap(n_subsets, subset_size, chunk_size);
+            auto [subset, row] = CurrentChunk(n_subsets, subset_size, chunk_size);
+            double pct = n ? (100.0 * step) / n : 0.0;
+            std::cout << "[cursor] lap=" << lap
+                    << "  step=" << step << "/" << n
+                    << "  (" << pct << "% of lap)"
+                    << "  total_seen=" << total_seen
+                    << "  next: subset" << subset << " row " << row
+                    << "\n";
+        }
+    };
+
+
+    template<typename T>
+    concept IsEnum = std::is_enum_v<T>;
+
+    template<typename T>
+    concept TokenEnum =
+            // T must be an enum value
+            std::is_enum_v<T> && requires
+            {
+                // and we must have PAD, BOS tokens and a COUNT value (always last!)
+                { T::PAD } -> std::same_as<T>;
+                { T::BOS } -> std::same_as<T>;
+                { T::EOS } -> std::same_as<T>;
+                { T::COUNT } -> std::same_as<T>;
+            };
+
+
     template
     <
         // NETWORK SPEC
@@ -205,7 +204,7 @@ TTTN {
             AccuracyStats stats;
             for (int i = 0; i < TgtLen; ++i) {
                 const Token pred = i < static_cast<int>(predicted.size())
-                                       ? static_cast<Token>(truth[i])
+                                       ? static_cast<Token>(predicted[i])
                                        : Token::PAD;
                 const Token actual = i < static_cast<int>(truth.size()) ? static_cast<Token>(truth[i]) : Token::PAD;
 
@@ -470,17 +469,159 @@ TTTN {
             long n_tokens = 0;
         };
 
-        float TFEvalTestSet(DistResult &dist_out, unsigned bins = 50) {
-            float total_loss = 0.f;
-            int total_examples = 0;
+        static void FillDist(DistResult &dist, long n_tokens,
+                             const std::vector<double> &true_counts,
+                             const std::vector<double> &pred_soft_sum,
+                             const std::vector<double> &conf_hist_counts,
+                             int bins) {
+            dist.n_tokens = n_tokens;
+            dist.true_dist.assign(VocabSize, 0.0);
+            dist.pred_dist.assign(VocabSize, 0.0);
+            for (size_t v = 0; v < VocabSize; ++v) {
+                dist.true_dist[v] = n_tokens > 0 ? true_counts[v] / n_tokens : 0.0;
+                dist.pred_dist[v] = n_tokens > 0 ? pred_soft_sum[v] / n_tokens : 0.0;
+            }
+            dist.conf_hist.assign(bins, 0.0);
+            double hist_total = 0.0;
+            for (const auto &c: conf_hist_counts) hist_total += c;
+            for (int i = 0; i < bins; ++i)
+                dist.conf_hist[i] = hist_total > 0.0 ? conf_hist_counts[i] / hist_total : 0.0;
+        }
 
-            std::vector<double> true_counts(VocabSize, 0.0);
-            std::vector<double> pred_soft_sum(VocabSize, 0.0);
-            std::vector<double> conf_hist_counts(bins, 0.0);
+        template<typename T>
+        static std::vector<T> ShuffledIota(T n, std::mt19937 &rng) {
+            std::vector<T> v(static_cast<size_t>(n));
+            std::iota(v.begin(), v.end(), T{0});
+            std::ranges::shuffle(v, rng);
+            return v;
+        }
 
-            long n_tokens = 0;
+        void TFTestPass(const size_t n_rows, const int bins, const std::vector<uint8_t> &src_buf,
+                        const std::vector<uint8_t> &tgt_buf,
+                        double &tf_loss,
+                        unsigned &tf_examples,
+                        unsigned &tf_tokens, std::vector<double> &tf_true, std::vector<double> &tf_pred_soft,
+                        std::vector<double> &tf_conf_hist) {
+            for (size_t r = 0; r < n_rows; ++r) {
+                const Example ex{
+                    std::vector<uint8_t>(src_buf.data() + r * SrcLen, src_buf.data() + (r + 1) * SrcLen),
+                    std::vector<uint8_t>(tgt_buf.data() + r * TgtLen, tgt_buf.data() + (r + 1) * TgtLen)
+                };
+                const auto [inp, tgt] = EncodeExample(ex);
+                const auto logits = Network.Forward(inp);
+                tf_loss += SequenceSoftmaxCEL<Token::PAD>::Loss(logits, tgt).flat(0);
+                ++tf_examples;
 
-            for (int s = 0; s < NSubsetsTrain; ++s) {
+                for (size_t t = 0; t < TgtLen; ++t) {
+                    size_t true_tok = VocabSize;
+                    for (size_t v = 0; v < VocabSize; ++v) {
+                        if (tgt(t, v) > 0.5f) {
+                            true_tok = v;
+                            break;
+                        }
+                    }
+                    if (true_tok == VocabSize || true_tok == static_cast<size_t>(Token::PAD)) continue;
+
+                    tf_true[true_tok] += 1.0;
+                    ++tf_tokens;
+
+                    float max_l = logits(t, 0);
+                    for (size_t v = 1; v < VocabSize; ++v)
+                        if (logits(t, v) > max_l) max_l = logits(t, v);
+                    double sum_exp = 0.0;
+                    for (size_t v = 0; v < VocabSize; ++v)
+                        sum_exp += std::exp(logits(t, v) - max_l);
+                    for (size_t v = 0; v < VocabSize; ++v)
+                        tf_pred_soft[v] += std::exp(logits(t, v) - max_l) / sum_exp;
+                    double p_correct = std::exp(logits(t, true_tok) - max_l) / sum_exp;
+                    tf_conf_hist[std::min(bins - 1, static_cast<int>(p_correct * bins))] += 1.0;
+                }
+            }
+        }
+
+
+        void ARTestPass(const long ar_this_subset, const int bins, const std::vector<size_t> &row_order,
+                        const std::vector<uint8_t> &src_buf,
+                        const std::vector<uint8_t> &tgt_buf, double &ar_nll, long &ar_tokens, long &ar_done,
+                        std::vector<double> &ar_true, std::vector<double> &ar_pred_soft,
+                        std::vector<double> &ar_conf_hist) {
+            const auto &block = Network.template block<0>();
+            for (long i = 0; i < ar_this_subset; ++i) {
+                const size_t r = row_order[static_cast<size_t>(i)];
+                const uint8_t *xs = src_buf.data() + r * SrcLen;
+                const uint8_t *ys = tgt_buf.data() + r * TgtLen;
+
+                typename BlockT::SrcOneHot src_oh{};
+                for (size_t t = 0; t < SrcLen; ++t)
+                    src_oh(t, xs[t]) = 1.0f;
+                const auto enc_out = block.EncodeOnly(src_oh);
+
+                typename BlockT::TgtOneHot seed{};
+                seed(0, static_cast<size_t>(Token::BOS)) = 1.0f;
+
+                for (size_t step = 0; step < TgtLen; ++step) {
+                    const uint8_t true_tok = ys[step];
+                    if (true_tok == static_cast<uint8_t>(Token::PAD)) break;
+
+                    const auto logits = block.DecodeStep(enc_out, seed);
+
+                    float max_l = logits(step, 0);
+                    for (size_t v = 1; v < VocabSize; ++v)
+                        if (logits(step, v) > max_l) max_l = logits(step, v);
+                    double sum_exp = 0.0;
+                    for (size_t v = 0; v < VocabSize; ++v)
+                        sum_exp += std::exp(static_cast<double>(logits(step, v) - max_l));
+
+                    ar_nll -= (logits(step, true_tok) - max_l) - std::log(sum_exp);
+                    ++ar_tokens;
+
+                    ar_true[true_tok] += 1.0;
+                    for (size_t v = 0; v < VocabSize; ++v)
+                        ar_pred_soft[v] += std::exp(static_cast<double>(logits(step, v) - max_l)) / sum_exp;
+                    double p_correct_ar = std::exp(static_cast<double>(logits(step, true_tok) - max_l)) / sum_exp;
+                    ar_conf_hist[std::min(bins - 1, static_cast<int>(p_correct_ar * bins))] += 1.0;
+
+                    // advance seed with argmax (AR, not GT)
+                    size_t best = 0;
+                    float best_val = logits(step, 0);
+                    for (size_t v = 1; v < VocabSize; ++v)
+                        if (logits(step, v) > best_val) {
+                            best_val = logits(step, v);
+                            best = v;
+                        }
+                    if (static_cast<Token>(best) == Token::EOS) break;
+                    if (step + 1 < TgtLen)
+                        seed(step + 1, best) = 1.0f;
+                }
+                ++ar_done;
+            }
+        }
+
+        std::pair<float, float> EvalTestSet(DistResult &tf_dist, DistResult &ar_dist, std::mt19937 &rng,
+                                            int bins = 50) {
+            // TF accumulators
+            double tf_loss = 0.0;
+            long tf_examples = 0;
+            long tf_tokens = 0;
+            std::vector<double> tf_true(VocabSize, 0.0);
+            std::vector<double> tf_pred_soft(VocabSize, 0.0);
+            std::vector<double> tf_conf_hist(bins, 0.0);
+
+            // AR accumulators
+            double ar_nll = 0.0;
+            long ar_tokens = 0;
+            long ar_done = 0;
+            const long ar_quota = static_cast<long>(N_AR_TEST_SUBSETS) * AR_TEST_N_SAMPLES;
+            std::vector<double> ar_true(VocabSize, 0.0);
+            std::vector<double> ar_pred_soft(VocabSize, 0.0);
+            std::vector<double> ar_conf_hist(bins, 0.0);
+
+            std::cout << "[test_eval] ar_quota=" << ar_quota << "  tf=all subsets\n";
+
+            // shuffle subset order so AR samples aren't always front-loaded on subset 0
+            auto order = ShuffledIota<int>(NSubsetsTrain, rng);
+
+            for (int s: order) {
                 std::ostringstream sd;
                 sd << "data/subset" << s << "/test";
                 const std::string base = sd.str();
@@ -494,72 +635,35 @@ TTTN {
                 std::ifstream tgt_f(base + ".tgt.bin", std::ios::binary);
                 std::vector<uint8_t> src_buf(n_rows * SrcLen);
                 std::vector<uint8_t> tgt_buf(n_rows * TgtLen);
+                // read in once
                 src_f.read(reinterpret_cast<char *>(src_buf.data()), src_buf.size());
                 tgt_f.read(reinterpret_cast<char *>(tgt_buf.data()), tgt_buf.size());
 
-                for (size_t r = 0; r < n_rows; ++r) {
-                    Example ex{
-                        std::vector<uint8_t>(src_buf.data() + r * SrcLen,
-                                             src_buf.data() + (r + 1) * SrcLen),
-                        std::vector<uint8_t>(tgt_buf.data() + r * TgtLen,
-                                             tgt_buf.data() + (r + 1) * TgtLen)
-                    };
+                // shuffle row order for AR sampling within this subset
+                auto row_order = ShuffledIota<size_t>(n_rows, rng);
 
-                    const auto [inp, tgt] = EncodeExample(ex);
-                    // straight up TF forward pass
-                    const auto logits = Network.Forward(inp);
+                // if we have more AR to do, then this subset we want the min of sample-param and subset size
+                const long ar_this_subset = ar_done < ar_quota
+                                                ? std::min(static_cast<long>(AR_TEST_N_SAMPLES), ar_quota - ar_done)
+                                                : 0;
 
-                    total_loss += SequenceSoftmaxCEL<Token::PAD>::Loss(logits, tgt).flat(0);
-                    ++total_examples;
 
-                    // now build distribution for viz
-                    for (size_t t = 0; t < TgtLen; ++t) {
-                        size_t true_tok = 0;
-                        for (size_t v = 0; v < VocabSize; ++v) {
-                            if (tgt(t, v) > 0.5f) {
-                                true_tok = v;
-                                break;
-                            }
-                        }
-                        if (true_tok == static_cast<size_t>(Token::PAD)) continue;
+                // TF pass: all rows
+                TFTestPass(n_rows, bins, src_buf, tgt_buf, tf_loss, tf_examples, tf_tokens, tf_true, tf_pred_soft,
+                           tf_conf_hist);
 
-                        true_counts[true_tok] += 1.0;
-                        ++n_tokens;
-
-                        float max_l = logits(t, 0);
-                        for (size_t v = 1; v < VocabSize; ++v) {
-                            if (logits(t, v) > max_l) {
-                                max_l = logits(t, v);
-                            }
-                        }
-                        double sum_exp = 0.0;
-                        for (size_t v = 0; v < VocabSize; ++v) {
-                            sum_exp += std::exp(logits(t, v) - max_l);
-                        }
-                        for (size_t v = 0; v < VocabSize; ++v) {
-                            pred_soft_sum[v] += std::exp(logits(t, v) - max_l) / sum_exp;
-                        }
-                        double p_correct = std::exp(logits(t, true_tok) - max_l) / sum_exp;
-                        int bin = std::min(bins - 1, static_cast<unsigned>(p_correct * bins));
-                        ++conf_hist_counts[bin];
-                    }
-                }
+                // AR pass: first ar_this_subset rows in shuffled order
+                ARTestPass(ar_this_subset, bins, row_order, src_buf, tgt_buf, ar_nll, ar_tokens, ar_done, ar_true,
+                           ar_pred_soft, ar_conf_hist);
             }
 
-            dist_out.n_tokens = n_tokens;
-            dist_out.true_dist.resize(VocabSize);
-            dist_out.pred_dist.resize(VocabSize);
-            for (size_t v = 0; v < VocabSize; ++v) {
-                dist_out.true_dist[v] = n_tokens > 0 ? true_counts[v] / n_tokens : 0.0;
-                dist_out.pred_dist[v] = n_tokens > 0 ? pred_soft_sum[v] / n_tokens : 0.0;
-            }
-            dist_out.conf_hist.resize(bins);
-            double hist_total = 0.0;
-            for (auto &c: conf_hist_counts) hist_total += c;
-            for (int i = 0; i < bins; ++i) {
-                dist_out.conf_hist[i] = hist_total > 0.0 ? conf_hist_counts[i] / hist_total : 0.0;
-            }
-            return total_examples > 0 ? total_loss / total_examples : 0.f;
+            FillDist(tf_dist, tf_tokens, tf_true, tf_pred_soft, tf_conf_hist, bins);
+            FillDist(ar_dist, ar_tokens, ar_true, ar_pred_soft, ar_conf_hist, bins);
+
+            return {
+                tf_examples > 0 ? static_cast<float>(tf_loss / tf_examples) : 0.f,
+                ar_tokens > 0 ? static_cast<float>(ar_nll / ar_tokens) : 0.f
+            };
         }
     };
 }
