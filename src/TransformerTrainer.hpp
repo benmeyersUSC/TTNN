@@ -1,5 +1,6 @@
 #pragma once
 #include "EncoderDecoder.hpp"
+#include "TrainableTensorNetwork.hpp"
 #include <concepts>
 #include <iostream>
 #include <type_traits>
@@ -10,11 +11,16 @@ TTTN {
     auto timed(const char *label, F &&fn) {
         using Clock = std::chrono::high_resolution_clock;
         const auto t0 = Clock::now();
-        auto result = fn();
-        const auto t1 = Clock::now();
-        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        std::cout << "[" << label << "]  " << ms << " ms\n";
-        return result;
+        if constexpr (std::is_void_v<std::invoke_result_t<F> >) {
+            fn();
+            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            std::cout << "[" << label << "]  " << ms << " ms\n";
+        } else {
+            auto result = fn();
+            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            std::cout << "[" << label << "]  " << ms << " ms\n";
+            return result;
+        }
     }
 
 
@@ -22,20 +28,24 @@ TTTN {
         int lap = 0;
         int step = 0;
         long total_seen = 0;
+        std::string path;
+
+        explicit DataCursor(std::string_view p) : path(p) {
+        }
 
         struct ChunkRef {
             int subset;
             int row;
         };
 
-        void Load(std::string_view path) {
-            std::ifstream f(path.data());
+        void Load() {
+            std::ifstream f(path);
             if (!f) return;
-            f >> lap >> step >> total_seen; // read the file right in
+            f >> lap >> step >> total_seen;
         }
 
-        void Save(std::string_view path) const {
-            std::ofstream f(path.data());
+        void Save() const {
+            std::ofstream f(path);
             f << lap << " " << step << " " << total_seen << "\n";
         }
 
@@ -127,7 +137,6 @@ TTTN {
         size_t ChunksPerGroup,
         size_t Batch,
         size_t LogEvery,
-        size_t SentinelLogEvery,
 
         // TF CONSTANTS
 
@@ -174,21 +183,67 @@ TTTN {
         using NetworkT = TrainableTensorNetwork<BlockT>;
         using InputT = NetworkT::InputTensor;
         using OutputT = NetworkT::OutputTensor;
+        using BatchInpT = PrependBatch<Batch, InputT>::type;
+        using BatchTgtT = PrependBatch<Batch, OutputT>::type;
 
-        NetworkT Network;
 
         static constexpr size_t TotalTrain = NSubsetsTrain * SubsetSizeTrain * Laps;
         static constexpr size_t ExamplesPerEpoch = NSubsetsTrain * SubsetSizeTrain;
         static constexpr size_t ExamplesPerGroup = ChunksPerGroup * ChunkSizeTrain;
-        static constexpr size_t GroupsPerLap = (TotalTrain + ExamplesPerGroup - 1) / ExamplesPerGroup;
+        static constexpr size_t Groups = (TotalTrain + ExamplesPerGroup - 1) / ExamplesPerGroup;
+
+        struct RLState {
+            float baseline = 0.f;
+            bool init = false;
+            std::string path;
+
+            // LR schedule: ramps from lr_max -> lr_min over ramp_size epochs
+            float lr_min, lr_max, ramp_size;
+
+            explicit RLState(std::string_view rl_state_path)
+                : path(rl_state_path.data()),
+                  lr_min(RL_LR_MIN), lr_max(RL_LR_MAX), ramp_size(RL_RAMP_SIZE) {
+            }
+
+            [[nodiscard]] float LR(long total_seen) const {
+                const float t = std::clamp(
+                    static_cast<float>(total_seen) / (ramp_size * ExamplesPerEpoch), 0.f, 1.f);
+                return lr_max + (lr_min - lr_max) * t;
+            }
+
+            void Load() {
+                std::ifstream f(path);
+                if (!f) return;
+                int init_flag = 0;
+                f >> baseline >> init_flag;
+                init = init_flag != 0;
+            }
+
+            void Save() const {
+                std::ofstream f(path.data());
+                f << baseline << " " << (init ? 1 : 0) << "\n";
+            }
+        };
+
+        NetworkT Network;
+        RLState RL_State;
+        DataCursor Cursor;
+
+        TransformerTrainer()
+            : RL_State(CheckpointDir() + "/rl_state.txt"),
+              Cursor(CheckpointDir() + "/cursor.txt") {
+        }
+
+        static const std::string &ModelString() {
+            static const std::string str = std::to_string(EmbeddingDimension) +
+                                           "_h" + std::to_string(NumHeads) +
+                                           "_f" + std::to_string(FFNSize) +
+                                           "_" + std::to_string(NEnc) + "enc" + std::to_string(NDec) + "dec";
+            return str;
+        }
 
         static const std::string &CheckpointDir() {
-            static const std::string dir =
-                    "checkpoints_e" + std::to_string(EmbeddingDimension) +
-                    "_h" + std::to_string(NumHeads) +
-                    "_f" + std::to_string(FFNSize) +
-                    "_" + std::to_string(NEnc) + "enc" + std::to_string(NDec) + "dec";
-
+            static const std::string dir = "checkpoints_e" + ModelString();
             return dir;
         }
 
@@ -271,38 +326,6 @@ TTTN {
             return bar + tail;
         }
 
-        struct RLState {
-            float baseline = 0.f;
-            bool init = false;
-            std::string path;
-
-            // LR schedule: ramps from lr_max -> lr_min over ramp_size epochs
-            float lr_min, lr_max, ramp_size;
-
-            explicit RLState(std::string_view rl_state_path)
-                : path(rl_state_path.data()),
-                  lr_min(RL_LR_MIN), lr_max(RL_LR_MAX), ramp_size(RL_RAMP_SIZE) {
-            }
-
-            [[nodiscard]] float LR(long total_seen) const {
-                const float t = std::clamp(
-                    static_cast<float>(total_seen) / (ramp_size * ExamplesPerEpoch), 0.f, 1.f);
-                return lr_max + (lr_min - lr_max) * t;
-            }
-
-            void LoadRLState() {
-                std::ifstream f(path);
-                if (!f) return;
-                int init_flag = 0;
-                f >> baseline >> init_flag;
-                init = init_flag != 0;
-            }
-
-            void SaveRLState() const {
-                std::ofstream f(path.data());
-                f << baseline << " " << (init ? 1 : 0) << "\n";
-            }
-        };
 
         static std::vector<uint8_t> ReadVec(std::string_view path, const long byte_offset, size_t n_bytes) {
             std::ifstream f(path.data(), std::ios::binary);
@@ -317,13 +340,11 @@ TTTN {
             return buf;
         }
 
-        static std::vector<Example> GetNextChunk(std::string_view cursor_path, int max_tgt_len) {
-            DataCursor cur;
-            cur.Load(cursor_path);
-            auto [subset, row] = cur.CurrentChunk(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
+        std::vector<Example> GetNextChunk(int max_tgt_len) {
+            auto [subset, row] = Cursor.CurrentChunk(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
 
             int n_chunks = DataCursor::ChunksPerLap(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
-            std::cout << "\033[2m  · lap" << cur.lap << " step " << cur.step << "/" << n_chunks
+            std::cout << "\033[2m  · lap" << Cursor.lap << " step " << Cursor.step << "/" << n_chunks
                     << "  s" << subset << " r" << row << "\033[0m\n";
 
             // get subset file name from ChunkRef
@@ -714,8 +735,7 @@ TTTN {
 
 
         std::pair<float, float> RL_Update(const int n_examples, const std::vector<Example> &chunk,
-                                          RLState &rl_s, DataCursor &cur, std::mt19937 &ss_rng
-        ) {
+                                          std::mt19937 &ss_rng) {
             using RLBatchInp = PrependBatch<RL_K, InputT>::type;
             using RLBatchTgt = PrependBatch<RL_K, OutputT>::type;
 
@@ -746,29 +766,204 @@ TTTN {
             const float avg_R = reward_sum / RL_K;
             const float avg_acc = accuracy_sum / RL_K;
 
-            if (!rl_s.init) {
-                rl_s.baseline = avg_R;
-                rl_s.init = true;
+            if (!RL_State.init) {
+                RL_State.baseline = avg_R;
+                RL_State.init = true;
             } else {
-                rl_s.baseline = RL_BaselineDecay * rl_s.baseline + (1.f - RL_BaselineDecay) * avg_R;
+                RL_State.baseline = RL_BaselineDecay * RL_State.baseline + (1.f - RL_BaselineDecay) * avg_R;
             }
-            rl_s.SaveRLState();
+            RL_State.SaveRLState();
 
-            const float advantage = avg_R - rl_s.baseline;
-            const float rl_lr = rl_s.LR(cur.total_seen) * advantage;
+            const float advantage = avg_R - RL_State.baseline;
+            const float rl_lr = RL_State.LR(Cursor.total_seen) * advantage;
 
             Network.template BatchFit<SequenceSoftmaxCEL<Token::PAD>, RL_K>(rl_x, rl_y, rl_lr);
 
             std::cout << "\033[2m  [rl] nll_R=" << avg_R
                     << "  acc=" << avg_acc
-                    << "  base=" << rl_s.baseline
+                    << "  base=" << RL_State.baseline
                     << "  A=" << advantage
                     << "  rl_lr=" << rl_lr << "\033[0m\n";
             return {avg_R, avg_acc};
         }
 
+        void Print(std::ostream &os) {
+            std::filesystem::create_directories(CheckpointDir());
+            std::cout << "[config] checkpoint dir: " << CheckpointDir() << "\n";
 
-        void Train(const unsigned laps, std::string_view model_name) {
+            std::cout << "[model] EMB=" << EmbeddingDimension << " HEADS=" << NumHeads
+                    << " FFN=" << FFNSize << " ENC=" << NEnc << " DEC=" << NDec
+                    << " VOCAB=" << VocabSize << "\n";
+            std::cout << "[model] params: " << NetworkT::TotalParamCount
+                    << " (" << NetworkT::TotalParamCount * 4 / 1024 / 1024 << " MB)\n";
+            std::cout << "[config] chunks/group=" << ChunksPerGroup
+                    << " groups/lap=" << Groups
+                    << " batch=" << Batch << "\n";
+            std::cout << "[config] ce_lr=" << CELR(0) << "→" << CELR(100 * ExamplesPerEpoch)
+                    << "  rl_lr=" << RL_State.LR(0) << "→" << RL_State.LR(100 * ExamplesPerEpoch)
+                    << "  rl_k=" << RL_K << "\n";
+        }
+
+        void Train() {
+            timed("FULL TRAINING SESSION", [this] { train_(); });
+        }
+
+        void train_() {
+            const std::string checkpoint_model = CheckpointDir() + "/model.bin";
+            const std::string progress_base = CheckpointDir() + "/progress";
+            RL_State.Load();
+            std::cout << "[rl] loaded state: baseline=" << RL_State.baseline
+                    << "  init=" << RL_State.init << "\n";
+            Cursor.Load();
+            std::cout << "[cursor] lap=" << Cursor.lap
+                    << "  step=" << Cursor.step
+                    << "  total_seen=" << Cursor.total_seen << "\n";
+
+            std::filesystem::create_directories(CheckpointDir());
+            Print(std::cout);
+
+            if (std::filesystem::exists(checkpoint_model)) {
+                Network.Load(checkpoint_model);
+                std::cout << "[model] loaded from " << checkpoint_model << "\n";
+            } else {
+                std::cout << "[model] fresh init\n";
+            }
+
+            std::mt19937 ss_rng(42);
+
+            float loss_acc = 0.f;
+            int batches = 0;
+
+            float rl_reward_acc = 0.f;
+            float rl_acc_acc = 0.f;
+            int rl_reward_count = 0;
+
+            for (auto g = 0; g < Groups; ++g) {
+                const DataCursor precursor(Cursor);
+
+                const int cur_max_len = MaxAsmLength(precursor.total_seen);
+                const float p_ss = ScheduledSamplingRate(precursor.total_seen);
+                const float epoch_approx = static_cast<float>(precursor.total_seen) / ExamplesPerEpoch;
+
+                std::vector<Example> chunk;
+                chunk.reserve(ExamplesPerGroup);
+                for (auto i = 0; i < ChunksPerGroup; ++i) {
+                    auto next = GetNextChunk(cur_max_len);
+                    chunk.insert(chunk.end(), next.begin(), next.end());
+                    Cursor.Advance(ChunkSizeTrain, NSubsetsTrain, SubsetSizeTrain);
+                    Cursor.Save();
+                }
+
+                if (Cursor.lap > precursor.lap) {
+                    std::cout << "\033[2m  ── dataset lap wrap → lap " << Cursor.lap << " ──\033[0m\n";
+                }
+
+                const size_t n_examples = chunk.size();
+                const size_t n_batches = n_examples / Batch;
+                if (n_batches == 0) {
+                    std::cout << "  [g" << g + 1 << "/" << Groups
+                            << "] skipped (0 examples after length filter, max_len="
+                            << cur_max_len << ")\n";
+                    continue;
+                }
+
+
+                float group_loss = 0.f;
+                bool training_ok = false;
+                try {
+                    for (auto b = 0; b < n_batches; ++b) {
+                        timed("Batch", [this, &chunk, &b, &p_ss, &ss_rng, &group_loss, &loss_acc, &batches]() {
+                            BatchInpT batch_x;
+                            BatchTgtT batch_y;
+                            for (auto i = 0; i < Batch; ++i) {
+                                const auto &ex = chunk[b * Batch + i];
+                                const auto [_tf_inp, tgt] = EncodeExample(ex);
+                                const auto inp = EncodeInpWithSS(ex, p_ss, ss_rng);
+                                TensorSet<0>(batch_x, i, inp);
+                                TensorSet<0>(batch_y, i, tgt);
+                            }
+                            const float loss = Network.template BatchFit<SequenceSoftmaxCEL<Token::PAD>, Batch>(
+                                batch_x, batch_y, CELR(Cursor.total_seen));
+                            group_loss += loss;
+                            loss_acc += loss;
+                            batches++;
+                        });
+                        const long prev_total = Cursor.total_seen;
+                        Cursor.total_seen += Batch;
+                        Cursor.Save();
+
+                        if ((b + 1) % LogEvery == 0) {
+                            char line[256];
+                            std::snprintf(line, sizeof(line),
+                                          "%s  g%d/%lu b%d/%zu  loss=%.3f  ss=%.2f  len=%d  ep=%.2f",
+                                          EpochBar(Cursor.total_seen).c_str(),
+                                          g + 1, Groups, b + 1, n_batches
+                                          , group_loss / static_cast<float>(b + 1), p_ss,
+                                          cur_max_len,
+                                          static_cast<float>(Cursor.total_seen) / ExamplesPerEpoch);
+                            std::cout << line << "\n";
+                        }
+
+                        if (Cursor.total_seen / ExamplesPerEpoch > prev_total / ExamplesPerEpoch) {
+                            const float running_training_loss = batches > 0 ? loss_acc / batches : group_loss / (b + 1);
+                            const float cur_rl_reward = rl_reward_count > 0 ? rl_reward_acc / rl_reward_count : -1.f;
+                            const float cur_rl_acc = rl_reward_count > 0
+                                                         ? rl_acc_acc / rl_reward_count
+                                                         : -1.f;
+
+                            const long ep = Cursor.total_seen / ExamplesPerEpoch;
+                            std::cout << "\n══════════ " << ep << " × "
+                                    << ExamplesPerEpoch << " TRAINED ══════════\n";
+
+                            DistResult tf_dist, ar_dist;
+                            auto [tf_loss, ar_loss] = timed("[test]", [this, &tf_dist, &ar_dist]() {
+                                return EvalTestSet(tf_dist, ar_dist);
+                            });
+                            std::cout << "[test] tf_loss=" << tf_loss << "\n";
+                            std::cout << "[test] ar_loss=" << ar_loss << "\n";
+
+                            WriteProgressJSON(progress_base + "_" + std::to_string(Cursor.total_seen) + ".json",
+                                              Cursor.total_seen, Cursor.lap, running_training_loss, tf_loss, 0.f, 0.f,
+                                              cur_rl_reward,
+                                              cur_rl_acc, ar_loss, &tf_dist, &ar_dist);
+                            Network.Save(progress_base + "_save_" + std::to_string(Cursor.total_seen) + ".bin");
+                            Network.Save(checkpoint_model);
+
+                            std::cout << "[save] model + test-JSON @ trained=" << Cursor.total_seen << "\n";
+
+                            loss_acc = 0.f;
+                            batches = 0;
+                            rl_reward_acc = 0.f;
+                            rl_acc_acc = 0.f;
+                            rl_reward_count = 0;
+                        }
+                    }
+
+                    training_ok = true;
+                } catch (const std::exception &e) {
+                    std::cerr << "\n[ERROR] training failed at group " << g << ": " << e.what() << "\n";
+                }
+
+                if (!training_ok) {
+                    Cursor = precursor;
+                    std::cerr << "[cursor] rolled back to trained=" << precursor.total_seen << "\n";
+                }
+
+                if (n_examples >= RL_K) {
+                    auto [rl_nll_r, rl_acc_r] = RL_Update(n_examples, chunk, ss_rng);
+                    rl_reward_acc += rl_nll_r;
+                    rl_acc_acc += rl_acc_r;
+                    rl_reward_count++;
+                }
+
+                std::cout << "\033[2m  [g" << g + 1 << "/" << Groups << "] done  "
+                        << "loss=" << group_loss / n_batches
+                        << "  trained=" << Cursor.total_seen << "\033[0m\n";
+            }
+            Network.Save(checkpoint_model);
+            RL_State.Save();
+            Cursor.Save();
+            std::cout << "[save] session end: model + rl_state written\n";
         }
     };
 }
