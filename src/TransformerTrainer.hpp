@@ -4,10 +4,20 @@
 #include <iostream>
 #include <type_traits>
 
-#include "TrainableTensorNetwork.hpp"
-
 namespace
 TTTN {
+    template<typename F>
+    auto timed(const char *label, F &&fn) {
+        using Clock = std::chrono::high_resolution_clock;
+        const auto t0 = Clock::now();
+        auto result = fn();
+        const auto t1 = Clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::cout << "[" << label << "]  " << ms << " ms\n";
+        return result;
+    }
+
+
     struct DataCursor {
         int lap = 0;
         int step = 0;
@@ -49,7 +59,7 @@ TTTN {
             };
         }
 
-        ChunkRef CurrentChunk(int n_subsets, int subset_size, int chunk_size) const {
+        [[nodiscard]] ChunkRef CurrentChunk(int n_subsets, int subset_size, int chunk_size) const {
             const int n = ChunksPerLap(n_subsets, subset_size, chunk_size);
             const auto perm = LapPermutation(lap, n);
             return DecodeChunk(perm[step], n_subsets, subset_size, chunk_size);
@@ -269,12 +279,12 @@ TTTN {
             // LR schedule: ramps from lr_max -> lr_min over ramp_size epochs
             float lr_min, lr_max, ramp_size;
 
-            RLState(std::string_view rl_state_path)
+            explicit RLState(std::string_view rl_state_path)
                 : path(rl_state_path.data()),
                   lr_min(RL_LR_MIN), lr_max(RL_LR_MAX), ramp_size(RL_RAMP_SIZE) {
             }
 
-            float LR(long total_seen) const {
+            [[nodiscard]] float LR(long total_seen) const {
                 const float t = std::clamp(
                     static_cast<float>(total_seen) / (ramp_size * ExamplesPerEpoch), 0.f, 1.f);
                 return lr_max + (lr_min - lr_max) * t;
@@ -299,10 +309,10 @@ TTTN {
             if (!f) throw std::runtime_error("can't open file");
             f.seekg(byte_offset);
             std::vector<uint8_t> buf(n_bytes);
-            f.read(reinterpret_cast<char *>(buf.data()), n_bytes);
+            f.read(reinterpret_cast<char *>(buf.data()), static_cast<long>(n_bytes));
             // if we just read in fewer bytes than n_bytes, throw
             if (static_cast<size_t>(f.gcount()) != n_bytes) {
-                throw std::runtime_error("short read on " + path);
+                throw std::runtime_error("short read on data file");
             }
             return buf;
         }
@@ -310,19 +320,19 @@ TTTN {
         static std::vector<Example> GetNextChunk(std::string_view cursor_path, int max_tgt_len) {
             DataCursor cur;
             cur.Load(cursor_path);
-            DataCursor::ChunkRef ref = cur.CurrentChunk(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
+            auto [subset, row] = cur.CurrentChunk(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
 
-            int n_chunks = cur.ChunksPerLap(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
+            int n_chunks = DataCursor::ChunksPerLap(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
             std::cout << "\033[2m  · lap" << cur.lap << " step " << cur.step << "/" << n_chunks
-                    << "  s" << ref.subset << " r" << ref.row << "\033[0m\n";
+                    << "  s" << subset << " r" << row << "\033[0m\n";
 
             // get subset file name from ChunkRef
             std::ostringstream sd;
-            sd << "data/subset" << ref.subset << "/train";
+            sd << "data/subset" << subset << "/train";
             const std::string base = sd.str();
 
-            const auto src_off = static_cast<long>(ref.row) * SrcLen;
-            const auto tgt_off = static_cast<long>(ref.row) * TgtLen;
+            const auto src_off = static_cast<long>(row) * SrcLen;
+            const auto tgt_off = static_cast<long>(row) * TgtLen;
 
             // read in source and target
             auto src_bytes = ReadVec(base + ".src.bin", src_off, ChunkSizeTrain * SrcLen);
@@ -408,7 +418,7 @@ TTTN {
                     ++n_tokens;
                 }
 
-                const Token tok = static_cast<Token>(best);
+                const auto tok = static_cast<Token>(best);
                 out.push_back(tok);
                 if (tok == Token::EOS) break;
 
@@ -420,7 +430,7 @@ TTTN {
             if (out.empty() || out.back() != Token::EOS) {
                 out.push_back(Token::EOS);
             }
-            return {out, n_tokens > 0 ? static_cast<float>(total_nll / n_tokens) : 0.f};
+            return {out, n_tokens > 0 ? static_cast<float>(total_nll / static_cast<double>(n_tokens)) : 0.f};
         }
 
         static std::vector<Token> ArgmaxDecode(const OutputT &logits) {
@@ -468,8 +478,8 @@ TTTN {
             dist.true_dist.assign(VocabSize, 0.0);
             dist.pred_dist.assign(VocabSize, 0.0);
             for (size_t v = 0; v < VocabSize; ++v) {
-                dist.true_dist[v] = n_tokens > 0 ? true_counts[v] / n_tokens : 0.0;
-                dist.pred_dist[v] = n_tokens > 0 ? pred_soft_sum[v] / n_tokens : 0.0;
+                dist.true_dist[v] = n_tokens > 0 ? true_counts[v] / static_cast<double>(n_tokens) : 0.0;
+                dist.pred_dist[v] = n_tokens > 0 ? pred_soft_sum[v] / static_cast<double>(n_tokens) : 0.0;
             }
             dist.conf_hist.assign(bins, 0.0);
             double hist_total = 0.0;
@@ -609,8 +619,8 @@ TTTN {
                 std::vector<uint8_t> src_buf(n_rows * SrcLen);
                 std::vector<uint8_t> tgt_buf(n_rows * TgtLen);
                 // read in once
-                src_f.read(reinterpret_cast<char *>(src_buf.data()), src_buf.size());
-                tgt_f.read(reinterpret_cast<char *>(tgt_buf.data()), tgt_buf.size());
+                src_f.read(reinterpret_cast<char *>(src_buf.data()), static_cast<long>(src_buf.size()));
+                tgt_f.read(reinterpret_cast<char *>(tgt_buf.data()), static_cast<long>(tgt_buf.size()));
 
                 // shuffle row order for AR sampling within this subset
                 auto row_order = ShuffledIota<size_t>(n_rows, rng);
@@ -634,8 +644,8 @@ TTTN {
             FillDist(ar_dist, ar_tokens, ar_true, ar_pred_soft, ar_conf_hist, bins);
 
             return {
-                tf_examples > 0 ? static_cast<float>(tf_loss / tf_examples) : 0.f,
-                ar_tokens > 0 ? static_cast<float>(ar_nll / ar_tokens) : 0.f
+                tf_examples > 0 ? static_cast<float>(tf_loss / static_cast<double>(tf_examples)) : 0.f,
+                ar_tokens > 0 ? static_cast<float>(ar_nll / static_cast<double>(ar_tokens)) : 0.f
             };
         }
 
@@ -706,8 +716,8 @@ TTTN {
         std::pair<float, float> RL_Update(const int n_examples, const std::vector<Example> &chunk,
                                           RLState &rl_s, DataCursor &cur, std::mt19937 &ss_rng
         ) {
-            using RLBatchInp = typename PrependBatch<RL_K, InputT>::type;
-            using RLBatchTgt = typename PrependBatch<RL_K, OutputT>::type;
+            using RLBatchInp = PrependBatch<RL_K, InputT>::type;
+            using RLBatchTgt = PrependBatch<RL_K, OutputT>::type;
 
             std::uniform_int_distribution<size_t> pick_ex(0, n_examples - 1);
             float reward_sum = 0.f;
@@ -729,11 +739,7 @@ TTTN {
                 const auto acc = CalculateStrictAccuracy(decoded, ex.second);
                 accuracy_sum += acc.total > 0 ? static_cast<float>(acc.correct) / acc.total : 0.f;
 
-                std::vector<uint8_t> tgt_bytes(TgtLen, Token::PAD);
-                for (size_t t = 0; t < decoded.size() && t < TgtLen; ++t) {
-                    tgt_bytes[t] = static_cast<uint8_t>(decoded[t]);
-                }
-                const auto [rl_inp, rl_tgt] = EncodeExample({ex.first, tgt_bytes});
+                const auto [rl_inp, rl_tgt] = EncodeExample({ex.first, decoded});
                 TensorSet<0>(rl_x, k, rl_inp);
                 TensorSet<0>(rl_y, k, rl_tgt);
             }
@@ -759,6 +765,10 @@ TTTN {
                     << "  A=" << advantage
                     << "  rl_lr=" << rl_lr << "\033[0m\n";
             return {avg_R, avg_acc};
+        }
+
+
+        void Train(const unsigned laps, std::string_view model_name) {
         }
     };
 }
