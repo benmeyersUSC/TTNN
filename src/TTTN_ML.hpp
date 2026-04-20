@@ -438,4 +438,48 @@ namespace TTTN {
         constexpr size_t Last = std::tuple_size_v<TupleT> - 1;
         return OneHotAccuracy(A.template get<Last>(), labels);
     }
+
+
+    // ── Inference utilities ───────────────────────────────────────────────────
+
+    // Index of the maximum element in a 1D tensor.
+    template<size_t N>
+    size_t Argmax(const Tensor<N> &t) {
+        size_t best = 0;
+        for (size_t i = 1; i < N; ++i)
+            if (t.flat(i) > t.flat(best)) best = i;
+        return best;
+    }
+
+    // Index of the maximum element in row `row` of a 2D tensor.
+    template<size_t Rows, size_t Cols>
+    size_t ArgmaxAt(const Tensor<Rows, Cols> &t, size_t row) {
+        size_t best = 0;
+        for (size_t v = 1; v < Cols; ++v)
+            if (t(row, v) > t(row, best)) best = v;
+        return best;
+    }
+
+    // {argmax, sum_exp} for a 1D tensor — numerically stable softmax decomposition.
+    // Any softmax prob: exp(t[i] - t[argmax]) / sum_exp.
+    template<size_t N>
+    std::pair<size_t, float> SoftmaxStats(const Tensor<N> &t) {
+        const size_t best = Argmax(t);
+        const float max_val = t.flat(best);
+        float sum_exp = 0.f;
+        for (size_t v = 0; v < N; ++v)
+            sum_exp += std::exp(t.flat(v) - max_val);
+        return {best, sum_exp};
+    }
+
+    // {argmax, sum_exp} for row `row` of a 2D tensor.
+    template<size_t Rows, size_t Cols>
+    std::pair<size_t, float> SoftmaxStatsAt(const Tensor<Rows, Cols> &t, size_t row) {
+        const size_t best = ArgmaxAt(t, row);
+        const float max_val = t(row, best);
+        float sum_exp = 0.f;
+        for (size_t v = 0; v < Cols; ++v)
+            sum_exp += std::exp(t(row, v) - max_val);
+        return {best, sum_exp};
+    }
 };

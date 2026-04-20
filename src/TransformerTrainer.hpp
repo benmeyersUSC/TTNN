@@ -226,12 +226,6 @@ TTTN {
             return TF_LR_MAX + (TF_LR_MIN - TF_LR_MAX) * t;
         }
 
-        static float RLLR(const long total_seen) {
-            static constexpr float RL_Epoch_Inv = 1.f / (RL_RAMP_SIZE * ExamplesPerEpoch);
-            const float t = std::clamp(static_cast<float>(total_seen) * RL_Epoch_Inv, 0.f, 1.f);
-            return RL_LR_MAX + (RL_LR_MIN - RL_LR_MAX) * t;
-        }
-
         static constexpr float EX_EP_INV = 1.f / ExamplesPerEpoch;
 
         static float ScheduledSamplingRate(const long total_seen) {
@@ -270,16 +264,31 @@ TTTN {
         struct RLState {
             float baseline = 0.f;
             bool init = false;
+            std::string path;
 
-            void LoadRLState(const std::string &path) {
+            // LR schedule: ramps from lr_max -> lr_min over ramp_size epochs
+            float lr_min, lr_max, ramp_size;
+
+            RLState(std::string_view rl_state_path)
+                : path(rl_state_path.data()),
+                  lr_min(RL_LR_MIN), lr_max(RL_LR_MAX), ramp_size(RL_RAMP_SIZE) {
+            }
+
+            float LR(long total_seen) const {
+                const float t = std::clamp(
+                    static_cast<float>(total_seen) / (ramp_size * ExamplesPerEpoch), 0.f, 1.f);
+                return lr_max + (lr_min - lr_max) * t;
+            }
+
+            void LoadRLState() {
                 std::ifstream f(path);
-                if (!f)return;
+                if (!f) return;
                 int init_flag = 0;
                 f >> baseline >> init_flag;
                 init = init_flag != 0;
             }
 
-            void SaveRLState(std::string_view path) const {
+            void SaveRLState() const {
                 std::ofstream f(path.data());
                 f << baseline << " " << (init ? 1 : 0) << "\n";
             }
@@ -389,23 +398,13 @@ TTTN {
             for (size_t step = 0; step < TgtLen; ++step) {
                 const auto logits = block.DecodeStep(enc_out, seed);
 
-                size_t best = 0;
-                float best_val = logits(step, 0);
-                for (size_t v = 1; v < VocabSize; ++v) {
-                    if (logits(step, v) > best_val) {
-                        best_val = logits(step, v);
-                        best = v;
-                    }
-                }
+                const size_t best = ArgmaxAt(logits, step);
 
                 if constexpr (NLL) {
                     const uint8_t true_tok = ex.second[step];
-                    if (true_tok == static_cast<uint8_t>(Token::PAD))break;
-                    double sum_exp = 0.0;
-                    for (size_t v = 0; v < VocabSize; ++v) {
-                        sum_exp += std::exp(static_cast<double>(logits(step, v) - best_val));
-                    }
-                    total_nll -= logits(step, true_tok) - best_val - std::log(sum_exp);
+                    if (true_tok == static_cast<uint8_t>(Token::PAD)) break;
+                    const auto [_, sum_exp] = SoftmaxStatsAt(logits, step);
+                    total_nll -= (logits(step, true_tok) - logits(step, best)) - std::log(sum_exp);
                     ++n_tokens;
                 }
 
@@ -426,17 +425,8 @@ TTTN {
 
         static std::vector<Token> ArgmaxDecode(const OutputT &logits) {
             std::vector<Token> out;
-            for (size_t t = 0; t < TgtLen; ++t) {
-                size_t best = 0;
-                float best_val = logits(t, 0);
-                for (size_t v = 1; v < VocabSize; ++v) {
-                    if (logits(t, v) > best_val) {
-                        best_val = logits(t, v);
-                        best = v;
-                    }
-                }
-                out.push_back(static_cast<Token>(best));
-            }
+            for (size_t t = 0; t < TgtLen; ++t)
+                out.push_back(static_cast<Token>(ArgmaxAt(logits, t)));
             return out;
         }
 
@@ -525,12 +515,8 @@ TTTN {
                     tf_true[true_tok] += 1.0;
                     ++tf_tokens;
 
-                    float max_l = logits(t, 0);
-                    for (size_t v = 1; v < VocabSize; ++v)
-                        if (logits(t, v) > max_l) max_l = logits(t, v);
-                    double sum_exp = 0.0;
-                    for (size_t v = 0; v < VocabSize; ++v)
-                        sum_exp += std::exp(logits(t, v) - max_l);
+                    const auto [max_idx, sum_exp] = SoftmaxStatsAt(logits, t);
+                    const float max_l = logits(t, max_idx);
                     for (size_t v = 0; v < VocabSize; ++v)
                         tf_pred_soft[v] += std::exp(logits(t, v) - max_l) / sum_exp;
                     double p_correct = std::exp(logits(t, true_tok) - max_l) / sum_exp;
@@ -565,12 +551,8 @@ TTTN {
 
                     const auto logits = block.DecodeStep(enc_out, seed);
 
-                    float max_l = logits(step, 0);
-                    for (size_t v = 1; v < VocabSize; ++v)
-                        if (logits(step, v) > max_l) max_l = logits(step, v);
-                    double sum_exp = 0.0;
-                    for (size_t v = 0; v < VocabSize; ++v)
-                        sum_exp += std::exp(static_cast<double>(logits(step, v) - max_l));
+                    const auto [best, sum_exp] = SoftmaxStatsAt(logits, step);
+                    const float max_l = logits(step, best);
 
                     ar_nll -= (logits(step, true_tok) - max_l) - std::log(sum_exp);
                     ++ar_tokens;
@@ -581,14 +563,6 @@ TTTN {
                     double p_correct_ar = std::exp(static_cast<double>(logits(step, true_tok) - max_l)) / sum_exp;
                     ar_conf_hist[std::min(bins - 1, static_cast<int>(p_correct_ar * bins))] += 1.0;
 
-                    // advance seed with argmax (AR, not GT)
-                    size_t best = 0;
-                    float best_val = logits(step, 0);
-                    for (size_t v = 1; v < VocabSize; ++v)
-                        if (logits(step, v) > best_val) {
-                            best_val = logits(step, v);
-                            best = v;
-                        }
                     if (static_cast<Token>(best) == Token::EOS) break;
                     if (step + 1 < TgtLen)
                         seed(step + 1, best) = 1.0f;
@@ -619,9 +593,8 @@ TTTN {
             std::cout << "[test_eval] ar_quota=" << ar_quota << "  tf=all subsets\n";
 
             // shuffle subset order so AR samples aren't always front-loaded on subset 0
-            auto order = ShuffledIota<int>(NSubsetsTrain, rng);
 
-            for (int s: order) {
+            for (auto order = ShuffledIota<int>(NSubsetsTrain, rng); int s: order) {
                 std::ostringstream sd;
                 sd << "data/subset" << s << "/test";
                 const std::string base = sd.str();
@@ -664,6 +637,128 @@ TTTN {
                 tf_examples > 0 ? static_cast<float>(tf_loss / tf_examples) : 0.f,
                 ar_tokens > 0 ? static_cast<float>(ar_nll / ar_tokens) : 0.f
             };
+        }
+
+        static void DistToJSON(const DistResult *dist, std::ofstream &f, std::string_view prefix, const int bins) {
+            if (dist && dist->n_tokens > 0) {
+                f << std::setprecision(8);
+                f << ",\n  \"n_tokens\": " << dist->n_tokens << ",\n";
+
+                f << "  \"token_names\": [";
+                for (size_t v = 0; v < VocabSize; ++v) {
+                    f << "\"" << TokenName(static_cast<Token>(v)) << "\"";
+                    if (v + 1 < VocabSize) f << ", ";
+                }
+                f << "],\n";
+
+                f << "  \"true_dist\": [";
+                for (size_t v = 0; v < VocabSize; ++v) {
+                    f << dist->true_dist[v];
+                    if (v + 1 < VocabSize) f << ", ";
+                }
+                f << "],\n";
+
+                f << "  \"pred_dist\": [";
+                for (size_t v = 0; v < VocabSize; ++v) {
+                    f << dist->pred_dist[v];
+                    if (v + 1 < VocabSize) f << ", ";
+                }
+                f << "]";
+                if (!dist->conf_hist.empty()) {
+                    f << ",\n  \"" << prefix.data() << "_conf_hist\": [";
+                    for (int i = 0; i < bins; ++i) {
+                        f << dist->conf_hist[i];
+                        if (i + 1 < bins) f << ", ";
+                    }
+                    f << "]";
+                }
+            }
+        }
+
+        static void WriteProgressJSON(const std::string &path, const long total_seen, const int lap,
+                                      const float train_loss, const float test_loss, const float avg_tf_pct,
+                                      const float avg_autoreg_pct,
+                                      const float avg_rl_reward = -1.f,
+                                      const float avg_rl_accuracy = -1.f, const float ar_test_loss = -1.f,
+                                      const DistResult *tf_dist = nullptr, const DistResult *ar_dist = nullptr,
+                                      const int dist_bins = 50) {
+            std::ofstream f(path);
+            f << std::fixed << std::setprecision(6);
+            f << "{\n";
+            f << "  \"total_seen\": " << total_seen << ",\n";
+            f << "  \"lap\": " << lap << ",\n";
+            f << "  \"train_loss\": " << train_loss << ",\n";
+            f << "  \"test_loss\": " << test_loss << ",\n";
+            f << "  \"avg_tf_pct\": " << avg_tf_pct << ",\n";
+            f << "  \"avg_autoreg_pct\": " << avg_autoreg_pct << ",\n";
+            f << "  \"avg_rl_reward\": " << avg_rl_reward << ",\n";
+            f << "  \"avg_rl_accuracy\": " << avg_rl_accuracy << ",\n";
+            f << "  \"ar_test_loss\": " << ar_test_loss << ",\n";
+            f << std::setprecision(4);
+            f << "  \"ss_rate\": " << ScheduledSamplingRate(total_seen) << ",\n";
+            f << "  \"max_tgt_len\": " << MaxAsmLength(total_seen);
+            DistToJSON(tf_dist, f, "tf", dist_bins);
+            DistToJSON(ar_dist, f, "ar", dist_bins);
+            f << "\n}\n";
+        }
+
+
+        std::pair<float, float> RL_Update(const int n_examples, const std::vector<Example> &chunk,
+                                          RLState &rl_s, DataCursor &cur, std::mt19937 &ss_rng
+        ) {
+            using RLBatchInp = typename PrependBatch<RL_K, InputT>::type;
+            using RLBatchTgt = typename PrependBatch<RL_K, OutputT>::type;
+
+            std::uniform_int_distribution<size_t> pick_ex(0, n_examples - 1);
+            float reward_sum = 0.f;
+            float accuracy_sum = 0.f;
+            RLBatchInp rl_x{};
+            RLBatchTgt rl_y{};
+
+            for (int k = 0; k < RL_K; ++k) {
+                const auto &ex = chunk[pick_ex(ss_rng)];
+
+                // AR decode + NLL against GT
+                const auto [decoded, nll] = AutoregressiveDecode<true>(ex);
+
+                // reward is NNLL, negative-negative-log likelihood == log likelihood
+                // we want the negative of NLL to be as high as possible!
+                // LL(1), which is the best possible value here, = 0 and everything else is negative
+                reward_sum += -nll;
+
+                const auto acc = CalculateStrictAccuracy(decoded, ex.second);
+                accuracy_sum += acc.total > 0 ? static_cast<float>(acc.correct) / acc.total : 0.f;
+
+                std::vector<uint8_t> tgt_bytes(TgtLen, Token::PAD);
+                for (size_t t = 0; t < decoded.size() && t < TgtLen; ++t) {
+                    tgt_bytes[t] = static_cast<uint8_t>(decoded[t]);
+                }
+                const auto [rl_inp, rl_tgt] = EncodeExample({ex.first, tgt_bytes});
+                TensorSet<0>(rl_x, k, rl_inp);
+                TensorSet<0>(rl_y, k, rl_tgt);
+            }
+            const float avg_R = reward_sum / RL_K;
+            const float avg_acc = accuracy_sum / RL_K;
+
+            if (!rl_s.init) {
+                rl_s.baseline = avg_R;
+                rl_s.init = true;
+            } else {
+                rl_s.baseline = RL_BaselineDecay * rl_s.baseline + (1.f - RL_BaselineDecay) * avg_R;
+            }
+            rl_s.SaveRLState();
+
+            const float advantage = avg_R - rl_s.baseline;
+            const float rl_lr = rl_s.LR(cur.total_seen) * advantage;
+
+            Network.template BatchFit<SequenceSoftmaxCEL<Token::PAD>, RL_K>(rl_x, rl_y, rl_lr);
+
+            std::cout << "\033[2m  [rl] nll_R=" << avg_R
+                    << "  acc=" << avg_acc
+                    << "  base=" << rl_s.baseline
+                    << "  A=" << advantage
+                    << "  rl_lr=" << rl_lr << "\033[0m\n";
+            return {avg_R, avg_acc};
         }
     };
 }
