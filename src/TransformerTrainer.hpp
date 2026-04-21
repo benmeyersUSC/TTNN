@@ -531,7 +531,7 @@ TTTN {
                         const std::vector<uint8_t> &tgt_buf,
                         double &tf_loss,
                         long &tf_examples,
-                        unsigned &tf_tokens, std::vector<double> &tf_true, std::vector<double> &tf_pred_soft,
+                        long &tf_tokens, std::vector<double> &tf_true, std::vector<double> &tf_pred_soft,
                         std::vector<double> &tf_conf_hist) {
             for (size_t r = 0; r < n_rows; ++r) {
                 const Example ex{
