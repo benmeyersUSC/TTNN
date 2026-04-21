@@ -827,10 +827,15 @@ TTTN {
 
             Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(Token::PAD)>, RL_K>(rl_x, rl_y, rl_lr);
 
+            const float rl_ramp_pct = std::clamp(
+                static_cast<float>(Cursor.total_seen) / (RL_RAMP_SIZE * ExamplesPerEpoch),
+                0.f, 1.f) * 100.f;
             std::cout << "\033[2m  [rl] nll_R=" << avg_R
                     << "  acc=" << avg_acc
                     << "  base=" << RL_State.baseline
                     << "  A=" << advantage
+                    << "  sched_lr=" << RL_State.LR(Cursor.total_seen)
+                    << "  rl_ramp=" << rl_ramp_pct << "%"
                     << "  rl_lr=" << rl_lr << "\033[0m\n";
             return {avg_R, avg_acc};
         }
@@ -974,13 +979,17 @@ TTTN {
 
                         if ((b + 1) % LogEvery == 0) {
                             char line[256];
+                            const float ce_ramp_pct = std::clamp(
+                                static_cast<float>(Cursor.total_seen) / (TF_RAMP_SIZE * ExamplesPerEpoch),
+                                0.f, 1.f) * 100.f;
                             std::snprintf(line, sizeof(line),
-                                          "%s  g%d/%lu b%d/%zu  loss=%.3f  ss=%.2f  len=%d  ep=%.2f",
+                                          "%s  g%d/%lu b%d/%zu  loss=%.3f  ss=%.2f  len=%d  ep=%.2f  ce_ramp=%.1f%%",
                                           EpochBar(Cursor.total_seen).c_str(),
-                                          g + 1, Groups, b + 1, n_batches
-                                          , group_loss / static_cast<float>(b + 1), p_ss,
+                                          g + 1, Groups, b + 1, n_batches,
+                                          group_loss / static_cast<float>(b + 1), p_ss,
                                           cur_max_len,
-                                          static_cast<float>(Cursor.total_seen) / ExamplesPerEpoch);
+                                          static_cast<float>(Cursor.total_seen) / ExamplesPerEpoch,
+                                          ce_ramp_pct);
                             std::cout << line << "\n";
                         }
 
