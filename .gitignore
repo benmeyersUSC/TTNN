@@ -9,3 +9,5 @@
 !research/
 !research/**
 !tttn_dump.txt
+!tools/
+!tools/**

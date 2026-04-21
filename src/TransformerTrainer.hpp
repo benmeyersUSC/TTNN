@@ -578,6 +578,9 @@ TTTN {
                         std::vector<double> &ar_conf_hist) {
             const auto &block = Network.template block<0>();
             for (long i = 0; i < ar_this_subset; ++i) {
+                if (i > 0 && i % 10 == 0)
+                    std::cout << "    [ar] " << i << "/" << ar_this_subset
+                            << "  nll/tok=" << (ar_tokens > 0 ? ar_nll / ar_tokens : 0.0) << "\n";
                 const size_t r = row_order[static_cast<size_t>(i)];
                 const uint8_t *xs = src_buf.data() + r * SrcLen;
                 const uint8_t *ys = tgt_buf.data() + r * TgtLen;
@@ -673,6 +676,10 @@ TTTN {
                 // AR pass: first ar_this_subset rows in shuffled order
                 ARTestPass(ar_this_subset, bins, row_order, src_buf, tgt_buf, ar_nll, ar_tokens, ar_done, ar_true,
                            ar_pred_soft, ar_conf_hist);
+
+                std::cout << "  [test] subset=" << s
+                        << "  tf_ex=" << tf_examples
+                        << "  ar=" << ar_done << "/" << ar_quota << "\n";
             }
 
             FillDist(tf_dist, tf_tokens, tf_true, tf_pred_soft, tf_conf_hist, bins);
@@ -934,18 +941,29 @@ TTTN {
                 try {
                     for (auto b = 0; b < n_batches; ++b) {
                         timed("Batch", [this, &chunk, &b, &p_ss, &ss_rng, &group_loss, &loss_acc, &batches]() {
-                            BatchInpT batch_x;
-                            BatchTgtT batch_y;
+                            // --- old batched path (kept for reference) ---
+                            // BatchInpT batch_x;
+                            // BatchTgtT batch_y;
+                            // for (auto i = 0; i < Batch; ++i) {
+                            //     const auto &ex = chunk[b * Batch + i];
+                            //     const auto [_tf_inp, tgt] = EncodeExample(ex);
+                            //     const auto inp = EncodeInpWithSS(ex, p_ss, ss_rng);
+                            //     TensorSet<0>(batch_x, i, inp);
+                            //     TensorSet<0>(batch_y, i, tgt);
+                            // }
+                            // const float loss = Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(
+                            //     Token::PAD)>, Batch>(
+                            //     batch_x, batch_y, LR(Cursor.total_seen));
+                            // --- sequential path: one Fit per example ---
+                            float batch_loss = 0.f;
                             for (auto i = 0; i < Batch; ++i) {
                                 const auto &ex = chunk[b * Batch + i];
                                 const auto [_tf_inp, tgt] = EncodeExample(ex);
                                 const auto inp = EncodeInpWithSS(ex, p_ss, ss_rng);
-                                TensorSet<0>(batch_x, i, inp);
-                                TensorSet<0>(batch_y, i, tgt);
+                                batch_loss += Network.template Fit<SequenceSoftmaxCEL<static_cast<size_t>(
+                                    Token::PAD)> >(inp, tgt, LR(Cursor.total_seen));
                             }
-                            const float loss = Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(
-                                Token::PAD)>, Batch>(
-                                batch_x, batch_y, LR(Cursor.total_seen));
+                            const float loss = batch_loss / Batch;
                             group_loss += loss;
                             loss_acc += loss;
                             batches++;
