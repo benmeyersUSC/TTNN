@@ -380,7 +380,7 @@ TTTN {
                 if (max_tgt_len < TgtLen) {
                     int non_pad = 0;
                     for (int j = 0; j < TgtLen; ++j) {
-                        if (ys[j] != Token::PAD) {
+                        if (ys[j] != static_cast<uint8_t>(Token::PAD)) {
                             ++non_pad;
                         }
                     }
@@ -530,7 +530,7 @@ TTTN {
         void TFTestPass(const size_t n_rows, const int bins, const std::vector<uint8_t> &src_buf,
                         const std::vector<uint8_t> &tgt_buf,
                         double &tf_loss,
-                        unsigned &tf_examples,
+                        long &tf_examples,
                         unsigned &tf_tokens, std::vector<double> &tf_true, std::vector<double> &tf_pred_soft,
                         std::vector<double> &tf_conf_hist) {
             for (size_t r = 0; r < n_rows; ++r) {
@@ -540,7 +540,7 @@ TTTN {
                 };
                 const auto [inp, tgt] = EncodeExample(ex);
                 const auto logits = Network.Forward(inp);
-                tf_loss += SequenceSoftmaxCEL<Token::PAD>::Loss(logits, tgt).flat(0);
+                tf_loss += SequenceSoftmaxCEL<static_cast<size_t>(Token::PAD)>::Loss(logits, tgt).flat(0);
                 ++tf_examples;
 
                 for (size_t t = 0; t < TgtLen; ++t) {
@@ -788,10 +788,15 @@ TTTN {
                 // LL(1), which is the best possible value here, = 0 and everything else is negative
                 reward_sum += -nll;
 
-                const auto acc = CalculateStrictAccuracy(decoded, ex.second);
+                std::vector<uint8_t> decoded_bytes(decoded.size());
+                std::ranges::transform(decoded, decoded_bytes.begin(), [](Token t){ return static_cast<uint8_t>(t); });
+                std::vector<Token> tgt_tokens(ex.second.size());
+                std::ranges::transform(ex.second, tgt_tokens.begin(), [](uint8_t b){ return static_cast<Token>(b); });
+
+                const auto acc = CalculateStrictAccuracy(decoded, tgt_tokens);
                 accuracy_sum += acc.total > 0 ? static_cast<float>(acc.correct) / acc.total : 0.f;
 
-                const auto [rl_inp, rl_tgt] = EncodeExample({ex.first, decoded});
+                const auto [rl_inp, rl_tgt] = EncodeExample({ex.first, decoded_bytes});
                 TensorSet<0>(rl_x, k, rl_inp);
                 TensorSet<0>(rl_y, k, rl_tgt);
             }
@@ -809,7 +814,7 @@ TTTN {
             const float advantage = avg_R - RL_State.baseline;
             const float rl_lr = RL_State.LR(Cursor.total_seen) * advantage;
 
-            Network.template BatchFit<SequenceSoftmaxCEL<Token::PAD>, RL_K>(rl_x, rl_y, rl_lr);
+            Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(Token::PAD)>, RL_K>(rl_x, rl_y, rl_lr);
 
             std::cout << "\033[2m  [rl] nll_R=" << avg_R
                     << "  acc=" << avg_acc
@@ -934,7 +939,7 @@ TTTN {
                                 TensorSet<0>(batch_x, i, inp);
                                 TensorSet<0>(batch_y, i, tgt);
                             }
-                            const float loss = Network.template BatchFit<SequenceSoftmaxCEL<Token::PAD>, Batch>(
+                            const float loss = Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(Token::PAD)>, Batch>(
                                 batch_x, batch_y, LR(Cursor.total_seen));
                             group_loss += loss;
                             loss_acc += loss;
@@ -972,8 +977,8 @@ TTTN {
                                     << ExamplesPerEpoch << " TRAINED ══════════\n";
 
                             DistResult tf_dist, ar_dist;
-                            auto [tf_loss, ar_loss] = timed("[test]", [this, &tf_dist, &ar_dist]() {
-                                return EvalTestSet(tf_dist, ar_dist);
+                            auto [tf_loss, ar_loss] = timed("[test]", [this, &tf_dist, &ar_dist, &ss_rng]() {
+                                return EvalTestSet(tf_dist, ar_dist, ss_rng);
                             });
                             std::cout << "[test] tf_loss=" << tf_loss << "\n";
                             std::cout << "[test] ar_loss=" << ar_loss << "\n";
