@@ -925,6 +925,8 @@ TTTN {
                     chunk.insert(chunk.end(), next.begin(), next.end());
                     Cursor.Advance(ChunkSizeTrain, NSubsetsTrain, SubsetSizeTrain);
                     Cursor.Save();
+                    Network.SaveForTraining(checkpoint_model);
+                    RL_State.Save();
                 }
 
                 if (Cursor.lap > precursor.lap) {
