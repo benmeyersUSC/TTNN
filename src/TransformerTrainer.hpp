@@ -212,7 +212,7 @@ TTTN {
             [[nodiscard]] float LR(long total_seen) const {
                 const float t = std::clamp(
                     static_cast<float>(total_seen) / (ramp_size * ExamplesPerEpoch), 0.f, 1.f);
-                return lr_max + (lr_min - lr_max) * t;
+                return lr_min + (lr_max - lr_min) * t;
             }
 
             void Load() {
