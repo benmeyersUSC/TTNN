@@ -102,16 +102,19 @@ TTTN {
     template<typename T>
     concept IsEnum = std::is_enum_v<T>;
 
+    // Contract: define an enum with PAD, BOS, EOS, COUNT (COUNT must be last — sets VocabSize).
+    // Also provide a free function in the same namespace: std::string TokenName(T t)
     template<typename T>
     concept TokenEnum =
-            // T must be an enum value
-            std::is_enum_v<T> && requires
-            {
-                // and we must have PAD, BOS tokens and a COUNT value (always last!)
-                { T::PAD } -> std::same_as<T>;
-                { T::BOS } -> std::same_as<T>;
-                { T::EOS } -> std::same_as<T>;
+            std::is_enum_v<T>
+            && requires {
+                { T::PAD }   -> std::same_as<T>;
+                { T::BOS }   -> std::same_as<T>;
+                { T::EOS }   -> std::same_as<T>;
                 { T::COUNT } -> std::same_as<T>;
+            }
+            && requires(T t) {
+                { TokenName(t) } -> std::convertible_to<std::string>;
             };
 
 
@@ -228,12 +231,17 @@ TTTN {
         NetworkT Network;
         RLState RL_State;
         DataCursor Cursor;
+        std::string dashboard_script_;   // path to transformer_trainer_dashboard.py; empty = disabled
 
-        TransformerTrainer()
+    public:
+        // dashboard_script: path to tools/transformer_trainer_dashboard.py (or "" to disable).
+        explicit TransformerTrainer(std::string_view dashboard_script = "")
             : RL_State(CheckpointDir() + "/rl_state.txt"),
-              Cursor(CheckpointDir() + "/cursor.txt") {
+              Cursor(CheckpointDir() + "/cursor.txt"),
+              dashboard_script_(dashboard_script) {
         }
 
+    private:
         static const std::string &ModelString() {
             static const std::string str = std::to_string(EmbeddingDimension) +
                                            "_h" + std::to_string(NumHeads) +
@@ -251,12 +259,12 @@ TTTN {
         using TokenizedExample = std::pair<std::vector<Token>, std::vector<Token> >;
 
         static TokenizedExample TokenizeExample(const Example &ex) {
-            std::vector<Token> src, asmb;
+            std::vector<Token> src, tgt;
             src.reserve(SrcLen);
-            asmb.reserve(TgtLen);
+            tgt.reserve(TgtLen);
             for (const auto &n: ex.first) src.emplace_back(static_cast<Token>(n));
-            for (const auto &n: ex.second) src.emplace_back(static_cast<Token>(n));
-            return {src, asmb};
+            for (const auto &n: ex.second) tgt.emplace_back(static_cast<Token>(n));
+            return {src, tgt};
         }
 
         struct AccuracyStats {
@@ -399,7 +407,7 @@ TTTN {
             }
 
             tgt_shifted_oh(0, static_cast<size_t>(Token::BOS)) = 1.f;
-            for (size_t i = 0; i < TgtLen; ++i) {
+            for (size_t i = 1; i < TgtLen; ++i) {
                 tgt_shifted_oh(i, ex.second[i - 1]) = 1.f;
             }
 
@@ -670,39 +678,42 @@ TTTN {
             };
         }
 
-        static void DistToJSON(const DistResult *dist, std::ofstream &f, std::string_view prefix, const int bins) {
-            if (dist && dist->n_tokens > 0) {
-                f << std::setprecision(8);
-                f << ",\n  \"n_tokens\": " << dist->n_tokens << ",\n";
+        // Writes dist fields prefixed by `prefix`: {prefix}_n_tokens, {prefix}_pred_dist,
+        // {prefix}_conf_hist. For prefix=="tf" also writes token_names and true_dist (once).
+        static void DistToJSON(const DistResult *dist, std::ofstream &f,
+                               std::string_view prefix, const int bins) {
+            if (!dist || dist->n_tokens <= 0) return;
+            const std::string p(prefix);
+            f << std::setprecision(8);
+            f << ",\n  \"" << p << "_n_tokens\": " << dist->n_tokens;
 
-                f << "  \"token_names\": [";
+            if (prefix == "tf") {
+                f << ",\n  \"token_names\": [";
                 for (size_t v = 0; v < VocabSize; ++v) {
                     f << "\"" << TokenName(static_cast<Token>(v)) << "\"";
                     if (v + 1 < VocabSize) f << ", ";
                 }
-                f << "],\n";
-
-                f << "  \"true_dist\": [";
+                f << "],\n  \"true_dist\": [";
                 for (size_t v = 0; v < VocabSize; ++v) {
                     f << dist->true_dist[v];
                     if (v + 1 < VocabSize) f << ", ";
                 }
-                f << "],\n";
+                f << "]";
+            }
 
-                f << "  \"pred_dist\": [";
-                for (size_t v = 0; v < VocabSize; ++v) {
-                    f << dist->pred_dist[v];
-                    if (v + 1 < VocabSize) f << ", ";
+            f << ",\n  \"" << p << "_pred_dist\": [";
+            for (size_t v = 0; v < VocabSize; ++v) {
+                f << dist->pred_dist[v];
+                if (v + 1 < VocabSize) f << ", ";
+            }
+            f << "]";
+            if (!dist->conf_hist.empty()) {
+                f << ",\n  \"" << p << "_conf_hist\": [";
+                for (int i = 0; i < bins; ++i) {
+                    f << dist->conf_hist[i];
+                    if (i + 1 < bins) f << ", ";
                 }
                 f << "]";
-                if (!dist->conf_hist.empty()) {
-                    f << ",\n  \"" << prefix.data() << "_conf_hist\": [";
-                    for (int i = 0; i < bins; ++i) {
-                        f << dist->conf_hist[i];
-                        if (i + 1 < bins) f << ", ";
-                    }
-                    f << "]";
-                }
             }
         }
 
@@ -716,18 +727,40 @@ TTTN {
             std::ofstream f(path);
             f << std::fixed << std::setprecision(6);
             f << "{\n";
-            f << "  \"total_seen\": " << total_seen << ",\n";
-            f << "  \"lap\": " << lap << ",\n";
-            f << "  \"train_loss\": " << train_loss << ",\n";
-            f << "  \"test_loss\": " << test_loss << ",\n";
-            f << "  \"avg_tf_pct\": " << avg_tf_pct << ",\n";
+
+            // Static config block — lets the Python dashboard be dataset-agnostic
+            f << "  \"config\": {\n";
+            f << "    \"examples_per_epoch\": " << ExamplesPerEpoch << ",\n";
+            f << "    \"src_len\": "            << SrcLen           << ",\n";
+            f << "    \"tgt_len\": "            << TgtLen           << ",\n";
+            f << "    \"vocab_size\": "         << VocabSize        << ",\n";
+            f << "    \"pad_id\": "             << static_cast<size_t>(Token::PAD) << ",\n";
+            f << "    \"tf_lr_min\": "          << TF_LR_MIN        << ",\n";
+            f << "    \"tf_lr_max\": "          << TF_LR_MAX        << ",\n";
+            f << "    \"tf_ramp_size\": "       << TF_RAMP_SIZE     << ",\n";
+            f << "    \"ss_ramp_start\": "      << SS_RAMP_START    << ",\n";
+            f << "    \"ss_ramp_end\": "        << SS_RAMP_END      << ",\n";
+            f << "    \"ss_min\": "             << SS_MIN           << ",\n";
+            f << "    \"ss_max\": "             << SS_MAX           << ",\n";
+            f << "    \"tgt_len_min\": "        << TGT_LEN_MIN      << ",\n";
+            f << "    \"tgt_len_ramp\": "       << TGT_LEN_RAMP     << ",\n";
+            f << "    \"rl_lr_min\": "          << RL_LR_MIN        << ",\n";
+            f << "    \"rl_lr_max\": "          << RL_LR_MAX        << ",\n";
+            f << "    \"rl_ramp_size\": "       << RL_RAMP_SIZE     << "\n";
+            f << "  },\n";
+
+            f << "  \"total_seen\": "      << total_seen      << ",\n";
+            f << "  \"lap\": "             << lap             << ",\n";
+            f << "  \"train_loss\": "      << train_loss      << ",\n";
+            f << "  \"test_loss\": "       << test_loss       << ",\n";
+            f << "  \"avg_tf_pct\": "      << avg_tf_pct      << ",\n";
             f << "  \"avg_autoreg_pct\": " << avg_autoreg_pct << ",\n";
-            f << "  \"avg_rl_reward\": " << avg_rl_reward << ",\n";
+            f << "  \"avg_rl_reward\": "   << avg_rl_reward   << ",\n";
             f << "  \"avg_rl_accuracy\": " << avg_rl_accuracy << ",\n";
-            f << "  \"ar_test_loss\": " << ar_test_loss << ",\n";
+            f << "  \"ar_test_loss\": "    << ar_test_loss    << ",\n";
             f << std::setprecision(4);
-            f << "  \"ss_rate\": " << ScheduledSamplingRate(total_seen) << ",\n";
-            f << "  \"max_tgt_len\": " << MaxAsmLength(total_seen);
+            f << "  \"ss_rate\": "         << ScheduledSamplingRate(total_seen) << ",\n";
+            f << "  \"max_tgt_len\": "     << MaxAsmLength(total_seen);
             DistToJSON(tf_dist, f, "tf", dist_bins);
             DistToJSON(ar_dist, f, "ar", dist_bins);
             f << "\n}\n";
@@ -772,7 +805,7 @@ TTTN {
             } else {
                 RL_State.baseline = RL_BaselineDecay * RL_State.baseline + (1.f - RL_BaselineDecay) * avg_R;
             }
-            RL_State.SaveRLState();
+            RL_State.Save();
 
             const float advantage = avg_R - RL_State.baseline;
             const float rl_lr = RL_State.LR(Cursor.total_seen) * advantage;
@@ -787,6 +820,7 @@ TTTN {
             return {avg_R, avg_acc};
         }
 
+    public:
         void Print(std::ostream &os) {
             std::filesystem::create_directories(CheckpointDir());
             std::cout << "[config] checkpoint dir: " << CheckpointDir() << "\n";
@@ -806,6 +840,24 @@ TTTN {
 
         void Train() {
             timed("FULL TRAINING SESSION", [this] { train_(); });
+        }
+
+        // AR-decode a raw source token sequence and return predicted tokens up to EOS.
+        std::vector<Token> Infer(const std::vector<uint8_t> &src_ids) {
+            Example ex{src_ids, std::vector<uint8_t>(TgtLen, static_cast<uint8_t>(Token::PAD))};
+            auto [tokens, _nll] = AutoregressiveDecode(ex);
+            return tokens;
+        }
+
+        void RunDashboard() const {
+            if (dashboard_script_.empty()) return;
+            const std::string output = CheckpointDir() + "/training_dashboard.html";
+            const std::string cmd    = "python3 " + dashboard_script_
+                                     + " " + CheckpointDir()
+                                     + " " + output
+                                     + " && open " + output;
+            std::cout << "[dashboard] " << cmd << "\n";
+            std::system(cmd.c_str());
         }
 
         void train_() {
@@ -905,7 +957,9 @@ TTTN {
                         }
 
                         if (Cursor.total_seen / ExamplesPerEpoch > prev_total / ExamplesPerEpoch) {
-                            const float running_training_loss = batches > 0 ? loss_acc / batches : group_loss / (b + 1);
+                            const float running_training_loss = batches > 0
+                                                                    ? loss_acc / static_cast<float>(batches)
+                                                                    : group_loss / (b + 1);
                             const float cur_rl_reward = rl_reward_count > 0 ? rl_reward_acc / rl_reward_count : -1.f;
                             const float cur_rl_acc = rl_reward_count > 0
                                                          ? rl_acc_acc / rl_reward_count
@@ -930,6 +984,7 @@ TTTN {
                             Network.Save(checkpoint_model);
 
                             std::cout << "[save] model + test-JSON @ trained=" << Cursor.total_seen << "\n";
+                            RunDashboard();
 
                             loss_acc = 0.f;
                             batches = 0;
