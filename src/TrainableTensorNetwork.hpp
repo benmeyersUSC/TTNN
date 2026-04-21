@@ -163,14 +163,21 @@ namespace TTTN {
 
         void Save(const std::string &path) const {
             mSeq_.Save(path);
-            std::ofstream f(path, std::ios::binary | std::ios::app);
-            f.write(reinterpret_cast<const char*>(&mAdam_), sizeof(AdamState));
         }
 
         void Load(const std::string &path) {
             mSeq_.Load(path);
+        }
+
+        void SaveForTraining(const std::string &path) const {
+            mSeq_.SaveForTraining(path);
+            std::ofstream f(path, std::ios::binary | std::ios::app);
+            f.write(reinterpret_cast<const char*>(&mAdam_), sizeof(AdamState));
+        }
+
+        void LoadForTraining(const std::string &path) {
+            mSeq_.LoadForTraining(path);
             std::ifstream f(path, std::ios::binary);
-            // seek to the Adam trailer at EOF - sizeof(AdamState)
             f.seekg(0, std::ios::end);
             const auto end = f.tellg();
             f.seekg(end - static_cast<std::streamoff>(sizeof(AdamState)));

@@ -68,6 +68,14 @@ namespace TTTN {
             m.Load(f);
             v.Load(f);
         }
+
+        void save_weights(std::ofstream &f) const {
+            value.Save(f);
+        }
+
+        void load_weights(std::ifstream &f) {
+            value.Load(f);
+        }
     };
 
     template<typename T>
@@ -123,6 +131,16 @@ namespace TTTN {
     template<IsParamTuple Tuple>
     void LoadAll(Tuple &&params, std::ifstream &f) {
         std::apply([&](auto &... p) { (p.load(f), ...); }, params);
+    }
+
+    template<IsParamTuple Tuple>
+    void SaveAllWeights(Tuple &&params, std::ofstream &f) {
+        std::apply([&](const auto &... p) { (p.save_weights(f), ...); }, params);
+    }
+
+    template<IsParamTuple Tuple>
+    void LoadAllWeights(Tuple &&params, std::ifstream &f) {
+        std::apply([&](auto &... p) { (p.load_weights(f), ...); }, params);
     }
 
     // ---- free size queries ----

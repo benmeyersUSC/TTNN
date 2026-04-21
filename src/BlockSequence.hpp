@@ -332,25 +332,33 @@ namespace TTTN {
         }
 
 
-        // @doc: void BlockSequence::Save(const std::string &path) const
-        /** Calls `SaveAll` on each `Block::all_params()`, which calls `Tensor` binary serialization */
         void Save(const std::string &path) const {
             std::ofstream f(path, std::ios::binary);
-            if (!f) {
-                throw std::runtime_error("Cannot write: " + path);
-            }
+            if (!f) throw std::runtime_error("Cannot write: " + path);
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                (SaveAllWeights(std::get<Is>(mBlocks).all_params(), f), ...);
+            }(std::make_index_sequence<N>{});
+        }
+
+        void Load(const std::string &path) {
+            std::ifstream f(path, std::ios::binary);
+            if (!f) throw std::runtime_error("Cannot read: " + path);
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                (LoadAllWeights(std::get<Is>(mBlocks).all_params(), f), ...);
+            }(std::make_index_sequence<N>{});
+        }
+
+        void SaveForTraining(const std::string &path) const {
+            std::ofstream f(path, std::ios::binary);
+            if (!f) throw std::runtime_error("Cannot write: " + path);
             [&]<size_t... Is>(std::index_sequence<Is...>) {
                 (SaveAll(std::get<Is>(mBlocks).all_params(), f), ...);
             }(std::make_index_sequence<N>{});
         }
 
-        // @doc: void BlockSequence::Load(const std::string &path)
-        /** Calls `LoadAll` on each `Block::all_params()`, which calls `Tensor` binary deserialization */
-        void Load(const std::string &path) {
+        void LoadForTraining(const std::string &path) {
             std::ifstream f(path, std::ios::binary);
-            if (!f) {
-                throw std::runtime_error("Cannot read: " + path);
-            }
+            if (!f) throw std::runtime_error("Cannot read: " + path);
             [&]<size_t... Is>(std::index_sequence<Is...>) {
                 (LoadAll(std::get<Is>(mBlocks).all_params(), f), ...);
             }(std::make_index_sequence<N>{});

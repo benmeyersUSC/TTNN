@@ -107,13 +107,15 @@ TTTN {
     template<typename T>
     concept TokenEnum =
             std::is_enum_v<T>
-            && requires {
-                { T::PAD }   -> std::same_as<T>;
-                { T::BOS }   -> std::same_as<T>;
-                { T::EOS }   -> std::same_as<T>;
+            && requires
+            {
+                { T::PAD } -> std::same_as<T>;
+                { T::BOS } -> std::same_as<T>;
+                { T::EOS } -> std::same_as<T>;
                 { T::COUNT } -> std::same_as<T>;
             }
-            && requires(T t) {
+            && requires(T t)
+            {
                 { TokenName(t) } -> std::convertible_to<std::string>;
             };
 
@@ -179,9 +181,7 @@ TTTN {
     >
     class TransformerTrainer {
         static constexpr size_t VocabSize = Token::COUNT;
-        using BlockT = EncoderDecoderBlock<SrcLen, TgtLen, VocabSize, EmbeddingDimension, NumHeads, FFNSize, NEnc
-            ,
-            NDec,
+        using BlockT = EncoderDecoderBlock<SrcLen, TgtLen, VocabSize, EmbeddingDimension, NumHeads, FFNSize, NEnc, NDec,
             Token::PAD>;
         using NetworkT = TrainableTensorNetwork<BlockT>;
         using InputT = NetworkT::InputTensor;
@@ -231,14 +231,15 @@ TTTN {
         NetworkT Network;
         RLState RL_State;
         DataCursor Cursor;
-        std::string dashboard_script_;   // path to transformer_trainer_dashboard.py; empty = disabled
+        std::string tttn_root_; // path to TTTN root; "" disables the dashboard
 
     public:
-        // dashboard_script: path to tools/transformer_trainer_dashboard.py (or "" to disable).
-        explicit TransformerTrainer(std::string_view dashboard_script = "")
+        // tttn_root: path to the TTTN repo root (e.g. "/path/to/TTTN").
+        // Pass "" to disable dashboard generation.
+        explicit TransformerTrainer(std::string_view tttn_root = "")
             : RL_State(CheckpointDir() + "/rl_state.txt"),
               Cursor(CheckpointDir() + "/cursor.txt"),
-              dashboard_script_(dashboard_script) {
+              tttn_root_(tttn_root) {
         }
 
     private:
@@ -293,16 +294,16 @@ TTTN {
             return stats;
         }
 
-        static float CELR(const long total_seen) {
+        static float LR(const long total_seen) {
             static constexpr float TF_Epoch_Inv = 1.f / (TF_RAMP_SIZE * ExamplesPerEpoch);
             const float t = std::clamp(static_cast<float>(total_seen) * TF_Epoch_Inv, 0.f, 1.f);
             return TF_LR_MAX + (TF_LR_MIN - TF_LR_MAX) * t;
         }
 
-        static constexpr float EX_EP_INV = 1.f / ExamplesPerEpoch;
+        static constexpr float Examples_Epoch_INV = 1.f / ExamplesPerEpoch;
 
         static float ScheduledSamplingRate(const long total_seen) {
-            const float epoch = static_cast<float>(total_seen) * EX_EP_INV;
+            const float epoch = static_cast<float>(total_seen) * Examples_Epoch_INV;
 
             if (epoch < SS_RAMP_START) {
                 return 0.f;
@@ -312,7 +313,7 @@ TTTN {
         }
 
         static int MaxAsmLength(const long total_seen) {
-            const float epoch = static_cast<float>(total_seen) * EX_EP_INV;
+            const float epoch = static_cast<float>(total_seen) * Examples_Epoch_INV;
             if (epoch >= TGT_LEN_RAMP) {
                 return TgtLen;
             }
@@ -324,7 +325,7 @@ TTTN {
         static std::string EpochBar(const long total_seen, const int width = 64) {
             const long in_ep = total_seen % ExamplesPerEpoch;
             const float frac = static_cast<float>(in_ep) / ExamplesPerEpoch;
-            const int fill = static_cast<int>(frac * width);
+            const int fill = static_cast<int>(frac * static_cast<float>(width));
             std::string bar = "[";
             for (int i = 0; i < width; ++i) {
                 bar += (i < fill ? '#' : ' ');
@@ -335,7 +336,7 @@ TTTN {
         }
 
 
-        static std::vector<uint8_t> ReadVec(std::string_view path, const long byte_offset, size_t n_bytes) {
+        static std::vector<uint8_t> ReadVec(std::string_view path, const long byte_offset, const size_t n_bytes) {
             std::ifstream f(path.data(), std::ios::binary);
             if (!f) throw std::runtime_error("can't open file");
             f.seekg(byte_offset);
@@ -348,10 +349,10 @@ TTTN {
             return buf;
         }
 
-        std::vector<Example> GetNextChunk(int max_tgt_len) {
+        std::vector<Example> GetNextChunk(const int max_tgt_len) {
             auto [subset, row] = Cursor.CurrentChunk(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
 
-            int n_chunks = DataCursor::ChunksPerLap(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
+            const int n_chunks = DataCursor::ChunksPerLap(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
             std::cout << "\033[2m  · lap" << Cursor.lap << " step " << Cursor.step << "/" << n_chunks
                     << "  s" << subset << " r" << row << "\033[0m\n";
 
@@ -364,8 +365,8 @@ TTTN {
             const auto tgt_off = static_cast<long>(row) * TgtLen;
 
             // read in source and target
-            auto src_bytes = ReadVec(base + ".src.bin", src_off, ChunkSizeTrain * SrcLen);
-            auto tgt_bytes = ReadVec(base + ".tgt.bin", tgt_off, ChunkSizeTrain * TgtLen);
+            const auto src_bytes = ReadVec(base + ".src.bin", src_off, ChunkSizeTrain * SrcLen);
+            const auto tgt_bytes = ReadVec(base + ".tgt.bin", tgt_off, ChunkSizeTrain * TgtLen);
 
             // fill vector of Examples
             std::vector<Example> chunk;
@@ -469,7 +470,7 @@ TTTN {
             return out;
         }
 
-        InputT EncodeInpWithSS(const Example &ex, float p_sample, std::mt19937 &rng) {
+        InputT EncodeInpWithSS(const Example &ex, const float p_sample, std::mt19937 &rng) {
             auto [tf_input, _tgt] = EncodeExample(ex);
             if (p_sample <= 0.f) return tf_input;
 
@@ -558,7 +559,7 @@ TTTN {
                     const float max_l = logits(t, max_idx);
                     for (size_t v = 0; v < VocabSize; ++v)
                         tf_pred_soft[v] += std::exp(logits(t, v) - max_l) / sum_exp;
-                    double p_correct = std::exp(logits(t, true_tok) - max_l) / sum_exp;
+                    const double p_correct = std::exp(logits(t, true_tok) - max_l) / sum_exp;
                     tf_conf_hist[std::min(bins - 1, static_cast<int>(p_correct * bins))] += 1.0;
                 }
             }
@@ -718,8 +719,7 @@ TTTN {
         }
 
         static void WriteProgressJSON(const std::string &path, const long total_seen, const int lap,
-                                      const float train_loss, const float test_loss, const float avg_tf_pct,
-                                      const float avg_autoreg_pct,
+                                      const float train_loss, const float test_loss,
                                       const float avg_rl_reward = -1.f,
                                       const float avg_rl_accuracy = -1.f, const float ar_test_loss = -1.f,
                                       const DistResult *tf_dist = nullptr, const DistResult *ar_dist = nullptr,
@@ -731,36 +731,34 @@ TTTN {
             // Static config block — lets the Python dashboard be dataset-agnostic
             f << "  \"config\": {\n";
             f << "    \"examples_per_epoch\": " << ExamplesPerEpoch << ",\n";
-            f << "    \"src_len\": "            << SrcLen           << ",\n";
-            f << "    \"tgt_len\": "            << TgtLen           << ",\n";
-            f << "    \"vocab_size\": "         << VocabSize        << ",\n";
-            f << "    \"pad_id\": "             << static_cast<size_t>(Token::PAD) << ",\n";
-            f << "    \"tf_lr_min\": "          << TF_LR_MIN        << ",\n";
-            f << "    \"tf_lr_max\": "          << TF_LR_MAX        << ",\n";
-            f << "    \"tf_ramp_size\": "       << TF_RAMP_SIZE     << ",\n";
-            f << "    \"ss_ramp_start\": "      << SS_RAMP_START    << ",\n";
-            f << "    \"ss_ramp_end\": "        << SS_RAMP_END      << ",\n";
-            f << "    \"ss_min\": "             << SS_MIN           << ",\n";
-            f << "    \"ss_max\": "             << SS_MAX           << ",\n";
-            f << "    \"tgt_len_min\": "        << TGT_LEN_MIN      << ",\n";
-            f << "    \"tgt_len_ramp\": "       << TGT_LEN_RAMP     << ",\n";
-            f << "    \"rl_lr_min\": "          << RL_LR_MIN        << ",\n";
-            f << "    \"rl_lr_max\": "          << RL_LR_MAX        << ",\n";
-            f << "    \"rl_ramp_size\": "       << RL_RAMP_SIZE     << "\n";
+            f << "    \"src_len\": " << SrcLen << ",\n";
+            f << "    \"tgt_len\": " << TgtLen << ",\n";
+            f << "    \"vocab_size\": " << VocabSize << ",\n";
+            f << "    \"pad_id\": " << static_cast<size_t>(Token::PAD) << ",\n";
+            f << "    \"tf_lr_min\": " << TF_LR_MIN << ",\n";
+            f << "    \"tf_lr_max\": " << TF_LR_MAX << ",\n";
+            f << "    \"tf_ramp_size\": " << TF_RAMP_SIZE << ",\n";
+            f << "    \"ss_ramp_start\": " << SS_RAMP_START << ",\n";
+            f << "    \"ss_ramp_end\": " << SS_RAMP_END << ",\n";
+            f << "    \"ss_min\": " << SS_MIN << ",\n";
+            f << "    \"ss_max\": " << SS_MAX << ",\n";
+            f << "    \"tgt_len_min\": " << TGT_LEN_MIN << ",\n";
+            f << "    \"tgt_len_ramp\": " << TGT_LEN_RAMP << ",\n";
+            f << "    \"rl_lr_min\": " << RL_LR_MIN << ",\n";
+            f << "    \"rl_lr_max\": " << RL_LR_MAX << ",\n";
+            f << "    \"rl_ramp_size\": " << RL_RAMP_SIZE << "\n";
             f << "  },\n";
 
-            f << "  \"total_seen\": "      << total_seen      << ",\n";
-            f << "  \"lap\": "             << lap             << ",\n";
-            f << "  \"train_loss\": "      << train_loss      << ",\n";
-            f << "  \"test_loss\": "       << test_loss       << ",\n";
-            f << "  \"avg_tf_pct\": "      << avg_tf_pct      << ",\n";
-            f << "  \"avg_autoreg_pct\": " << avg_autoreg_pct << ",\n";
-            f << "  \"avg_rl_reward\": "   << avg_rl_reward   << ",\n";
+            f << "  \"total_seen\": " << total_seen << ",\n";
+            f << "  \"lap\": " << lap << ",\n";
+            f << "  \"train_loss\": " << train_loss << ",\n";
+            f << "  \"test_loss\": " << test_loss << ",\n";
+            f << "  \"avg_rl_reward\": " << avg_rl_reward << ",\n";
             f << "  \"avg_rl_accuracy\": " << avg_rl_accuracy << ",\n";
-            f << "  \"ar_test_loss\": "    << ar_test_loss    << ",\n";
+            f << "  \"ar_test_loss\": " << ar_test_loss << ",\n";
             f << std::setprecision(4);
-            f << "  \"ss_rate\": "         << ScheduledSamplingRate(total_seen) << ",\n";
-            f << "  \"max_tgt_len\": "     << MaxAsmLength(total_seen);
+            f << "  \"ss_rate\": " << ScheduledSamplingRate(total_seen) << ",\n";
+            f << "  \"max_tgt_len\": " << MaxAsmLength(total_seen);
             DistToJSON(tf_dist, f, "tf", dist_bins);
             DistToJSON(ar_dist, f, "ar", dist_bins);
             f << "\n}\n";
@@ -833,7 +831,7 @@ TTTN {
             std::cout << "[config] chunks/group=" << ChunksPerGroup
                     << " groups/lap=" << Groups
                     << " batch=" << Batch << "\n";
-            std::cout << "[config] ce_lr=" << CELR(0) << "→" << CELR(100 * ExamplesPerEpoch)
+            std::cout << "[config] ce_lr=" << LR(0) << "→" << LR(100 * ExamplesPerEpoch)
                     << "  rl_lr=" << RL_State.LR(0) << "→" << RL_State.LR(100 * ExamplesPerEpoch)
                     << "  rl_k=" << RL_K << "\n";
         }
@@ -850,12 +848,13 @@ TTTN {
         }
 
         void RunDashboard() const {
-            if (dashboard_script_.empty()) return;
+            if (tttn_root_.empty()) return;
+            const std::string script = tttn_root_ + "/tools/transformer_trainer_dashboard.py";
             const std::string output = CheckpointDir() + "/training_dashboard.html";
-            const std::string cmd    = "python3 " + dashboard_script_
-                                     + " " + CheckpointDir()
-                                     + " " + output
-                                     + " && open " + output;
+            const std::string cmd = "python3 " + script
+                                    + " " + CheckpointDir()
+                                    + " " + output
+                                    + " && open " + output;
             std::cout << "[dashboard] " << cmd << "\n";
             std::system(cmd.c_str());
         }
@@ -875,7 +874,7 @@ TTTN {
             Print(std::cout);
 
             if (std::filesystem::exists(checkpoint_model)) {
-                Network.Load(checkpoint_model);
+                Network.LoadForTraining(checkpoint_model);
                 std::cout << "[model] loaded from " << checkpoint_model << "\n";
             } else {
                 std::cout << "[model] fresh init\n";
@@ -935,7 +934,7 @@ TTTN {
                                 TensorSet<0>(batch_y, i, tgt);
                             }
                             const float loss = Network.template BatchFit<SequenceSoftmaxCEL<Token::PAD>, Batch>(
-                                batch_x, batch_y, CELR(Cursor.total_seen));
+                                batch_x, batch_y, LR(Cursor.total_seen));
                             group_loss += loss;
                             loss_acc += loss;
                             batches++;
@@ -959,10 +958,12 @@ TTTN {
                         if (Cursor.total_seen / ExamplesPerEpoch > prev_total / ExamplesPerEpoch) {
                             const float running_training_loss = batches > 0
                                                                     ? loss_acc / static_cast<float>(batches)
-                                                                    : group_loss / (b + 1);
-                            const float cur_rl_reward = rl_reward_count > 0 ? rl_reward_acc / rl_reward_count : -1.f;
+                                                                    : group_loss / static_cast<float>(b + 1);
+                            const float cur_rl_reward = rl_reward_count > 0
+                                                            ? rl_reward_acc / static_cast<float>(rl_reward_count)
+                                                            : -1.f;
                             const float cur_rl_acc = rl_reward_count > 0
-                                                         ? rl_acc_acc / rl_reward_count
+                                                         ? rl_acc_acc / static_cast<float>(rl_reward_count)
                                                          : -1.f;
 
                             const long ep = Cursor.total_seen / ExamplesPerEpoch;
@@ -977,11 +978,10 @@ TTTN {
                             std::cout << "[test] ar_loss=" << ar_loss << "\n";
 
                             WriteProgressJSON(progress_base + "_" + std::to_string(Cursor.total_seen) + ".json",
-                                              Cursor.total_seen, Cursor.lap, running_training_loss, tf_loss, 0.f, 0.f,
-                                              cur_rl_reward,
-                                              cur_rl_acc, ar_loss, &tf_dist, &ar_dist);
+                                              Cursor.total_seen, Cursor.lap, running_training_loss, tf_loss,
+                                              cur_rl_reward, cur_rl_acc, ar_loss, &tf_dist, &ar_dist);
                             Network.Save(progress_base + "_save_" + std::to_string(Cursor.total_seen) + ".bin");
-                            Network.Save(checkpoint_model);
+                            Network.SaveForTraining(checkpoint_model);
 
                             std::cout << "[save] model + test-JSON @ trained=" << Cursor.total_seen << "\n";
                             RunDashboard();
@@ -1008,6 +1008,7 @@ TTTN {
                     auto [rl_nll_r, rl_acc_r] = RL_Update(n_examples, chunk, ss_rng);
                     rl_reward_acc += rl_nll_r;
                     rl_acc_acc += rl_acc_r;
+
                     rl_reward_count++;
                 }
 
@@ -1015,7 +1016,7 @@ TTTN {
                         << "loss=" << group_loss / n_batches
                         << "  trained=" << Cursor.total_seen << "\033[0m\n";
             }
-            Network.Save(checkpoint_model);
+            Network.SaveForTraining(checkpoint_model);
             RL_State.Save();
             Cursor.Save();
             std::cout << "[save] session end: model + rl_state written\n";
