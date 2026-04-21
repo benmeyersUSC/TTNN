@@ -339,7 +339,11 @@ TTTN {
 
         static std::vector<uint8_t> ReadVec(std::string_view path, const long byte_offset, const size_t n_bytes) {
             std::ifstream f(path.data(), std::ios::binary);
-            if (!f) throw std::runtime_error("can't open file");
+            if (!f) {
+                std::string s = path.data();
+                s += " cannot be opened";
+                throw std::runtime_error(s);
+            }
             f.seekg(byte_offset);
             std::vector<uint8_t> buf(n_bytes);
             f.read(reinterpret_cast<char *>(buf.data()), static_cast<long>(n_bytes));
@@ -789,9 +793,9 @@ TTTN {
                 reward_sum += -nll;
 
                 std::vector<uint8_t> decoded_bytes(decoded.size());
-                std::ranges::transform(decoded, decoded_bytes.begin(), [](Token t){ return static_cast<uint8_t>(t); });
+                std::ranges::transform(decoded, decoded_bytes.begin(), [](Token t) { return static_cast<uint8_t>(t); });
                 std::vector<Token> tgt_tokens(ex.second.size());
-                std::ranges::transform(ex.second, tgt_tokens.begin(), [](uint8_t b){ return static_cast<Token>(b); });
+                std::ranges::transform(ex.second, tgt_tokens.begin(), [](uint8_t b) { return static_cast<Token>(b); });
 
                 const auto acc = CalculateStrictAccuracy(decoded, tgt_tokens);
                 accuracy_sum += acc.total > 0 ? static_cast<float>(acc.correct) / acc.total : 0.f;
@@ -939,7 +943,8 @@ TTTN {
                                 TensorSet<0>(batch_x, i, inp);
                                 TensorSet<0>(batch_y, i, tgt);
                             }
-                            const float loss = Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(Token::PAD)>, Batch>(
+                            const float loss = Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(
+                                Token::PAD)>, Batch>(
                                 batch_x, batch_y, LR(Cursor.total_seen));
                             group_loss += loss;
                             loss_acc += loss;
