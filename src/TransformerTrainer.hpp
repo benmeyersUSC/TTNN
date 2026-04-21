@@ -870,7 +870,7 @@ TTTN {
 
         void RunDashboard() const {
             if (tttn_home_.empty()) return;
-            const std::string script = tttn_home_ + "TTTN/tools/transformer_trainer_dashboard.py";
+            const std::string script = tttn_home_ + "/TTTN/tools/transformer_trainer_dashboard.py";
             const std::string output = CheckpointDir() + "/training_dashboard.html";
             const std::string cmd = "python3 " + script
                                     + " " + CheckpointDir()
