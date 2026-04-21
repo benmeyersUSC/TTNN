@@ -926,29 +926,18 @@ TTTN {
                 try {
                     for (auto b = 0; b < n_batches; ++b) {
                         timed("Batch", [this, &chunk, &b, &p_ss, &ss_rng, &group_loss, &loss_acc, &batches]() {
-                            // --- old batched path (kept for reference) ---
-                            // BatchInpT batch_x;
-                            // BatchTgtT batch_y;
-                            // for (auto i = 0; i < Batch; ++i) {
-                            //     const auto &ex = chunk[b * Batch + i];
-                            //     const auto [_tf_inp, tgt] = EncodeExample(ex);
-                            //     const auto inp = EncodeInpWithSS(ex, p_ss, ss_rng);
-                            //     TensorSet<0>(batch_x, i, inp);
-                            //     TensorSet<0>(batch_y, i, tgt);
-                            // }
-                            // const float loss = Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(
-                            //     Token::PAD)>, Batch>(
-                            //     batch_x, batch_y, LR(Cursor.total_seen));
-                            // --- sequential path: one Fit per example ---
-                            float batch_loss = 0.f;
+                            BatchInpT batch_x;
+                            BatchTgtT batch_y;
                             for (auto i = 0; i < Batch; ++i) {
                                 const auto &ex = chunk[b * Batch + i];
                                 const auto [_tf_inp, tgt] = EncodeExample(ex);
                                 const auto inp = EncodeInpWithSS(ex, p_ss, ss_rng);
-                                batch_loss += Network.template Fit<SequenceSoftmaxCEL<static_cast<size_t>(
-                                    Token::PAD)> >(inp, tgt, LR(Cursor.total_seen));
+                                TensorSet<0>(batch_x, i, inp);
+                                TensorSet<0>(batch_y, i, tgt);
                             }
-                            const float loss = batch_loss / Batch;
+                            const float loss = Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(
+                                Token::PAD)>, Batch>(
+                                batch_x, batch_y, LR(Cursor.total_seen));
                             group_loss += loss;
                             loss_acc += loss;
                             batches++;
