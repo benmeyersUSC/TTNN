@@ -232,15 +232,14 @@ TTTN {
         NetworkT Network;
         RLState RL_State;
         DataCursor Cursor;
-        std::string tttn_root_; // path to TTTN root; "" disables the dashboard
+        std::string tttn_home_;
 
     public:
-        // tttn_root: path to the TTTN repo root (e.g. "/path/to/TTTN").
         // Pass "" to disable dashboard generation.
-        explicit TransformerTrainer(std::string_view tttn_root = "")
+        explicit TransformerTrainer(std::string_view tttn_home = "")
             : RL_State(CheckpointDir() + "/rl_state.txt"),
               Cursor(CheckpointDir() + "/cursor.txt"),
-              tttn_root_(tttn_root) {
+              tttn_home_(tttn_home) {
         }
 
     private:
@@ -828,8 +827,8 @@ TTTN {
             Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(Token::PAD)>, RL_K>(rl_x, rl_y, rl_lr);
 
             const float rl_ramp_pct = std::clamp(
-                static_cast<float>(Cursor.total_seen) / (RL_RAMP_SIZE * ExamplesPerEpoch),
-                0.f, 1.f) * 100.f;
+                                          static_cast<float>(Cursor.total_seen) / (RL_RAMP_SIZE * ExamplesPerEpoch),
+                                          0.f, 1.f) * 100.f;
             std::cout << "\033[2m  [rl] nll_R=" << avg_R
                     << "  acc=" << avg_acc
                     << "  base=" << RL_State.baseline
@@ -870,8 +869,8 @@ TTTN {
         }
 
         void RunDashboard() const {
-            if (tttn_root_.empty()) return;
-            const std::string script = tttn_root_ + "/tools/transformer_trainer_dashboard.py";
+            if (tttn_home_.empty()) return;
+            const std::string script = tttn_home_ + "TTTN/tools/transformer_trainer_dashboard.py";
             const std::string output = CheckpointDir() + "/training_dashboard.html";
             const std::string cmd = "python3 " + script
                                     + " " + CheckpointDir()
@@ -982,8 +981,9 @@ TTTN {
                         if ((b + 1) % LogEvery == 0) {
                             char line[256];
                             const float ce_ramp_pct = std::clamp(
-                                static_cast<float>(Cursor.total_seen) / (TF_RAMP_SIZE * ExamplesPerEpoch),
-                                0.f, 1.f) * 100.f;
+                                                          static_cast<float>(Cursor.total_seen) / (
+                                                              TF_RAMP_SIZE * ExamplesPerEpoch),
+                                                          0.f, 1.f) * 100.f;
                             std::snprintf(line, sizeof(line),
                                           "%s  g%d/%lu b%d/%zu  loss=%.3f  ss=%.2f  len=%d  ep=%.2f  ce_ramp=%.1f%%",
                                           EpochBar(Cursor.total_seen).c_str(),
