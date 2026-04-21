@@ -807,13 +807,14 @@ TTTN {
             const float rl_ramp_pct = std::clamp(
                                           static_cast<float>(Cursor.total_seen) / (RL_RAMP_SIZE * ExamplesPerEpoch),
                                           0.f, 1.f) * 100.f;
+            const char *rl_lr_color = rl_lr >= 0.f ? "\033[32m" : "\033[31m";
             std::cout << "\033[2m  [rl] nll_R=" << avg_R
                     << "  acc=" << avg_acc
                     << "  base=" << RL_State.baseline
                     << "  A=" << advantage
                     << "  sched_lr=" << RL_State.LR(Cursor.total_seen)
                     << "  rl_lr_pct_max_magnitude=" << rl_ramp_pct << "%"
-                    << "  rl_lr=" << rl_lr << "\033[0m\n";
+                    << "  rl_lr=" << rl_lr_color << rl_lr << "\033[0m\n";
             return {avg_R, avg_acc};
         }
 
