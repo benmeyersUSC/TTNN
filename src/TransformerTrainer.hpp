@@ -834,7 +834,7 @@ TTTN {
                     << "  base=" << RL_State.baseline
                     << "  A=" << advantage
                     << "  sched_lr=" << RL_State.LR(Cursor.total_seen)
-                    << "  rl_ramp=" << rl_ramp_pct << "%"
+                    << "  rl_lr_pct_max_magnitude=" << rl_ramp_pct << "%"
                     << "  rl_lr=" << rl_lr << "\033[0m\n";
             return {avg_R, avg_acc};
         }
@@ -980,12 +980,12 @@ TTTN {
 
                         if ((b + 1) % LogEvery == 0) {
                             char line[256];
-                            const float ce_ramp_pct = std::clamp(
+                            const float ce_ramp_pct = 1.f - std::clamp(
                                                           static_cast<float>(Cursor.total_seen) / (
                                                               TF_RAMP_SIZE * ExamplesPerEpoch),
                                                           0.f, 1.f) * 100.f;
                             std::snprintf(line, sizeof(line),
-                                          "%s  g%d/%lu b%d/%zu  loss=%.3f  ss=%.2f  len=%d  ep=%.2f  ce_ramp=%.1f%%",
+                                          "%s  g%d/%lu b%d/%zu  loss=%.3f  ss=%.2f  len=%d  ep=%.2f  ce_lr_pct_max_magnitude=%.2f%%",
                                           EpochBar(Cursor.total_seen).c_str(),
                                           g + 1, Groups, b + 1, n_batches,
                                           group_loss / static_cast<float>(b + 1), p_ss,
