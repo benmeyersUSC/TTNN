@@ -33,11 +33,6 @@ TTTN {
         explicit DataCursor(std::string_view p) : path(p) {
         }
 
-        struct ChunkRef {
-            int subset;
-            int row;
-        };
-
         void Load() {
             std::ifstream f(path);
             if (!f) return;
@@ -49,51 +44,35 @@ TTTN {
             f << lap << " " << step << " " << total_seen << "\n";
         }
 
-        static int ChunksPerLap(int n_subsets, int subset_size, int chunk_size) {
-            return n_subsets * (subset_size / chunk_size);
-        }
-
-        static std::vector<int> LapPermutation(int lap_n, int n_chunks) {
-            std::vector<int> perm(n_chunks);
+        static std::vector<int> LapPermutation(int lap_n, int n_subsets) {
+            std::vector<int> perm(n_subsets);
             std::iota(perm.begin(), perm.end(), 0);
             std::mt19937 rng(static_cast<uint32_t>(0xC0FFEE ^ lap_n));
             std::ranges::shuffle(perm, rng);
             return perm;
         }
 
-        static ChunkRef DecodeChunk(int idx, int n_subsets, int subset_size, int chunk_size) {
-            const int chunks_per_subset = subset_size / chunk_size;
-            return ChunkRef{
-                idx / chunks_per_subset, // subset
-                (idx % chunks_per_subset) * chunk_size // row
-            };
+        [[nodiscard]] int CurrentSubset(int n_subsets) const {
+            const auto perm = LapPermutation(lap, n_subsets);
+            return perm[step];
         }
 
-        [[nodiscard]] ChunkRef CurrentChunk(int n_subsets, int subset_size, int chunk_size) const {
-            const int n = ChunksPerLap(n_subsets, subset_size, chunk_size);
-            const auto perm = LapPermutation(lap, n);
-            return DecodeChunk(perm[step], n_subsets, subset_size, chunk_size);
-        }
-
-        void Advance(int chunk_size, int n_subsets, int subset_size) {
-            int n = ChunksPerLap(n_subsets, subset_size, chunk_size);
+        void Advance(int n_subsets) {
             ++step;
-            if (step >= n) {
+            if (step >= n_subsets) {
                 step = 0;
                 ++lap;
             }
         }
 
-        void PrintCursor(const int n_subsets,
-                         int subset_size, int chunk_size) const {
-            const int n = ChunksPerLap(n_subsets, subset_size, chunk_size);
-            auto [subset, row] = CurrentChunk(n_subsets, subset_size, chunk_size);
-            double pct = n ? (100.0 * step) / n : 0.0;
+        void PrintCursor(int n_subsets) const {
+            const int subset = CurrentSubset(n_subsets);
+            double pct = n_subsets ? (100.0 * step) / n_subsets : 0.0;
             std::cout << "[cursor] lap=" << lap
-                    << "  step=" << step << "/" << n
+                    << "  step=" << step << "/" << n_subsets
                     << "  (" << pct << "% of lap)"
                     << "  total_seen=" << total_seen
-                    << "  next: subset" << subset << " row " << row
+                    << "  next: subset" << subset
                     << "\n";
         }
     };
@@ -135,11 +114,10 @@ TTTN {
         // DATA SPEC
         size_t NSubsetsTrain,
         size_t SubsetSizeTrain,
-        size_t ChunkSizeTrain,
         size_t Laps,
 
         // BATCH AND LOGGING CONSTANTS
-        size_t ChunksPerGroup,
+        size_t SubsetsPerGroup,
         size_t Batch,
         size_t LogEvery,
 
@@ -193,7 +171,7 @@ TTTN {
 
         static constexpr size_t TotalTrain = NSubsetsTrain * SubsetSizeTrain * Laps;
         static constexpr size_t ExamplesPerEpoch = NSubsetsTrain * SubsetSizeTrain;
-        static constexpr size_t ExamplesPerGroup = ChunksPerGroup * ChunkSizeTrain;
+        static constexpr size_t ExamplesPerGroup = SubsetsPerGroup * SubsetSizeTrain;
         static constexpr size_t Groups = (TotalTrain + ExamplesPerGroup - 1) / ExamplesPerGroup;
 
         struct RLState {
@@ -353,30 +331,23 @@ TTTN {
             return buf;
         }
 
-        std::vector<Example> GetNextChunk(const int max_tgt_len) {
-            auto [subset, row] = Cursor.CurrentChunk(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
+        std::vector<Example> GetNextSubset(const int max_tgt_len) {
+            const int subset = Cursor.CurrentSubset(NSubsetsTrain);
 
-            const int n_chunks = DataCursor::ChunksPerLap(NSubsetsTrain, SubsetSizeTrain, ChunkSizeTrain);
-            std::cout << "\033[2m  · lap" << Cursor.lap << " step " << Cursor.step << "/" << n_chunks
-                    << "  s" << subset << " r" << row << "\033[0m\n";
+            std::cout << "\033[2m  · lap" << Cursor.lap << " step " << Cursor.step << "/" << NSubsetsTrain
+                    << "  s" << subset << "\033[0m\n";
 
-            // get subset file name from ChunkRef
             std::ostringstream sd;
             sd << "data/subset" << subset << "/train";
             const std::string base = sd.str();
 
-            const auto src_off = static_cast<long>(row) * SrcLen;
-            const auto tgt_off = static_cast<long>(row) * TgtLen;
+            const auto src_bytes = ReadVec(base + ".src.bin", 0, SubsetSizeTrain * SrcLen);
+            const auto tgt_bytes = ReadVec(base + ".tgt.bin", 0, SubsetSizeTrain * TgtLen);
 
-            // read in source and target
-            const auto src_bytes = ReadVec(base + ".src.bin", src_off, ChunkSizeTrain * SrcLen);
-            const auto tgt_bytes = ReadVec(base + ".tgt.bin", tgt_off, ChunkSizeTrain * TgtLen);
-
-            // fill vector of Examples
             std::vector<Example> chunk;
-            chunk.reserve(ChunkSizeTrain);
+            chunk.reserve(SubsetSizeTrain);
 
-            for (int i = 0; i < ChunkSizeTrain; ++i) {
+            for (int i = 0; i < static_cast<int>(SubsetSizeTrain); ++i) {
                 const uint8_t *xs = src_bytes.data() + i * SrcLen;
                 const uint8_t *ys = tgt_bytes.data() + i * TgtLen;
 
@@ -849,7 +820,7 @@ TTTN {
                     << " VOCAB=" << VocabSize << "\n";
             std::cout << "[model] params: " << NetworkT::TotalParamCount
                     << " (" << NetworkT::TotalParamCount * 4 / 1024 / 1024 << " MB)\n";
-            std::cout << "[config] chunks/group=" << ChunksPerGroup
+            std::cout << "[config] subsets/group=" << SubsetsPerGroup
                     << " groups/lap=" << Groups
                     << " batch=" << Batch << "\n";
             std::cout << "[config] ce_lr=" << LR(0) << "→" << LR(100 * ExamplesPerEpoch)
@@ -919,10 +890,10 @@ TTTN {
 
                 std::vector<Example> chunk;
                 chunk.reserve(ExamplesPerGroup);
-                for (auto i = 0; i < ChunksPerGroup; ++i) {
-                    auto next = GetNextChunk(cur_max_len);
+                for (auto i = 0; i < SubsetsPerGroup; ++i) {
+                    auto next = GetNextSubset(cur_max_len);
                     chunk.insert(chunk.end(), next.begin(), next.end());
-                    Cursor.Advance(ChunkSizeTrain, NSubsetsTrain, SubsetSizeTrain);
+                    Cursor.Advance(NSubsetsTrain);
                     Cursor.Save();
                     Network.SaveForTraining(checkpoint_model);
                     RL_State.Save();
