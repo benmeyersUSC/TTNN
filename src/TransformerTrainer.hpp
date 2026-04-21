@@ -125,7 +125,7 @@ TTTN {
         // NETWORK SPEC
         size_t SrcLen,
         size_t TgtLen,
-        TokenEnum Token,
+        typename Token,
         size_t EmbeddingDimension,
         size_t NumHeads,
         size_t FFNSize,
@@ -179,10 +179,11 @@ TTTN {
         float TGT_LEN_RAMP,
         size_t TGT_LEN_MIN
     >
+        requires TokenEnum<Token>
     class TransformerTrainer {
-        static constexpr size_t VocabSize = Token::COUNT;
+        static constexpr size_t VocabSize = static_cast<size_t>(Token::COUNT);
         using BlockT = EncoderDecoderBlock<SrcLen, TgtLen, VocabSize, EmbeddingDimension, NumHeads, FFNSize, NEnc, NDec,
-            Token::PAD>;
+            static_cast<size_t>(Token::PAD)>;
         using NetworkT = TrainableTensorNetwork<BlockT>;
         using InputT = NetworkT::InputTensor;
         using OutputT = NetworkT::OutputTensor;
