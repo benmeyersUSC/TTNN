@@ -334,20 +334,27 @@ TTTN {
         std::vector<Example> GetNextSubset(const int max_tgt_len) {
             const int subset = Cursor.CurrentSubset(NSubsetsTrain);
 
-            std::cout << "\033[2m  · lap" << Cursor.lap << " step " << Cursor.step << "/" << NSubsetsTrain
-                    << "  s" << subset << "\033[0m\n";
-
             std::ostringstream sd;
             sd << "data/subset" << subset << "/train";
             const std::string base = sd.str();
 
-            const auto src_bytes = ReadVec(base + ".src.bin", 0, SubsetSizeTrain * SrcLen);
-            const auto tgt_bytes = ReadVec(base + ".tgt.bin", 0, SubsetSizeTrain * TgtLen);
+            // probe actual row count from file size — may differ from SubsetSizeTrain
+            std::ifstream probe(base + ".src.bin", std::ios::binary | std::ios::ate);
+            if (!probe) throw std::runtime_error("cannot open " + base + ".src.bin");
+            const size_t n_rows = std::min(
+                static_cast<size_t>(probe.tellg()) / SrcLen,
+                SubsetSizeTrain);
+
+            std::cout << "\033[2m  · lap" << Cursor.lap << " step " << Cursor.step << "/" << NSubsetsTrain
+                    << "  s" << subset << "  rows=" << n_rows << "\033[0m\n";
+
+            const auto src_bytes = ReadVec(base + ".src.bin", 0, n_rows * SrcLen);
+            const auto tgt_bytes = ReadVec(base + ".tgt.bin", 0, n_rows * TgtLen);
 
             std::vector<Example> chunk;
-            chunk.reserve(SubsetSizeTrain);
+            chunk.reserve(n_rows);
 
-            for (int i = 0; i < static_cast<int>(SubsetSizeTrain); ++i) {
+            for (int i = 0; i < static_cast<int>(n_rows); ++i) {
                 const uint8_t *xs = src_bytes.data() + i * SrcLen;
                 const uint8_t *ys = tgt_bytes.data() + i * TgtLen;
 
