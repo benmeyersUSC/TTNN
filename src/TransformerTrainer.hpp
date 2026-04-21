@@ -980,10 +980,10 @@ TTTN {
 
                         if ((b + 1) % LogEvery == 0) {
                             char line[256];
-                            const float ce_ramp_pct = 1.f - std::clamp(
-                                                          static_cast<float>(Cursor.total_seen) / (
-                                                              TF_RAMP_SIZE * ExamplesPerEpoch),
-                                                          0.f, 1.f) * 100.f;
+                            const float ce_ramp_pct = std::clamp(1.f -
+                                                                 (static_cast<float>(Cursor.total_seen) / (
+                                                                      TF_RAMP_SIZE * ExamplesPerEpoch)),
+                                                                 0.f, 1.f) * 100.f;
                             std::snprintf(line, sizeof(line),
                                           "%s  g%d/%lu b%d/%zu  loss=%.3f  ss=%.2f  len=%d  ep=%.2f  ce_lr_pct_max_magnitude=%.2f%%",
                                           EpochBar(Cursor.total_seen).c_str(),
