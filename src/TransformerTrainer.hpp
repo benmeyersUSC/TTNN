@@ -102,9 +102,9 @@ TTTN {
     template
     <
         // NETWORK SPEC
+        typename Token,
         size_t SrcLen,
         size_t TgtLen,
-        typename Token,
         size_t EmbeddingDimension,
         size_t NumHeads,
         size_t FFNSize,
