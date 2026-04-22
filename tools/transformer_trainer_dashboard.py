@@ -145,6 +145,61 @@ def make_metrics_plot(entries, cfg, lengths_sorted):
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
 
 
+# ── Gradient budget plot ──────────────────────────────────────────────────────
+
+def make_budget_plot(entries, cfg):
+    epe = cfg.get("examples_per_epoch", 1)
+    budget_entries = [e for e in entries if e.get("budget_tf", -1) != -1]
+    if not budget_entries:
+        return ""
+
+    xs        = [e["total_seen"] / epe for e in budget_entries]
+    pct_rl    = [e.get("pct_rl", 0.0) * 100.0 for e in budget_entries]
+    pct_tf    = [e.get("pct_tf", 0.0) * 100.0 for e in budget_entries]
+    budget_tf = [e.get("budget_tf", 0.0) for e in budget_entries]
+    budget_rl = [e.get("budget_rl", 0.0) for e in budget_entries]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=xs, y=pct_tf, name="TF %",
+        fill="tozeroy", fillcolor="rgba(77,171,247,0.25)",
+        line=dict(color="#4dabf7", width=2),
+        yaxis="y",
+    ))
+    fig.add_trace(go.Scatter(
+        x=xs, y=pct_rl, name="RL %",
+        fill="tozeroy", fillcolor="rgba(204,93,232,0.25)",
+        line=dict(color="#cc5de8", width=2),
+        yaxis="y",
+    ))
+    fig.add_hline(y=50, line=dict(color="rgba(255,255,255,0.2)", dash="dash", width=1))
+
+    fig.add_trace(go.Scatter(
+        x=xs, y=budget_tf, name="budget_tf (raw)",
+        line=dict(color="#4dabf7", width=1, dash="dot"),
+        yaxis="y2", visible="legendonly",
+    ))
+    fig.add_trace(go.Scatter(
+        x=xs, y=budget_rl, name="budget_rl (raw)",
+        line=dict(color="#cc5de8", width=1, dash="dot"),
+        yaxis="y2", visible="legendonly",
+    ))
+
+    fig.update_layout(
+        title="Gradient Budget — TF vs RL",
+        xaxis_title="Epochs",
+        yaxis=dict(title="% of gradient budget", range=[0, 100],
+                   ticksuffix="%", gridcolor="rgba(255,255,255,0.05)"),
+        yaxis2=dict(title="raw budget (steps × lr)", overlaying="y", side="right",
+                    gridcolor="rgba(255,255,255,0.0)"),
+        paper_bgcolor="#1e1e1e", plot_bgcolor="#1e1e1e",
+        font=dict(color="#eee"),
+        legend=dict(bgcolor="rgba(30,30,30,0.8)"),
+    )
+    return fig.to_html(full_html=False, include_plotlyjs=False)
+
+
 # ── Token distribution (animated per epoch) ───────────────────────────────────
 
 def make_dist_plot(snapshots, pred_key, n_tokens_key, div_id):
@@ -394,6 +449,7 @@ def main():
     print(f"{len(lengths):,} examples")
 
     metrics_html = make_metrics_plot(entries, cfg, lengths)
+    budget_html  = make_budget_plot(entries, cfg)
 
     # Distribution plots — only checkpoints that have distribution data
     dist_snaps = [e for e in entries if "tf_pred_dist" in e and "true_dist" in e]
@@ -447,6 +503,7 @@ def main():
     </span>
   </h2>
   {metrics_html}
+  {'<h2>Gradient Budget</h2>' + budget_html if budget_html else ''}
   {dist_section}
 </div>
 {slider_html}

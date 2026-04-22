@@ -712,7 +712,8 @@ TTTN {
                                       const float avg_rl_reward = -1.f,
                                       const float avg_rl_accuracy = -1.f, const float ar_test_loss = -1.f,
                                       const DistResult *tf_dist = nullptr, const DistResult *ar_dist = nullptr,
-                                      const int dist_bins = 50) {
+                                      const int dist_bins = 50,
+                                      const float budget_tf = -1.f, const float budget_rl = -1.f) {
             std::ofstream f(path);
             f << std::fixed << std::setprecision(6);
             f << "{\n";
@@ -747,7 +748,12 @@ TTTN {
             f << "  \"ar_test_loss\": " << ar_test_loss << ",\n";
             f << std::setprecision(4);
             f << "  \"ss_rate\": " << ScheduledSamplingRate(total_seen) << ",\n";
-            f << "  \"max_tgt_len\": " << MaxAsmLength(total_seen);
+            f << "  \"max_tgt_len\": " << MaxAsmLength(total_seen) << ",\n";
+            f << "  \"budget_tf\": " << budget_tf << ",\n";
+            f << "  \"budget_rl\": " << budget_rl << ",\n";
+            const float budget_total = budget_tf + budget_rl;
+            f << "  \"pct_rl\": " << (budget_total > 0.f ? budget_rl / budget_total : -1.f) << ",\n";
+            f << "  \"pct_tf\": " << (budget_total > 0.f ? budget_tf / budget_total : -1.f);
             DistToJSON(tf_dist, f, "tf", dist_bins);
             DistToJSON(ar_dist, f, "ar", dist_bins);
             f << "\n}\n";
@@ -985,9 +991,18 @@ TTTN {
                             std::cout << "[test] tf_loss=" << tf_loss << "\n";
                             std::cout << "[test] ar_loss=" << ar_loss << "\n";
 
+                            const float b_tf = (static_cast<float>(ExamplesPerEpoch) / Batch)
+                                               * LR(Cursor.total_seen);
+                            const float b_rl = static_cast<float>(rl_reward_count)
+                                               * RL_State.LR(Cursor.total_seen);
+                            const float b_tot = b_tf + b_rl;
+                            std::cout << "[budget] tf=" << b_tf << " (" << 100.f * b_tf / b_tot << "%)"
+                                      << "  rl=" << b_rl << " (" << 100.f * b_rl / b_tot << "%)\n";
+
                             WriteProgressJSON(progress_base + "_" + std::to_string(Cursor.total_seen) + ".json",
                                               Cursor.total_seen, Cursor.lap, running_training_loss, tf_loss,
-                                              cur_rl_reward, cur_rl_acc, ar_loss, &tf_dist, &ar_dist);
+                                              cur_rl_reward, cur_rl_acc, ar_loss, &tf_dist, &ar_dist,
+                                              50, b_tf, b_rl);
                             Network.Save(progress_base + "_save_" + std::to_string(Cursor.total_seen) + ".bin");
                             Network.SaveForTraining(checkpoint_model);
 
