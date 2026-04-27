@@ -9,9 +9,11 @@
 #include <cstdint>
 
 
+template<int VOCAB_SIZE>
 class BytePairTokenizer {
     static constexpr int MAX_TOKEN_LEN = 64;
-    static constexpr int VOCAB_SIZE = 65536;
+    static constexpr int MAX_VOCAB_SIZE = 65536;
+    static_assert(VOCAB_SIZE < MAX_VOCAB_SIZE, "Vocabulary size must be <= 2^16 (65536)");
 
     // collision free hash of two 16-bits by just mapping them to a 32-bit int
     struct PairHash {
@@ -106,6 +108,11 @@ class BytePairTokenizer {
         MapLen++;
     }
 
+public:
+    [[nodiscard]] const std::vector<std::pair<uint16_t, uint16_t> > &GetMergeOrder() const { return MergeOrder; }
+    [[nodiscard]] const TokenEntry *GetMap() const { return Map; }
+    [[nodiscard]] unsigned GetMapLen() const { return MapLen; }
+
     void BPE(std::string_view corpusInPath, std::string_view corpusOutPath) {
         if (Map) throw std::runtime_error("Map already exists.");
 
@@ -163,24 +170,110 @@ class BytePairTokenizer {
         tokenizedCorpus.write(reinterpret_cast<char *>(bytes.data()), bytes.size() * 2);
     }
 
+    // serialize the maps
     void Save(std::string_view outPath) const {
         std::ofstream out(outPath.data(), std::ios::binary);
         if (!out.is_open()) throw std::runtime_error("Failed to open output file.");
-        out.write(reinterpret_cast<const char *>(Map), VOCAB_SIZE * sizeof(TokenEntry));
+        const uint32_t ml = MapLen;
+        out.write(reinterpret_cast<const char *>(&ml), sizeof(uint32_t));
+        out.write(reinterpret_cast<const char *>(Map), MapLen * sizeof(TokenEntry));
         const uint32_t sz = MergeOrder.size();
         out.write(reinterpret_cast<const char *>(&sz), sizeof(uint32_t));
         out.write(reinterpret_cast<const char *>(MergeOrder.data()),
-                  MergeOrder.size() * sizeof(std::pair<uint16_t, uint16_t>));
+                  sz * sizeof(std::pair<uint16_t, uint16_t>));
     }
 
     void Load(std::string_view inPath) {
         std::ifstream inFile(inPath.data(), std::ios::binary);
         if (!inFile.is_open()) throw std::runtime_error("Failed to open input file.");
         if (!Map) Map = new TokenEntry[VOCAB_SIZE];
-        inFile.read(reinterpret_cast<char *>(Map), VOCAB_SIZE * sizeof(TokenEntry));
+        uint32_t ml = 0;
+        inFile.read(reinterpret_cast<char *>(&ml), sizeof(uint32_t));
+        MapLen = ml;
+        inFile.read(reinterpret_cast<char *>(Map), MapLen * sizeof(TokenEntry));
         uint32_t sz = 0;
         inFile.read(reinterpret_cast<char *>(&sz), sizeof(uint32_t));
         MergeOrder.resize(sz);
-        inFile.read(reinterpret_cast<char *>(MergeOrder.data()), sz * sizeof(std::pair<uint16_t, uint16_t>));
+        inFile.read(reinterpret_cast<char *>(MergeOrder.data()),
+                    sz * sizeof(std::pair<uint16_t, uint16_t>));
+    }
+
+    static void TextToWords(std::string_view inPath, std::string_view outPath) {
+        std::ifstream in(inPath.data(), std::ios::binary);
+        if (!in.is_open()) throw std::runtime_error("Failed to open input file.");
+        std::ofstream out(outPath.data(), std::ios::binary);
+        if (!out.is_open()) throw std::runtime_error("Failed to open output file.");
+
+        std::vector<uint8_t> raw(
+            (std::istreambuf_iterator<char>(in)),
+            (std::istreambuf_iterator<char>())
+        );
+        std::vector<uint16_t> words(raw.begin(), raw.end());
+        out.write(reinterpret_cast<const char *>(words.data()), words.size() * sizeof(uint16_t));
+    }
+
+    std::vector<uint16_t> Tokenize(std::string_view inPath) {
+        if (MergeOrder.empty()) throw std::runtime_error("No merge order loaded. Run BPE().");
+
+        // in file should be result of TextToWords()
+        std::ifstream in(inPath.data(), std::ios::binary);
+        if (!in.is_open()) throw std::runtime_error("Failed to open input file.");
+
+        // word count
+        in.seekg(0, std::ios::end);
+        const size_t wordCount = in.tellg() / sizeof(uint16_t);
+        in.seekg(0, std::ios::beg);
+
+        // read the file in to a vector
+        std::vector<uint16_t> tokens(wordCount);
+        in.read(reinterpret_cast<char *>(tokens.data()), wordCount * sizeof(uint16_t));
+
+        // execute merges in order on the word-repr data
+        for (size_t m = 0; m < MergeOrder.size(); ++m) {
+            auto [a, b] = MergeOrder[m];
+            const uint16_t newTok = 256 + m;
+            size_t read = 0, write = 0;
+            while (read < tokens.size()) {
+                if (tokens[read] == a && read + 1 < tokens.size() && tokens[read + 1] == b) {
+                    tokens[write++] = newTok;
+                    read += 2;
+                } else {
+                    tokens[write++] = tokens[read++];
+                }
+            }
+            tokens.resize(write);
+        }
+        // and we're left with the tokenized sequence
+        return tokens;
+    }
+
+    [[nodiscard]] std::string Detokenize(const std::vector<uint16_t> &tokens) const {
+        if (!Map) throw std::runtime_error("Map is not initialized. Run BPE().");
+
+        std::string result;
+        for (const uint16_t tok: tokens) {
+            if (tok < MapLen) {
+                const TokenEntry &entry = Map[tok];
+                result.append(reinterpret_cast<const char *>(entry.bytes), entry.len);
+            } else result.append("");
+        }
+        return result;
+    }
+
+    void PrintMap() const {
+        if (!Map) throw std::runtime_error("Map is not initialized. Run BPE().");
+        for (unsigned tok = 0; tok < MapLen; ++tok) {
+            const TokenEntry &entry = Map[tok];
+            std::string s(reinterpret_cast<const char *>(entry.bytes), entry.len);
+            std::string display;
+            for (uint8_t b: s) {
+                if (b >= 32 && b < 127) {
+                    display += static_cast<char>(b);
+                } else {
+                    display += "[" + std::to_string(b) + "]";
+                }
+            }
+            std::printf("%5u | len=%2u | %s\n", tok, entry.len, display.c_str());
+        }
     }
 };

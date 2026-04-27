@@ -1114,25 +1114,33 @@ namespace TTTN {
         }
 
 
-        // @doc: void BlockSequence::Save(const std::string &path) const
-        /** Calls `SaveAll` on each `Block::all_params()`, which calls `Tensor` binary serialization */
         void Save(const std::string &path) const {
             std::ofstream f(path, std::ios::binary);
-            if (!f) {
-                throw std::runtime_error("Cannot write: " + path);
-            }
+            if (!f) throw std::runtime_error("Cannot write: " + path);
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                (SaveAllWeights(std::get<Is>(mBlocks).all_params(), f), ...);
+            }(std::make_index_sequence<N>{});
+        }
+
+        void Load(const std::string &path) {
+            std::ifstream f(path, std::ios::binary);
+            if (!f) throw std::runtime_error("Cannot read: " + path);
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                (LoadAllWeights(std::get<Is>(mBlocks).all_params(), f), ...);
+            }(std::make_index_sequence<N>{});
+        }
+
+        void SaveForTraining(const std::string &path) const {
+            std::ofstream f(path, std::ios::binary);
+            if (!f) throw std::runtime_error("Cannot write: " + path);
             [&]<size_t... Is>(std::index_sequence<Is...>) {
                 (SaveAll(std::get<Is>(mBlocks).all_params(), f), ...);
             }(std::make_index_sequence<N>{});
         }
 
-        // @doc: void BlockSequence::Load(const std::string &path)
-        /** Calls `LoadAll` on each `Block::all_params()`, which calls `Tensor` binary deserialization */
-        void Load(const std::string &path) {
+        void LoadForTraining(const std::string &path) {
             std::ifstream f(path, std::ios::binary);
-            if (!f) {
-                throw std::runtime_error("Cannot read: " + path);
-            }
+            if (!f) throw std::runtime_error("Cannot read: " + path);
             [&]<size_t... Is>(std::index_sequence<Is...>) {
                 (LoadAll(std::get<Is>(mBlocks).all_params(), f), ...);
             }(std::make_index_sequence<N>{});
@@ -1576,6 +1584,291 @@ namespace TTTN {
         }
     };
 } // namespace TTTN
+
+
+// ======================================================================
+// FILE: src/BytePairTokenizer.hpp
+// ======================================================================
+
+#pragma once
+#include <fstream>
+#include <string_view>
+#include <vector>
+#include <unordered_map>
+#include <utility>
+#include <algorithm>
+#include <stdexcept>
+#include <cstdint>
+
+
+template<int VOCAB_SIZE>
+class BytePairTokenizer {
+    static constexpr int MAX_TOKEN_LEN = 64;
+    static constexpr int MAX_VOCAB_SIZE = 65536;
+    static_assert(VOCAB_SIZE < MAX_VOCAB_SIZE, "Vocabulary size must be <= 2^16 (65536)");
+
+    // collision free hash of two 16-bits by just mapping them to a 32-bit int
+    struct PairHash {
+        size_t operator()(std::pair<uint16_t, uint16_t> p) const {
+            return std::hash<uint32_t>{}(p.first << 16 | p.second);
+        }
+    };
+
+    using FrequencyMapT = std::unordered_map<std::pair<uint16_t, uint16_t>, size_t, PairHash>;
+    using PQEntry = std::pair<size_t, std::pair<uint16_t, uint16_t> >;
+
+    struct TokenEntry {
+        uint8_t bytes[MAX_TOKEN_LEN];
+        uint8_t len;
+    };
+
+    TokenEntry *Map = nullptr;
+    unsigned MapLen = 0;
+    std::vector<std::pair<uint16_t, uint16_t> > MergeOrder;
+
+
+    // replace [A,B] with NewToken and update frequency map
+    void Merge(std::vector<uint16_t> &corp, const std::pair<uint16_t, uint16_t> &ab, FrequencyMapT &freq,
+               std::priority_queue<PQEntry> &pq) {
+        // where did we execute merges?
+        std::vector<size_t> mergeIndices;
+        // how many we've read
+        size_t read = 0;
+        // how many we've written
+        size_t write = 0;
+        // while there's more to read
+        while (read < corp.size()) {
+            // if looking at first half of new-merged token
+            //      and corp has at least one more token
+            //          and that next token is the second half of new-merged token
+            if (corp[read] == ab.first && read + 1 < corp.size() && corp[read + 1] == ab.second) {
+                // if we've written already
+                if (write > 0) {
+                    // 1. INCR prev to NewToken
+                    freq[{corp[write - 1], MapLen}]++;
+                    pq.push({freq[{corp[write - 1], MapLen}], {corp[write - 1], MapLen}});
+                    // 2. DECR prev to a
+                    freq[{corp[write - 1], ab.first}]--;
+                    if (freq[{corp[write - 1], ab.first}] == 0) {
+                        freq.erase({corp[write - 1], ab.first});
+                    } else {
+                        pq.push({freq[{corp[write - 1], ab.first}], {corp[write - 1], ab.first}});
+                    }
+                }
+                // save index of new token for later freq cleanup
+                mergeIndices.push_back(write);
+                // assign new token
+                corp[write++] = MapLen;
+                // read moves past NewToken (was a) + b
+                read += 2;
+            } else {
+                // otherwise, just move ahead
+                corp[write++] = corp[read++];
+            }
+        }
+        freq.erase({ab.first, ab.second}); // impossible for this pair to exist anymore
+        // now shed excess cap
+        corp.resize(write);
+
+        // final clean up of freq
+        for (const auto i: mergeIndices) {
+            if (i + 1 < corp.size()) {
+                freq[{MapLen, corp[i + 1]}]++;
+                pq.push({freq[{MapLen, corp[i + 1]}], {MapLen, corp[i + 1]}});
+                freq[{ab.second, corp[i + 1]}]--;
+                if (freq[{ab.second, corp[i + 1]}] == 0) {
+                    freq.erase({ab.second, corp[i + 1]});
+                } else {
+                    pq.push({freq[{ab.second, corp[i + 1]}], {ab.second, corp[i + 1]}});
+                }
+            }
+        }
+    }
+
+    // create new TokenEntry, update corpus, update freq map
+    void NewToken(std::vector<uint16_t> &corp, const std::pair<uint16_t, uint16_t> &ab, FrequencyMapT &freq,
+                  std::priority_queue<PQEntry> &pq) {
+        if (!Map)return;
+        const uint8_t aLen = Map[ab.first].len;
+        const uint8_t bLen = Map[ab.second].len;
+        for (uint8_t i = 0; i < aLen; ++i) Map[MapLen].bytes[i] = Map[ab.first].bytes[i];
+        for (uint8_t i = 0; i < bLen; ++i) Map[MapLen].bytes[i + aLen] = Map[ab.second].bytes[i];
+        Map[MapLen].len = aLen + bLen;
+
+        Merge(corp, ab, freq, pq);
+
+        MapLen++;
+    }
+
+public:
+    [[nodiscard]] const std::vector<std::pair<uint16_t, uint16_t> > &GetMergeOrder() const { return MergeOrder; }
+    [[nodiscard]] const TokenEntry *GetMap() const { return Map; }
+    [[nodiscard]] unsigned GetMapLen() const { return MapLen; }
+
+    void BPE(std::string_view corpusInPath, std::string_view corpusOutPath) {
+        if (Map) throw std::runtime_error("Map already exists.");
+
+        std::ifstream corpus(corpusInPath.data(), std::ios::binary);
+        if (!corpus.is_open()) throw std::runtime_error("Failed to open corpus.");
+
+        Map = new TokenEntry[VOCAB_SIZE];
+        for (int i = 0; i < 256; ++i) {
+            Map[i].bytes[0] = i;
+            Map[i].len = 1;
+        };
+        MapLen = 256;
+
+        // READ CORPUS INTO VECTOR
+        corpus.seekg(0, std::ios::end);
+        const size_t corpusSize = corpus.tellg();
+        corpus.seekg(0, std::ios::beg);
+
+        std::vector<uint8_t> raw(corpusSize);
+        corpus.read(reinterpret_cast<char *>(raw.data()), corpusSize);
+        std::vector<uint16_t> bytes(raw.begin(), raw.end());
+
+        // FILL FREQ MAP
+        FrequencyMapT freq;
+        for (size_t i = 0; i < corpusSize - 1; ++i) {
+            freq[{bytes[i], bytes[i + 1]}]++;
+        }
+
+        // priority queue for highest bigram (next merge candidate)
+        std::vector<PQEntry> pqVec;
+        pqVec.reserve(freq.size());
+        for (auto &[p, count]: freq) pqVec.emplace_back(count, p);
+        std::priority_queue pq(std::less<PQEntry>{}, std::move(pqVec)); // top will be highest
+
+        // fill vocabulary and tokenize corpus
+        while (MapLen < VOCAB_SIZE) {
+            // clear stale entries from top
+            while (!pq.empty() && pq.top().first != freq[pq.top().second]) {
+                pq.pop();
+            }
+            // if queue is empty or the best bigram count is 1, we're done
+            if (pq.empty() || pq.top().first < 2) break;
+
+            // capture the best valid pair
+            auto [count, bestPair] = pq.top();
+            pq.pop();
+
+            // turn best pair into token, merge, update freq
+            NewToken(bytes, bestPair, freq, pq);
+            MergeOrder.emplace_back(bestPair);
+        }
+
+        // write tokenized corpus
+        std::ofstream tokenizedCorpus(corpusOutPath.data(), std::ios::binary);
+        tokenizedCorpus.write(reinterpret_cast<char *>(bytes.data()), bytes.size() * 2);
+    }
+
+    // serialize the maps
+    void Save(std::string_view outPath) const {
+        std::ofstream out(outPath.data(), std::ios::binary);
+        if (!out.is_open()) throw std::runtime_error("Failed to open output file.");
+        const uint32_t ml = MapLen;
+        out.write(reinterpret_cast<const char *>(&ml), sizeof(uint32_t));
+        out.write(reinterpret_cast<const char *>(Map), MapLen * sizeof(TokenEntry));
+        const uint32_t sz = MergeOrder.size();
+        out.write(reinterpret_cast<const char *>(&sz), sizeof(uint32_t));
+        out.write(reinterpret_cast<const char *>(MergeOrder.data()),
+                  sz * sizeof(std::pair<uint16_t, uint16_t>));
+    }
+
+    void Load(std::string_view inPath) {
+        std::ifstream inFile(inPath.data(), std::ios::binary);
+        if (!inFile.is_open()) throw std::runtime_error("Failed to open input file.");
+        if (!Map) Map = new TokenEntry[VOCAB_SIZE];
+        uint32_t ml = 0;
+        inFile.read(reinterpret_cast<char *>(&ml), sizeof(uint32_t));
+        MapLen = ml;
+        inFile.read(reinterpret_cast<char *>(Map), MapLen * sizeof(TokenEntry));
+        uint32_t sz = 0;
+        inFile.read(reinterpret_cast<char *>(&sz), sizeof(uint32_t));
+        MergeOrder.resize(sz);
+        inFile.read(reinterpret_cast<char *>(MergeOrder.data()),
+                    sz * sizeof(std::pair<uint16_t, uint16_t>));
+    }
+
+    static void TextToWords(std::string_view inPath, std::string_view outPath) {
+        std::ifstream in(inPath.data(), std::ios::binary);
+        if (!in.is_open()) throw std::runtime_error("Failed to open input file.");
+        std::ofstream out(outPath.data(), std::ios::binary);
+        if (!out.is_open()) throw std::runtime_error("Failed to open output file.");
+
+        std::vector<uint8_t> raw(
+            (std::istreambuf_iterator<char>(in)),
+            (std::istreambuf_iterator<char>())
+        );
+        std::vector<uint16_t> words(raw.begin(), raw.end());
+        out.write(reinterpret_cast<const char *>(words.data()), words.size() * sizeof(uint16_t));
+    }
+
+    std::vector<uint16_t> Tokenize(std::string_view inPath) {
+        if (MergeOrder.empty()) throw std::runtime_error("No merge order loaded. Run BPE().");
+
+        // in file should be result of TextToWords()
+        std::ifstream in(inPath.data(), std::ios::binary);
+        if (!in.is_open()) throw std::runtime_error("Failed to open input file.");
+
+        // word count
+        in.seekg(0, std::ios::end);
+        const size_t wordCount = in.tellg() / sizeof(uint16_t);
+        in.seekg(0, std::ios::beg);
+
+        // read the file in to a vector
+        std::vector<uint16_t> tokens(wordCount);
+        in.read(reinterpret_cast<char *>(tokens.data()), wordCount * sizeof(uint16_t));
+
+        // execute merges in order on the word-repr data
+        for (size_t m = 0; m < MergeOrder.size(); ++m) {
+            auto [a, b] = MergeOrder[m];
+            const uint16_t newTok = 256 + m;
+            size_t read = 0, write = 0;
+            while (read < tokens.size()) {
+                if (tokens[read] == a && read + 1 < tokens.size() && tokens[read + 1] == b) {
+                    tokens[write++] = newTok;
+                    read += 2;
+                } else {
+                    tokens[write++] = tokens[read++];
+                }
+            }
+            tokens.resize(write);
+        }
+        // and we're left with the tokenized sequence
+        return tokens;
+    }
+
+    [[nodiscard]] std::string Detokenize(const std::vector<uint16_t> &tokens) const {
+        if (!Map) throw std::runtime_error("Map is not initialized. Run BPE().");
+
+        std::string result;
+        for (const uint16_t tok: tokens) {
+            if (tok < MapLen) {
+                const TokenEntry &entry = Map[tok];
+                result.append(reinterpret_cast<const char *>(entry.bytes), entry.len);
+            } else result.append("");
+        }
+        return result;
+    }
+
+    void PrintMap() const {
+        if (!Map) throw std::runtime_error("Map is not initialized. Run BPE().");
+        for (unsigned tok = 0; tok < MapLen; ++tok) {
+            const TokenEntry &entry = Map[tok];
+            std::string s(reinterpret_cast<const char *>(entry.bytes), entry.len);
+            std::string display;
+            for (uint8_t b: s) {
+                if (b >= 32 && b < 127) {
+                    display += static_cast<char>(b);
+                } else {
+                    display += "[" + std::to_string(b) + "]";
+                }
+            }
+            std::printf("%5u | len=%2u | %s\n", tok, entry.len, display.c_str());
+        }
+    }
+};
 
 
 // ======================================================================
@@ -2104,6 +2397,22 @@ namespace TTTN {
             TransformerBlock<EncHidden, Heads, FFNHidden, /*PreNorm=*/true, /*Masked=*/false>,
             NEnc
         >;
+        
+        // embedding lookup: [SeqLen, VocabSize] x [VocabSize, EmbDim] -> [SeqLen, EmbDim]
+        template<size_t SeqLen>
+        static Tensor<SeqLen, EmbDim> Embed(const Tensor<SeqLen, VocabSize> &oh, const EmbedTable &E) {
+            return Contract<AxisList<1>{}, AxisList<0>{}, Mul, Add>(oh, E);
+        }
+
+                // batched embedding lookup: [Batch, SeqLen, VocabSize] x [VocabSize, EmbDim] -> [Batch, SeqLen, EmbDim]
+        // flatten to [Batch*SeqLen, Vocab], use single-sample Contract, reshape back
+        template<size_t Batch, size_t SeqLen>
+        static Tensor<Batch, SeqLen, EmbDim> BatchEmbed(
+            const Tensor<Batch, SeqLen, VocabSize> &oh, const EmbedTable &E) {
+            const auto flat = Contract<AxisList<1>{}, AxisList<0>{}, Mul, Add>(
+                Reshape<Batch * SeqLen, VocabSize>(oh), E);
+            return Reshape<Batch, SeqLen, EmbDim>(flat);
+        }
 
     private:
         // shared embedding table (src embed, tgt embed, and tied output projection)
@@ -2275,21 +2584,8 @@ namespace TTTN {
         mutable std::vector<float> b_src_emb_{}; // Tensor<Batch, SrcLen, EmbDim> with PE (enc a_prev)
         mutable std::vector<float> b_dec_out_{}; // Tensor<Batch, TgtLen, EmbDim> (pre-projection)
 
-        // embedding lookup: [SeqLen, VocabSize] x [VocabSize, EmbDim] -> [SeqLen, EmbDim]
-        template<size_t SeqLen>
-        static Tensor<SeqLen, EmbDim> Embed(const Tensor<SeqLen, VocabSize> &oh, const EmbedTable &E) {
-            return Contract<AxisList<1>{}, AxisList<0>{}, Mul, Add>(oh, E);
-        }
+        
 
-        // batched embedding lookup: [Batch, SeqLen, VocabSize] x [VocabSize, EmbDim] -> [Batch, SeqLen, EmbDim]
-        // flatten to [Batch*SeqLen, Vocab], use single-sample Contract, reshape back
-        template<size_t Batch, size_t SeqLen>
-        static Tensor<Batch, SeqLen, EmbDim> BatchEmbed(
-            const Tensor<Batch, SeqLen, VocabSize> &oh, const EmbedTable &E) {
-            const auto flat = Contract<AxisList<1>{}, AxisList<0>{}, Mul, Add>(
-                Reshape<Batch * SeqLen, VocabSize>(oh), E);
-            return Reshape<Batch, SeqLen, EmbDim>(flat);
-        }
 
         // batched weight-tied projection: [Batch, SeqLen, EmbDim] x [VocabSize, EmbDim] -> [Batch, SeqLen, VocabSize]
         template<size_t Batch, size_t SeqLen>
@@ -3253,6 +3549,14 @@ namespace TTTN {
             m.Load(f);
             v.Load(f);
         }
+
+        void save_weights(std::ofstream &f) const {
+            value.Save(f);
+        }
+
+        void load_weights(std::ifstream &f) {
+            value.Load(f);
+        }
     };
 
     template<typename T>
@@ -3308,6 +3612,16 @@ namespace TTTN {
     template<IsParamTuple Tuple>
     void LoadAll(Tuple &&params, std::ifstream &f) {
         std::apply([&](auto &... p) { (p.load(f), ...); }, params);
+    }
+
+    template<IsParamTuple Tuple>
+    void SaveAllWeights(Tuple &&params, std::ofstream &f) {
+        std::apply([&](const auto &... p) { (p.save_weights(f), ...); }, params);
+    }
+
+    template<IsParamTuple Tuple>
+    void LoadAllWeights(Tuple &&params, std::ifstream &f) {
+        std::apply([&](auto &... p) { (p.load_weights(f), ...); }, params);
     }
 
     // ---- free size queries ----
@@ -3889,7 +4203,9 @@ namespace TTTN {
 #include "DataIO.hpp"
 #include "BranchTrainer.hpp"
 #include "EncoderDecoder.hpp"
+#include "TransformerTrainer.hpp"
 
+#include "BytePairTokenizer.hpp"
 
 
 // ======================================================================
@@ -4332,9 +4648,53 @@ namespace TTTN {
      */
     template<typename TupleT>
     float OneHotAccuracy(const ActivationsWrap<TupleT> &A,
-                     const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels) {
+                         const std::tuple_element_t<std::tuple_size_v<TupleT> - 1, TupleT> &labels) {
         constexpr size_t Last = std::tuple_size_v<TupleT> - 1;
         return OneHotAccuracy(A.template get<Last>(), labels);
+    }
+
+
+    // ── Inference utilities ───────────────────────────────────────────────────
+
+    // Index of the maximum element in a 1D tensor.
+    template<size_t N>
+    size_t Argmax(const Tensor<N> &t) {
+        size_t best = 0;
+        for (size_t i = 1; i < N; ++i)
+            if (t.flat(i) > t.flat(best)) best = i;
+        return best;
+    }
+
+    // Index of the maximum element in row `row` of a 2D tensor.
+    template<size_t Rows, size_t Cols>
+    size_t ArgmaxAt(const Tensor<Rows, Cols> &t, size_t row) {
+        size_t best = 0;
+        for (size_t v = 1; v < Cols; ++v)
+            if (t(row, v) > t(row, best)) best = v;
+        return best;
+    }
+
+    // {argmax, sum_exp} for a 1D tensor — numerically stable softmax decomposition.
+    // Any softmax prob: exp(t[i] - t[argmax]) / sum_exp.
+    template<size_t N>
+    std::pair<size_t, float> SoftmaxStats(const Tensor<N> &t) {
+        const size_t best = Argmax(t);
+        const float max_val = t.flat(best);
+        float sum_exp = 0.f;
+        for (size_t v = 0; v < N; ++v)
+            sum_exp += std::exp(t.flat(v) - max_val);
+        return {best, sum_exp};
+    }
+
+    // {argmax, sum_exp} for row `row` of a 2D tensor.
+    template<size_t Rows, size_t Cols>
+    std::pair<size_t, float> SoftmaxStatsAt(const Tensor<Rows, Cols> &t, size_t row) {
+        const size_t best = ArgmaxAt(t, row);
+        const float max_val = t(row, best);
+        float sum_exp = 0.f;
+        for (size_t v = 0; v < Cols; ++v)
+            sum_exp += std::exp(t(row, v) - max_val);
+        return {best, sum_exp};
     }
 };
 
@@ -6687,14 +7047,21 @@ namespace TTTN {
 
         void Save(const std::string &path) const {
             mSeq_.Save(path);
-            std::ofstream f(path, std::ios::binary | std::ios::app);
-            f.write(reinterpret_cast<const char*>(&mAdam_), sizeof(AdamState));
         }
 
         void Load(const std::string &path) {
             mSeq_.Load(path);
+        }
+
+        void SaveForTraining(const std::string &path) const {
+            mSeq_.SaveForTraining(path);
+            std::ofstream f(path, std::ios::binary | std::ios::app);
+            f.write(reinterpret_cast<const char*>(&mAdam_), sizeof(AdamState));
+        }
+
+        void LoadForTraining(const std::string &path) {
+            mSeq_.LoadForTraining(path);
             std::ifstream f(path, std::ios::binary);
-            // seek to the Adam trailer at EOF - sizeof(AdamState)
             f.seekg(0, std::ios::end);
             const auto end = f.tellg();
             f.seekg(end - static_cast<std::streamoff>(sizeof(AdamState)));
@@ -7005,1007 +7372,1119 @@ namespace TTTN {
 
 
 // ======================================================================
+// FILE: src/TransformerTrainer.hpp
+// ======================================================================
+
+#pragma once
+#include "EncoderDecoder.hpp"
+#include "TrainableTensorNetwork.hpp"
+#include <concepts>
+#include <iostream>
+#include <type_traits>
+
+namespace
+TTTN {
+    template<typename F>
+    auto timed(const char *label, F &&fn) {
+        using Clock = std::chrono::high_resolution_clock;
+        const auto t0 = Clock::now();
+        if constexpr (std::is_void_v<std::invoke_result_t<F> >) {
+            fn();
+            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            std::cout << "[" << label << "]  " << ms << " ms\n";
+        } else {
+            auto result = fn();
+            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            std::cout << "[" << label << "]  " << ms << " ms\n";
+            return result;
+        }
+    }
+
+
+    struct DataCursor {
+        int lap = 0;
+        int step = 0;
+        long total_seen = 0;
+        std::string path;
+
+        explicit DataCursor(std::string_view p) : path(p) {
+        }
+
+        void Load() {
+            std::ifstream f(path);
+            if (!f) return;
+            f >> lap >> step >> total_seen;
+        }
+
+        void Save() const {
+            std::ofstream f(path);
+            f << lap << " " << step << " " << total_seen << "\n";
+        }
+
+        static std::vector<int> LapPermutation(int lap_n, int n_subsets) {
+            std::vector<int> perm(n_subsets);
+            std::iota(perm.begin(), perm.end(), 0);
+            std::mt19937 rng(static_cast<uint32_t>(0xC0FFEE ^ lap_n));
+            std::ranges::shuffle(perm, rng);
+            return perm;
+        }
+
+        [[nodiscard]] int CurrentSubset(int n_subsets) const {
+            const auto perm = LapPermutation(lap, n_subsets);
+            return perm[step];
+        }
+
+        void Advance(int n_subsets) {
+            ++step;
+            if (step >= n_subsets) {
+                step = 0;
+                ++lap;
+            }
+        }
+
+        void PrintCursor(int n_subsets) const {
+            const int subset = CurrentSubset(n_subsets);
+            double pct = n_subsets ? (100.0 * step) / n_subsets : 0.0;
+            std::cout << "[cursor] lap=" << lap
+                    << "  step=" << step << "/" << n_subsets
+                    << "  (" << pct << "% of lap)"
+                    << "  total_seen=" << total_seen
+                    << "  next: subset" << subset
+                    << "\n";
+        }
+    };
+
+
+    template<typename T>
+    concept IsEnum = std::is_enum_v<T>;
+
+    // Contract: define an enum with PAD, BOS, EOS, COUNT (COUNT must be last — sets VocabSize).
+    // Also provide a free function in the same namespace: std::string TokenName(T t)
+    template<typename T>
+    concept TokenEnum =
+            std::is_enum_v<T>
+            && requires
+            {
+                { T::PAD } -> std::same_as<T>;
+                { T::BOS } -> std::same_as<T>;
+                { T::EOS } -> std::same_as<T>;
+                { T::COUNT } -> std::same_as<T>;
+            }
+            && requires(T t)
+            {
+                { TokenName(t) } -> std::convertible_to<std::string>;
+            };
+
+
+    template
+    <
+        // NETWORK SPEC
+        typename Token,
+        size_t SrcLen,
+        size_t TgtLen,
+        size_t EmbeddingDimension,
+        size_t NumHeads,
+        size_t FFNSize,
+        size_t NEnc,
+        size_t NDec,
+
+        // DATA SPEC
+        size_t NSubsetsTrain,
+        size_t SubsetSizeTrain,
+        size_t Laps,
+
+        // BATCH AND LOGGING CONSTANTS
+        size_t SubsetsPerGroup,
+        size_t Batch,
+        size_t LogEvery,
+
+        // TF CONSTANTS
+
+        float TF_LR_MIN,
+
+        float TF_LR_MAX,
+
+        float TF_RAMP_SIZE,
+
+        // RL CONSTANTS
+
+        float RL_LR_MIN,
+
+        float RL_LR_MAX,
+
+        float RL_RAMP_SIZE,
+        size_t RL_K,
+
+        float RL_BaselineDecay,
+        size_t N_AR_TEST_SUBSETS,
+        size_t AR_TEST_N_SAMPLES,
+
+        // SS
+
+        float SS_RAMP_START,
+
+        float SS_RAMP_END,
+
+        float SS_MIN,
+
+        float SS_MAX,
+
+        // LEN CURRICULUM
+
+        float TGT_LEN_RAMP,
+        size_t TGT_LEN_MIN
+    >
+        requires TokenEnum<Token>
+    class TransformerTrainer {
+        static constexpr size_t VocabSize = static_cast<size_t>(Token::COUNT);
+        using BlockT = EncoderDecoderBlock<SrcLen, TgtLen, VocabSize, EmbeddingDimension, NumHeads, FFNSize, NEnc, NDec,
+            static_cast<size_t>(Token::PAD)>;
+        using NetworkT = TrainableTensorNetwork<BlockT>;
+        using InputT = NetworkT::InputTensor;
+        using OutputT = NetworkT::OutputTensor;
+        using BatchInpT = PrependBatch<Batch, InputT>::type;
+        using BatchTgtT = PrependBatch<Batch, OutputT>::type;
+
+
+        static constexpr size_t TotalTrain = NSubsetsTrain * SubsetSizeTrain * Laps;
+        static constexpr size_t ExamplesPerEpoch = NSubsetsTrain * SubsetSizeTrain;
+        static constexpr size_t ExamplesPerGroup = SubsetsPerGroup * SubsetSizeTrain;
+        static constexpr size_t Groups = (TotalTrain + ExamplesPerGroup - 1) / ExamplesPerGroup;
+
+        struct RLState {
+            float baseline = 0.f;
+            bool init = false;
+            std::string path;
+
+            // LR schedule: ramps from lr_max -> lr_min over ramp_size epochs
+            float lr_min, lr_max, ramp_size;
+
+            explicit RLState(std::string_view rl_state_path)
+                : path(rl_state_path.data()),
+                  lr_min(RL_LR_MIN), lr_max(RL_LR_MAX), ramp_size(RL_RAMP_SIZE) {
+            }
+
+            [[nodiscard]] float LR(long total_seen) const {
+                const float t = std::clamp(
+                    static_cast<float>(total_seen) / (ramp_size * ExamplesPerEpoch), 0.f, 1.f);
+                return lr_min + (lr_max - lr_min) * t;
+            }
+
+            void Load() {
+                std::ifstream f(path);
+                if (!f) return;
+                int init_flag = 0;
+                f >> baseline >> init_flag;
+                init = init_flag != 0;
+            }
+
+            void Save() const {
+                std::ofstream f(path.data());
+                f << baseline << " " << (init ? 1 : 0) << "\n";
+            }
+        };
+
+        NetworkT Network;
+        RLState RL_State;
+        DataCursor Cursor;
+        std::string tttn_home_;
+
+    public:
+        // Pass "" to disable dashboard generation.
+        explicit TransformerTrainer(std::string_view tttn_home = "")
+            : RL_State(CheckpointDir() + "/rl_state.txt"),
+              Cursor(CheckpointDir() + "/cursor.txt"),
+              tttn_home_(tttn_home) {
+        }
+
+    private:
+        static const std::string &ModelString() {
+            static const std::string str = std::to_string(EmbeddingDimension) +
+                                           "_h" + std::to_string(NumHeads) +
+                                           "_f" + std::to_string(FFNSize) +
+                                           "_" + std::to_string(NEnc) + "enc" + std::to_string(NDec) + "dec";
+            return str;
+        }
+
+        static const std::string &CheckpointDir() {
+            static const std::string dir = "checkpoints_e" + ModelString();
+            return dir;
+        }
+
+        using Example = std::pair<std::vector<uint8_t>, std::vector<uint8_t> >;
+        using TokenizedExample = std::pair<std::vector<Token>, std::vector<Token> >;
+
+        static TokenizedExample TokenizeExample(const Example &ex) {
+            std::vector<Token> src, tgt;
+            src.reserve(SrcLen);
+            tgt.reserve(TgtLen);
+            for (const auto &n: ex.first) src.emplace_back(static_cast<Token>(n));
+            for (const auto &n: ex.second) tgt.emplace_back(static_cast<Token>(n));
+            return {src, tgt};
+        }
+
+        struct AccuracyStats {
+            size_t correct = 0;
+            size_t total = 0;
+        };
+
+        static AccuracyStats CalculateStrictAccuracy(const std::vector<Token> &predicted,
+                                                     const std::vector<Token> &truth) {
+            AccuracyStats stats;
+            for (int i = 0; i < TgtLen; ++i) {
+                const Token pred = i < static_cast<int>(predicted.size())
+                                       ? static_cast<Token>(predicted[i])
+                                       : Token::PAD;
+                const Token actual = i < static_cast<int>(truth.size()) ? static_cast<Token>(truth[i]) : Token::PAD;
+
+                if (actual == Token::PAD) {
+                    continue;
+                }
+
+                ++stats.total;
+                if (pred == actual) {
+                    ++stats.correct;
+                }
+            }
+            return stats;
+        }
+
+        static float LR(const long total_seen) {
+            static constexpr float TF_Epoch_Inv = 1.f / (TF_RAMP_SIZE * ExamplesPerEpoch);
+            const float t = std::clamp(static_cast<float>(total_seen) * TF_Epoch_Inv, 0.f, 1.f);
+            return TF_LR_MAX + (TF_LR_MIN - TF_LR_MAX) * t;
+        }
+
+        static constexpr float Examples_Epoch_INV = 1.f / ExamplesPerEpoch;
+
+        static float ScheduledSamplingRate(const long total_seen) {
+            const float epoch = static_cast<float>(total_seen) * Examples_Epoch_INV;
+
+            if (epoch < SS_RAMP_START) {
+                return 0.f;
+            }
+            return std::clamp((epoch - SS_RAMP_START) / (SS_RAMP_END - SS_RAMP_START), std::max(0.f, SS_MIN),
+                              std::min(1.f, SS_MAX));
+        }
+
+        static int MaxAsmLength(const long total_seen) {
+            const float epoch = static_cast<float>(total_seen) * Examples_Epoch_INV;
+            if (epoch >= TGT_LEN_RAMP) {
+                return TgtLen;
+            }
+            static constexpr float tlri = 1.f / TGT_LEN_MIN;
+            return std::min(static_cast<int>(TgtLen),
+                            static_cast<int>(TGT_LEN_MIN + (TgtLen - TGT_LEN_MIN) * epoch * tlri));
+        }
+
+        static std::string EpochBar(const long total_seen, const int width = 64) {
+            const long in_ep = total_seen % ExamplesPerEpoch;
+            const float frac = static_cast<float>(in_ep) / ExamplesPerEpoch;
+            const int fill = static_cast<int>(frac * static_cast<float>(width));
+            std::string bar = "[";
+            for (int i = 0; i < width; ++i) {
+                bar += (i < fill ? '#' : ' ');
+            }
+            char tail[64];
+            std::snprintf(tail, sizeof(tail), "] %5ld/%lu", in_ep, ExamplesPerEpoch);
+            return bar + tail;
+        }
+
+
+        static std::vector<uint8_t> ReadVec(std::string_view path, const long byte_offset, const size_t n_bytes) {
+            std::ifstream f(path.data(), std::ios::binary);
+            if (!f) {
+                std::string s = path.data();
+                s += " cannot be opened";
+                throw std::runtime_error(s);
+            }
+            f.seekg(byte_offset);
+            std::vector<uint8_t> buf(n_bytes);
+            f.read(reinterpret_cast<char *>(buf.data()), static_cast<long>(n_bytes));
+            // if we just read in fewer bytes than n_bytes, throw
+            if (static_cast<size_t>(f.gcount()) != n_bytes) {
+                throw std::runtime_error("short read on data file");
+            }
+            return buf;
+        }
+
+        std::vector<Example> GetNextSubset(const int max_tgt_len) {
+            const int subset = Cursor.CurrentSubset(NSubsetsTrain);
+
+            std::ostringstream sd;
+            sd << "data/subset" << subset << "/train";
+            const std::string base = sd.str();
+
+            // probe actual row count from file size — may differ from SubsetSizeTrain
+            std::ifstream probe(base + ".src.bin", std::ios::binary | std::ios::ate);
+            if (!probe) throw std::runtime_error("cannot open " + base + ".src.bin");
+            const size_t n_rows = std::min(
+                static_cast<size_t>(probe.tellg()) / SrcLen,
+                SubsetSizeTrain);
+
+            std::cout << "\033[2m  · lap" << Cursor.lap << " step " << Cursor.step << "/" << NSubsetsTrain
+                    << "  s" << subset << "  rows=" << n_rows << "\033[0m\n";
+
+            const auto src_bytes = ReadVec(base + ".src.bin", 0, n_rows * SrcLen);
+            const auto tgt_bytes = ReadVec(base + ".tgt.bin", 0, n_rows * TgtLen);
+
+            std::vector<Example> chunk;
+            chunk.reserve(n_rows);
+
+            for (int i = 0; i < static_cast<int>(n_rows); ++i) {
+                const uint8_t *xs = src_bytes.data() + i * SrcLen;
+                const uint8_t *ys = tgt_bytes.data() + i * TgtLen;
+
+                if (max_tgt_len < TgtLen) {
+                    int non_pad = 0;
+                    for (int j = 0; j < TgtLen; ++j) {
+                        if (ys[j] != static_cast<uint8_t>(Token::PAD)) {
+                            ++non_pad;
+                        }
+                    }
+                    if (non_pad > max_tgt_len) {
+                        continue;
+                    }
+                }
+                chunk.emplace_back(
+                    std::vector<uint8_t>(xs, xs + SrcLen), // (start_ptr, end_ptr) constructor
+                    std::vector<uint8_t>(ys, ys + TgtLen)
+                );
+            }
+            return chunk;
+        }
+
+        static std::pair<InputT, OutputT> EncodeExample(const Example &ex) {
+            Tensor<SrcLen, VocabSize> src_oh;
+            Tensor<TgtLen, VocabSize> tgt_oh;
+            Tensor<TgtLen, VocabSize> tgt_shifted_oh;
+
+            for (size_t i = 0; i < SrcLen; ++i) {
+                src_oh(i/*-th row/token in sequence*/, ex.first[i]/*-th token in vocab*/) = 1.f;
+            }
+            for (size_t i = 0; i < TgtLen; ++i) {
+                tgt_oh(i, ex.second[i]) = 1.f;
+            }
+
+            tgt_shifted_oh(0, static_cast<size_t>(Token::BOS)) = 1.f;
+            for (size_t i = 1; i < TgtLen; ++i) {
+                tgt_shifted_oh(i, ex.second[i - 1]) = 1.f;
+            }
+
+            return {ConcatAxis<0>(src_oh, tgt_shifted_oh), tgt_oh};
+        }
+
+        template<bool NLL = false>
+        std::pair<std::vector<Token>, float> AutoregressiveDecode(const Example &ex) {
+            typename BlockT::SrcOneHot src_oh{};
+            for (size_t i = 0; i < SrcLen; ++i) {
+                src_oh(i, ex.first[i]) = 1.0f;
+            }
+
+            const auto &block = Network.template block<0>();
+            const auto enc_out = block.EncodeOnly(src_oh);
+
+            typename BlockT::TgtOneHot seed{};
+            seed(0, static_cast<size_t>(Token::BOS)) = 1.f;
+
+            std::vector<Token> out;
+            out.reserve(TgtLen);
+
+            double total_nll = 0.0;
+            long n_tokens = 0;
+
+
+            for (size_t step = 0; step < TgtLen; ++step) {
+                const auto logits = block.DecodeStep(enc_out, seed);
+
+                const size_t best = ArgmaxAt(logits, step);
+
+                if constexpr (NLL) {
+                    const uint8_t true_tok = ex.second[step];
+                    if (true_tok == static_cast<uint8_t>(Token::PAD)) break;
+                    const auto [_, sum_exp] = SoftmaxStatsAt(logits, step);
+                    total_nll -= (logits(step, true_tok) - logits(step, best)) - std::log(sum_exp);
+                    ++n_tokens;
+                }
+
+                const auto tok = static_cast<Token>(best);
+                out.push_back(tok);
+                if (tok == Token::EOS) break;
+
+                if (step + 1 < TgtLen) {
+                    seed(step + 1, best) = 1.f;
+                }
+            }
+
+            if (out.empty() || out.back() != Token::EOS) {
+                out.push_back(Token::EOS);
+            }
+            return {out, n_tokens > 0 ? static_cast<float>(total_nll / static_cast<double>(n_tokens)) : 0.f};
+        }
+
+        static std::vector<Token> ArgmaxDecode(const OutputT &logits) {
+            std::vector<Token> out;
+            for (size_t t = 0; t < TgtLen; ++t)
+                out.push_back(static_cast<Token>(ArgmaxAt(logits, t)));
+            return out;
+        }
+
+        InputT EncodeInpWithSS(const Example &ex, const float p_sample, std::mt19937 &rng) {
+            auto [tf_input, _tgt] = EncodeExample(ex);
+            if (p_sample <= 0.f) return tf_input;
+
+            const auto logits = Network.Forward(tf_input);
+            const auto predicted = ArgmaxDecode(logits);
+
+            // real number coin
+            std::uniform_real_distribution<float> coin(0.f, 1.f);
+            // for each token
+            for (size_t t = 1; t < TgtLen; ++t) {
+                // if the coin flips within p,
+                if (coin(rng) < p_sample) {
+                    // 0 out prev one-hot (true label)
+                    tf_input(SrcLen + t, ex.second[t - 1]) = 0.0f;
+                    // and 1 in model's prediction at this index
+                    tf_input(SrcLen + t, static_cast<size_t>(predicted[t - 1])) = 1.0f;
+                }
+            }
+            return tf_input;
+        }
+
+        struct DistResult {
+            std::vector<double> true_dist; // VOCAB normalized frequencies
+            std::vector<double> pred_dist; // VOCAB average softmax probs
+            std::vector<double> conf_hist; // 50 bins [0,1]: fraction at each P(correct_tok) bucket
+            long n_tokens = 0;
+        };
+
+        static void FillDist(DistResult &dist, long n_tokens,
+                             const std::vector<double> &true_counts,
+                             const std::vector<double> &pred_soft_sum,
+                             const std::vector<double> &conf_hist_counts,
+                             int bins) {
+            dist.n_tokens = n_tokens;
+            dist.true_dist.assign(VocabSize, 0.0);
+            dist.pred_dist.assign(VocabSize, 0.0);
+            for (size_t v = 0; v < VocabSize; ++v) {
+                dist.true_dist[v] = n_tokens > 0 ? true_counts[v] / static_cast<double>(n_tokens) : 0.0;
+                dist.pred_dist[v] = n_tokens > 0 ? pred_soft_sum[v] / static_cast<double>(n_tokens) : 0.0;
+            }
+            dist.conf_hist.assign(bins, 0.0);
+            double hist_total = 0.0;
+            for (const auto &c: conf_hist_counts) hist_total += c;
+            for (int i = 0; i < bins; ++i)
+                dist.conf_hist[i] = hist_total > 0.0 ? conf_hist_counts[i] / hist_total : 0.0;
+        }
+
+        template<typename T>
+        static std::vector<T> ShuffledIota(T n, std::mt19937 &rng) {
+            std::vector<T> v(static_cast<size_t>(n));
+            std::iota(v.begin(), v.end(), T{0});
+            std::ranges::shuffle(v, rng);
+            return v;
+        }
+
+        void TFTestPass(const size_t n_rows, const int bins, const std::vector<uint8_t> &src_buf,
+                        const std::vector<uint8_t> &tgt_buf,
+                        double &tf_loss,
+                        long &tf_examples,
+                        long &tf_tokens, std::vector<double> &tf_true, std::vector<double> &tf_pred_soft,
+                        std::vector<double> &tf_conf_hist) {
+            for (size_t r = 0; r < n_rows; ++r) {
+                const Example ex{
+                    std::vector<uint8_t>(src_buf.data() + r * SrcLen, src_buf.data() + (r + 1) * SrcLen),
+                    std::vector<uint8_t>(tgt_buf.data() + r * TgtLen, tgt_buf.data() + (r + 1) * TgtLen)
+                };
+                const auto [inp, tgt] = EncodeExample(ex);
+                const auto logits = Network.Forward(inp);
+                tf_loss += SequenceSoftmaxCEL<static_cast<size_t>(Token::PAD)>::Loss(logits, tgt).flat(0);
+                ++tf_examples;
+
+                for (size_t t = 0; t < TgtLen; ++t) {
+                    size_t true_tok = VocabSize;
+                    for (size_t v = 0; v < VocabSize; ++v) {
+                        if (tgt(t, v) > 0.5f) {
+                            true_tok = v;
+                            break;
+                        }
+                    }
+                    if (true_tok == VocabSize || true_tok == static_cast<size_t>(Token::PAD)) continue;
+
+                    tf_true[true_tok] += 1.0;
+                    ++tf_tokens;
+
+                    const auto [max_idx, sum_exp] = SoftmaxStatsAt(logits, t);
+                    const float max_l = logits(t, max_idx);
+                    for (size_t v = 0; v < VocabSize; ++v)
+                        tf_pred_soft[v] += std::exp(logits(t, v) - max_l) / sum_exp;
+                    const double p_correct = std::exp(logits(t, true_tok) - max_l) / sum_exp;
+                    tf_conf_hist[std::min(bins - 1, static_cast<int>(p_correct * bins))] += 1.0;
+                }
+            }
+        }
+
+
+        void ARTestPass(const long ar_this_subset, const int bins, const std::vector<size_t> &row_order,
+                        const std::vector<uint8_t> &src_buf,
+                        const std::vector<uint8_t> &tgt_buf, double &ar_nll, long &ar_tokens, long &ar_done,
+                        std::vector<double> &ar_true, std::vector<double> &ar_pred_soft,
+                        std::vector<double> &ar_conf_hist) {
+            const auto &block = Network.template block<0>();
+            for (long i = 0; i < ar_this_subset; ++i) {
+                if (i > 0 && i % 10 == 0)
+                    std::cout << "    [ar] " << i << "/" << ar_this_subset
+                            << "  nll/tok=" << (ar_tokens > 0 ? ar_nll / ar_tokens : 0.0) << "\n";
+                const size_t r = row_order[static_cast<size_t>(i)];
+                const uint8_t *xs = src_buf.data() + r * SrcLen;
+                const uint8_t *ys = tgt_buf.data() + r * TgtLen;
+
+                typename BlockT::SrcOneHot src_oh{};
+                for (size_t t = 0; t < SrcLen; ++t)
+                    src_oh(t, xs[t]) = 1.0f;
+                const auto enc_out = block.EncodeOnly(src_oh);
+
+                typename BlockT::TgtOneHot seed{};
+                seed(0, static_cast<size_t>(Token::BOS)) = 1.0f;
+
+                for (size_t step = 0; step < TgtLen; ++step) {
+                    const uint8_t true_tok = ys[step];
+                    if (true_tok == static_cast<uint8_t>(Token::PAD)) break;
+
+                    const auto logits = block.DecodeStep(enc_out, seed);
+
+                    const auto [best, sum_exp] = SoftmaxStatsAt(logits, step);
+                    const float max_l = logits(step, best);
+
+                    ar_nll -= (logits(step, true_tok) - max_l) - std::log(sum_exp);
+                    ++ar_tokens;
+
+                    ar_true[true_tok] += 1.0;
+                    for (size_t v = 0; v < VocabSize; ++v)
+                        ar_pred_soft[v] += std::exp(static_cast<double>(logits(step, v) - max_l)) / sum_exp;
+                    double p_correct_ar = std::exp(static_cast<double>(logits(step, true_tok) - max_l)) / sum_exp;
+                    ar_conf_hist[std::min(bins - 1, static_cast<int>(p_correct_ar * bins))] += 1.0;
+
+                    if (static_cast<Token>(best) == Token::EOS) break;
+                    if (step + 1 < TgtLen)
+                        seed(step + 1, best) = 1.0f;
+                }
+                ++ar_done;
+            }
+        }
+
+        std::pair<float, float> EvalTestSet(DistResult &tf_dist, DistResult &ar_dist, std::mt19937 &rng,
+                                            int bins = 50) {
+            // TF accumulators
+            double tf_loss = 0.0;
+            long tf_examples = 0;
+            long tf_tokens = 0;
+            std::vector<double> tf_true(VocabSize, 0.0);
+            std::vector<double> tf_pred_soft(VocabSize, 0.0);
+            std::vector<double> tf_conf_hist(bins, 0.0);
+
+            // AR accumulators
+            double ar_nll = 0.0;
+            long ar_tokens = 0;
+            long ar_done = 0;
+            const long ar_quota = static_cast<long>(N_AR_TEST_SUBSETS) * AR_TEST_N_SAMPLES;
+            std::vector<double> ar_true(VocabSize, 0.0);
+            std::vector<double> ar_pred_soft(VocabSize, 0.0);
+            std::vector<double> ar_conf_hist(bins, 0.0);
+
+            std::cout << "[test_eval] ar_quota=" << ar_quota << "  tf=all subsets\n";
+
+            // shuffle subset order so AR samples aren't always front-loaded on subset 0
+
+            for (auto order = ShuffledIota<int>(NSubsetsTrain, rng); int s: order) {
+                std::ostringstream sd;
+                sd << "data/subset" << s << "/test";
+                const std::string base = sd.str();
+
+                std::ifstream probe(base + ".src.bin", std::ios::binary | std::ios::ate);
+                if (!probe) continue;
+                size_t n_rows = static_cast<size_t>(probe.tellg()) / SrcLen;
+                if (n_rows == 0) continue;
+
+                std::ifstream src_f(base + ".src.bin", std::ios::binary);
+                std::ifstream tgt_f(base + ".tgt.bin", std::ios::binary);
+                std::vector<uint8_t> src_buf(n_rows * SrcLen);
+                std::vector<uint8_t> tgt_buf(n_rows * TgtLen);
+                // read in once
+                src_f.read(reinterpret_cast<char *>(src_buf.data()), static_cast<long>(src_buf.size()));
+                tgt_f.read(reinterpret_cast<char *>(tgt_buf.data()), static_cast<long>(tgt_buf.size()));
+
+                // shuffle row order for AR sampling within this subset
+                auto row_order = ShuffledIota<size_t>(n_rows, rng);
+
+                // if we have more AR to do, then this subset we want the min of sample-param and subset size
+                const long ar_this_subset = ar_done < ar_quota
+                                                ? std::min(static_cast<long>(AR_TEST_N_SAMPLES), ar_quota - ar_done)
+                                                : 0;
+
+
+                // TF pass: all rows
+                TFTestPass(n_rows, bins, src_buf, tgt_buf, tf_loss, tf_examples, tf_tokens, tf_true, tf_pred_soft,
+                           tf_conf_hist);
+
+                // AR pass: first ar_this_subset rows in shuffled order
+                ARTestPass(ar_this_subset, bins, row_order, src_buf, tgt_buf, ar_nll, ar_tokens, ar_done, ar_true,
+                           ar_pred_soft, ar_conf_hist);
+
+                std::cout << "  [test] subset=" << s
+                        << "  tf_ex=" << tf_examples
+                        << "  ar=" << ar_done << "/" << ar_quota << "\n";
+            }
+
+            FillDist(tf_dist, tf_tokens, tf_true, tf_pred_soft, tf_conf_hist, bins);
+            FillDist(ar_dist, ar_tokens, ar_true, ar_pred_soft, ar_conf_hist, bins);
+
+            return {
+                tf_examples > 0 ? static_cast<float>(tf_loss / static_cast<double>(tf_examples)) : 0.f,
+                ar_tokens > 0 ? static_cast<float>(ar_nll / static_cast<double>(ar_tokens)) : 0.f
+            };
+        }
+
+        // Writes dist fields prefixed by `prefix`: {prefix}_n_tokens, {prefix}_pred_dist,
+        // {prefix}_conf_hist. For prefix=="tf" also writes token_names and true_dist (once).
+        static void DistToJSON(const DistResult *dist, std::ofstream &f,
+                               std::string_view prefix, const int bins) {
+            if (!dist || dist->n_tokens <= 0) return;
+            const std::string p(prefix);
+            f << std::setprecision(8);
+            f << ",\n  \"" << p << "_n_tokens\": " << dist->n_tokens;
+
+            if (prefix == "tf") {
+                f << ",\n  \"token_names\": [";
+                for (size_t v = 0; v < VocabSize; ++v) {
+                    f << "\"" << TokenName(static_cast<Token>(v)) << "\"";
+                    if (v + 1 < VocabSize) f << ", ";
+                }
+                f << "],\n  \"true_dist\": [";
+                for (size_t v = 0; v < VocabSize; ++v) {
+                    f << dist->true_dist[v];
+                    if (v + 1 < VocabSize) f << ", ";
+                }
+                f << "]";
+            }
+
+            f << ",\n  \"" << p << "_pred_dist\": [";
+            for (size_t v = 0; v < VocabSize; ++v) {
+                f << dist->pred_dist[v];
+                if (v + 1 < VocabSize) f << ", ";
+            }
+            f << "]";
+            if (!dist->conf_hist.empty()) {
+                f << ",\n  \"" << p << "_conf_hist\": [";
+                for (int i = 0; i < bins; ++i) {
+                    f << dist->conf_hist[i];
+                    if (i + 1 < bins) f << ", ";
+                }
+                f << "]";
+            }
+        }
+
+        static void WriteProgressJSON(const std::string &path, const long total_seen, const int lap,
+                                      const float train_loss, const float test_loss,
+                                      const float avg_rl_reward = -1.f,
+                                      const float avg_rl_accuracy = -1.f, const float ar_test_loss = -1.f,
+                                      const DistResult *tf_dist = nullptr, const DistResult *ar_dist = nullptr,
+                                      const int dist_bins = 50,
+                                      const float budget_tf = -1.f, const float budget_rl = -1.f) {
+            std::ofstream f(path);
+            f << std::fixed << std::setprecision(6);
+            f << "{\n";
+
+            // Static config block — lets the Python dashboard be dataset-agnostic
+            f << "  \"config\": {\n";
+            f << "    \"examples_per_epoch\": " << ExamplesPerEpoch << ",\n";
+            f << "    \"src_len\": " << SrcLen << ",\n";
+            f << "    \"tgt_len\": " << TgtLen << ",\n";
+            f << "    \"vocab_size\": " << VocabSize << ",\n";
+            f << "    \"pad_id\": " << static_cast<size_t>(Token::PAD) << ",\n";
+            f << "    \"tf_lr_min\": " << TF_LR_MIN << ",\n";
+            f << "    \"tf_lr_max\": " << TF_LR_MAX << ",\n";
+            f << "    \"tf_ramp_size\": " << TF_RAMP_SIZE << ",\n";
+            f << "    \"ss_ramp_start\": " << SS_RAMP_START << ",\n";
+            f << "    \"ss_ramp_end\": " << SS_RAMP_END << ",\n";
+            f << "    \"ss_min\": " << SS_MIN << ",\n";
+            f << "    \"ss_max\": " << SS_MAX << ",\n";
+            f << "    \"tgt_len_min\": " << TGT_LEN_MIN << ",\n";
+            f << "    \"tgt_len_ramp\": " << TGT_LEN_RAMP << ",\n";
+            f << "    \"rl_lr_min\": " << RL_LR_MIN << ",\n";
+            f << "    \"rl_lr_max\": " << RL_LR_MAX << ",\n";
+            f << "    \"rl_ramp_size\": " << RL_RAMP_SIZE << "\n";
+            f << "  },\n";
+
+            f << "  \"total_seen\": " << total_seen << ",\n";
+            f << "  \"lap\": " << lap << ",\n";
+            f << "  \"train_loss\": " << train_loss << ",\n";
+            f << "  \"test_loss\": " << test_loss << ",\n";
+            f << "  \"avg_rl_reward\": " << avg_rl_reward << ",\n";
+            f << "  \"avg_rl_accuracy\": " << avg_rl_accuracy << ",\n";
+            f << "  \"ar_test_loss\": " << ar_test_loss << ",\n";
+            f << std::setprecision(4);
+            f << "  \"ss_rate\": " << ScheduledSamplingRate(total_seen) << ",\n";
+            f << "  \"max_tgt_len\": " << MaxAsmLength(total_seen) << ",\n";
+            f << "  \"budget_tf\": " << budget_tf << ",\n";
+            f << "  \"budget_rl\": " << budget_rl << ",\n";
+            const float budget_total = budget_tf + budget_rl;
+            f << "  \"pct_rl\": " << (budget_total > 0.f ? budget_rl / budget_total : -1.f) << ",\n";
+            f << "  \"pct_tf\": " << (budget_total > 0.f ? budget_tf / budget_total : -1.f);
+            DistToJSON(tf_dist, f, "tf", dist_bins);
+            DistToJSON(ar_dist, f, "ar", dist_bins);
+            f << "\n}\n";
+        }
+
+
+        std::pair<float, float> RL_Update(const int n_examples, const std::vector<Example> &chunk,
+                                          std::mt19937 &ss_rng) {
+            using RLBatchInp = PrependBatch<RL_K, InputT>::type;
+            using RLBatchTgt = PrependBatch<RL_K, OutputT>::type;
+
+            std::uniform_int_distribution<size_t> pick_ex(0, n_examples - 1);
+            float reward_sum = 0.f;
+            float accuracy_sum = 0.f;
+            RLBatchInp rl_x{};
+            RLBatchTgt rl_y{};
+
+            for (int k = 0; k < RL_K; ++k) {
+                const auto &ex = chunk[pick_ex(ss_rng)];
+
+                // AR decode + NLL against GT
+                const auto [decoded, nll] = AutoregressiveDecode<true>(ex);
+
+                // reward is NNLL, negative-negative-log likelihood == log likelihood
+                // we want the negative of NLL to be as high as possible!
+                // LL(1), which is the best possible value here, = 0 and everything else is negative
+                reward_sum += -nll;
+
+                std::vector<uint8_t> decoded_bytes(decoded.size());
+                std::ranges::transform(decoded, decoded_bytes.begin(), [](Token t) { return static_cast<uint8_t>(t); });
+                std::vector<Token> tgt_tokens(ex.second.size());
+                std::ranges::transform(ex.second, tgt_tokens.begin(), [](uint8_t b) { return static_cast<Token>(b); });
+
+                const auto acc = CalculateStrictAccuracy(decoded, tgt_tokens);
+                accuracy_sum += acc.total > 0 ? static_cast<float>(acc.correct) / acc.total : 0.f;
+
+                const auto [rl_inp, rl_tgt] = EncodeExample({ex.first, decoded_bytes});
+                TensorSet<0>(rl_x, k, rl_inp);
+                TensorSet<0>(rl_y, k, rl_tgt);
+            }
+            const float avg_R = reward_sum / RL_K;
+            const float avg_acc = accuracy_sum / RL_K;
+
+            if (!RL_State.init) {
+                RL_State.baseline = avg_R;
+                RL_State.init = true;
+            } else {
+                RL_State.baseline = RL_BaselineDecay * RL_State.baseline + (1.f - RL_BaselineDecay) * avg_R;
+            }
+            RL_State.Save();
+
+            const float advantage = avg_R - RL_State.baseline;
+            const float rl_lr = RL_State.LR(Cursor.total_seen) * advantage;
+
+            Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(Token::PAD)>, RL_K>(rl_x, rl_y, rl_lr);
+
+            const float rl_ramp_pct = std::clamp(
+                                          static_cast<float>(Cursor.total_seen) / (RL_RAMP_SIZE * ExamplesPerEpoch),
+                                          0.f, 1.f) * 100.f;
+            const char *rl_lr_color = rl_lr >= 0.f ? "\033[32m" : "\033[31m";
+            std::cout << "\033[2m  [rl] nll_R=" << avg_R
+                    << "  acc=" << avg_acc
+                    << "  base=" << RL_State.baseline
+                    << "  A=" << advantage
+                    << "  sched_lr=" << RL_State.LR(Cursor.total_seen)
+                    << "  rl_lr_pct_max_magnitude=" << rl_ramp_pct << "%"
+                    << "  rl_lr=" << rl_lr_color << rl_lr << "\033[0m\n";
+            return {avg_R, avg_acc};
+        }
+
+    public:
+        void Print(std::ostream &os) {
+            std::filesystem::create_directories(CheckpointDir());
+            std::cout << "[config] checkpoint dir: " << CheckpointDir() << "\n";
+
+            std::cout << "[model] EMB=" << EmbeddingDimension << " HEADS=" << NumHeads
+                    << " FFN=" << FFNSize << " ENC=" << NEnc << " DEC=" << NDec
+                    << " VOCAB=" << VocabSize << "\n";
+            std::cout << "[model] params: " << NetworkT::TotalParamCount
+                    << " (" << NetworkT::TotalParamCount * 4 / 1024 / 1024 << " MB)\n";
+            std::cout << "[config] subsets/group=" << SubsetsPerGroup
+                    << " groups/lap=" << Groups
+                    << " batch=" << Batch << "\n";
+            std::cout << "[config] ce_lr=" << LR(0) << "→" << LR(100 * ExamplesPerEpoch)
+                    << "  rl_lr=" << RL_State.LR(0) << "→" << RL_State.LR(100 * ExamplesPerEpoch)
+                    << "  rl_k=" << RL_K << "\n";
+        }
+
+        void Train() {
+            timed("FULL TRAINING SESSION", [this] { train_(); });
+        }
+
+        // AR-decode a raw source token sequence and return predicted tokens up to EOS.
+        std::vector<Token> Infer(const std::vector<uint8_t> &src_ids) {
+            Example ex{src_ids, std::vector<uint8_t>(TgtLen, static_cast<uint8_t>(Token::PAD))};
+            auto [tokens, _nll] = AutoregressiveDecode(ex);
+            return tokens;
+        }
+
+        void RunDashboard() const {
+            if (tttn_home_.empty()) return;
+            const std::string script = tttn_home_ + "/TTTN/tools/transformer_trainer_dashboard.py";
+            const std::string output = CheckpointDir() + "/training_dashboard.html";
+            const std::string cmd = "python3 " + script
+                                    + " " + CheckpointDir()
+                                    + " " + output
+                                    + " && open " + output;
+            std::cout << "[dashboard] " << cmd << "\n";
+            std::system(cmd.c_str());
+        }
+
+        void train_() {
+            const std::string checkpoint_model = CheckpointDir() + "/model.bin";
+            const std::string progress_base = CheckpointDir() + "/progress";
+            RL_State.Load();
+            std::cout << "[rl] loaded state: baseline=" << RL_State.baseline
+                    << "  init=" << RL_State.init << "\n";
+            Cursor.Load();
+            std::cout << "[cursor] lap=" << Cursor.lap
+                    << "  step=" << Cursor.step
+                    << "  total_seen=" << Cursor.total_seen << "\n";
+
+            std::filesystem::create_directories(CheckpointDir());
+            Print(std::cout);
+
+            if (std::filesystem::exists(checkpoint_model)) {
+                Network.LoadForTraining(checkpoint_model);
+                std::cout << "[model] loaded from " << checkpoint_model << "\n";
+            } else {
+                std::cout << "[model] fresh init\n";
+            }
+
+            std::mt19937 ss_rng(42);
+
+            float loss_acc = 0.f;
+            int batches = 0;
+
+            float rl_reward_acc = 0.f;
+            float rl_acc_acc = 0.f;
+            int rl_reward_count = 0;
+
+            for (auto g = 0; g < Groups; ++g) {
+                const DataCursor precursor(Cursor);
+
+                const int cur_max_len = MaxAsmLength(precursor.total_seen);
+                const float p_ss = ScheduledSamplingRate(precursor.total_seen);
+                const float epoch_approx = static_cast<float>(precursor.total_seen) / ExamplesPerEpoch;
+
+                std::vector<Example> chunk;
+                chunk.reserve(ExamplesPerGroup);
+                for (auto i = 0; i < SubsetsPerGroup; ++i) {
+                    auto next = GetNextSubset(cur_max_len);
+                    chunk.insert(chunk.end(), next.begin(), next.end());
+                    Cursor.Advance(NSubsetsTrain);
+                    Cursor.Save();
+                    Network.SaveForTraining(checkpoint_model);
+                    RL_State.Save();
+                }
+
+                if (Cursor.lap > precursor.lap) {
+                    std::cout << "\033[2m  ── dataset lap wrap → lap " << Cursor.lap << " ──\033[0m\n";
+                }
+
+                const size_t n_examples = chunk.size();
+                const size_t n_batches = n_examples / Batch;
+                if (n_batches == 0) {
+                    std::cout << "  [g" << g + 1 << "/" << Groups
+                            << "] skipped (0 examples after length filter, max_len="
+                            << cur_max_len << ")\n";
+                    continue;
+                }
+
+
+                float group_loss = 0.f;
+                bool training_ok = false;
+                try {
+                    for (auto b = 0; b < n_batches; ++b) {
+                        timed("Batch", [this, &chunk, &b, &p_ss, &ss_rng, &group_loss, &loss_acc, &batches]() {
+                            BatchInpT batch_x;
+                            BatchTgtT batch_y;
+                            for (auto i = 0; i < Batch; ++i) {
+                                const auto &ex = chunk[b * Batch + i];
+                                const auto [_tf_inp, tgt] = EncodeExample(ex);
+                                const auto inp = EncodeInpWithSS(ex, p_ss, ss_rng);
+                                TensorSet<0>(batch_x, i, inp);
+                                TensorSet<0>(batch_y, i, tgt);
+                            }
+                            const float loss = Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(
+                                Token::PAD)>, Batch>(
+                                batch_x, batch_y, LR(Cursor.total_seen));
+                            group_loss += loss;
+                            loss_acc += loss;
+                            batches++;
+                        });
+                        const long prev_total = Cursor.total_seen;
+                        Cursor.total_seen += Batch;
+                        Cursor.Save();
+
+                        if ((b + 1) % LogEvery == 0) {
+                            char line[256];
+                            const float ce_ramp_pct = std::clamp(1.f -
+                                                                 (static_cast<float>(Cursor.total_seen) / (
+                                                                      TF_RAMP_SIZE * ExamplesPerEpoch)),
+                                                                 0.f, 1.f) * 100.f;
+                            std::snprintf(line, sizeof(line),
+                                          "%s  g%d/%lu b%d/%zu  loss=%.3f  ss=%.2f  len=%d  ep=%.2f  ce_lr_pct_max_magnitude=%.2f%%",
+                                          EpochBar(Cursor.total_seen).c_str(),
+                                          g + 1, Groups, b + 1, n_batches,
+                                          group_loss / static_cast<float>(b + 1), p_ss,
+                                          cur_max_len,
+                                          static_cast<float>(Cursor.total_seen) / ExamplesPerEpoch,
+                                          ce_ramp_pct);
+                            std::cout << line << "\n";
+                        }
+
+                        if (Cursor.total_seen / ExamplesPerEpoch > prev_total / ExamplesPerEpoch) {
+                            const float running_training_loss = batches > 0
+                                                                    ? loss_acc / static_cast<float>(batches)
+                                                                    : group_loss / static_cast<float>(b + 1);
+                            const float cur_rl_reward = rl_reward_count > 0
+                                                            ? rl_reward_acc / static_cast<float>(rl_reward_count)
+                                                            : -1.f;
+                            const float cur_rl_acc = rl_reward_count > 0
+                                                         ? rl_acc_acc / static_cast<float>(rl_reward_count)
+                                                         : -1.f;
+
+                            const long ep = Cursor.total_seen / ExamplesPerEpoch;
+                            std::cout << "\n══════════ " << ep << " × "
+                                    << ExamplesPerEpoch << " TRAINED ══════════\n";
+
+                            DistResult tf_dist, ar_dist;
+                            auto [tf_loss, ar_loss] = timed("[test]", [this, &tf_dist, &ar_dist, &ss_rng]() {
+                                return EvalTestSet(tf_dist, ar_dist, ss_rng);
+                            });
+                            std::cout << "[test] tf_loss=" << tf_loss << "\n";
+                            std::cout << "[test] ar_loss=" << ar_loss << "\n";
+
+                            const float b_tf = (static_cast<float>(ExamplesPerEpoch) / Batch)
+                                               * LR(Cursor.total_seen);
+                            const float b_rl = static_cast<float>(rl_reward_count)
+                                               * RL_State.LR(Cursor.total_seen);
+                            const float b_tot = b_tf + b_rl;
+                            std::cout << "[budget] tf=" << b_tf << " (" << 100.f * b_tf / b_tot << "%)"
+                                      << "  rl=" << b_rl << " (" << 100.f * b_rl / b_tot << "%)\n";
+
+                            WriteProgressJSON(progress_base + "_" + std::to_string(Cursor.total_seen) + ".json",
+                                              Cursor.total_seen, Cursor.lap, running_training_loss, tf_loss,
+                                              cur_rl_reward, cur_rl_acc, ar_loss, &tf_dist, &ar_dist,
+                                              50, b_tf, b_rl);
+                            Network.Save(progress_base + "_save_" + std::to_string(Cursor.total_seen) + ".bin");
+                            Network.SaveForTraining(checkpoint_model);
+
+                            std::cout << "[save] model + test-JSON @ trained=" << Cursor.total_seen << "\n";
+                            RunDashboard();
+
+                            loss_acc = 0.f;
+                            batches = 0;
+                            rl_reward_acc = 0.f;
+                            rl_acc_acc = 0.f;
+                            rl_reward_count = 0;
+                        }
+                    }
+
+                    training_ok = true;
+                } catch (const std::exception &e) {
+                    std::cerr << "\n[ERROR] training failed at group " << g << ": " << e.what() << "\n";
+                }
+
+                if (!training_ok) {
+                    Cursor = precursor;
+                    std::cerr << "[cursor] rolled back to trained=" << precursor.total_seen << "\n";
+                }
+
+                if (n_examples >= RL_K) {
+                    auto [rl_nll_r, rl_acc_r] = RL_Update(n_examples, chunk, ss_rng);
+                    rl_reward_acc += rl_nll_r;
+                    rl_acc_acc += rl_acc_r;
+
+                    rl_reward_count++;
+                }
+
+                std::cout << "\033[2m  [g" << g + 1 << "/" << Groups << "] done  "
+                        << "loss=" << group_loss / n_batches
+                        << "  trained=" << Cursor.total_seen << "\033[0m\n";
+            }
+            Network.SaveForTraining(checkpoint_model);
+            RL_State.Save();
+            Cursor.Save();
+            std::cout << "[save] session end: model + rl_state written\n";
+        }
+    };
+}
+
+
+// ======================================================================
 // FILE: main.cpp
 // ======================================================================
 
 #include "src/TTTN.hpp"
-#include <iostream>
-#include <iomanip>
-#include <array>
-#include <algorithm>
-#include <cmath>
-#include <filesystem>
-#include <chrono>
-
-// ---- timed(label, lambda): runs lambda, prints wall-clock duration ----
-template<typename F>
-auto timed(const char *label, F &&fn) {
-    using Clock = std::chrono::high_resolution_clock;
-    const auto t0 = Clock::now();
-    auto result = fn();
-    const auto t1 = Clock::now();
-    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    std::cout << "[" << label << "]  " << ms << " ms\n";
-    return result;
-}
 
 using namespace TTTN;
 
-// ── Image primitives ──────────────────────────────────────────────────────────
-
-struct RGB {
-    uint8_t r, g, b;
-};
-
-static RGB grayRGB(float v) {
-    const uint8_t g = static_cast<uint8_t>(std::clamp(v, 0.f, 1.f) * 255.f);
-    return {g, g, g};
-}
-
-static RGB hotRGB(float v) {
-    v = std::clamp(v, 0.f, 1.f);
-    return {
-        static_cast<uint8_t>(std::min(v * 3.f, 1.f) * 255),
-        static_cast<uint8_t>(std::max(v * 3.f - 1.f, 0.f) * 255),
-        static_cast<uint8_t>(std::max(v * 3.f - 2.f, 0.f) * 255)
-    };
-}
-
-// ── Generic SnapshotMap visualizer ───────────────────────────────────────────
-//
-// Renders every rank-2 or rank-3 entry in a SnapshotMap as a hot-colormap PPM.
-// Rank-3 (e.g. Tensor<H,S,S>): H slices placed side by side.
-// Output: viz/<key_with_dots_replaced_by_underscores>.ppm
-
-static void viz_entry(const std::string &path, const SnapshotEntry &e, size_t scale) {
-    if (e.shape.size() < 2) return;
-    const size_t n_sl = e.shape.size() == 2 ? 1 : e.shape[0];
-    const size_t rows = e.shape[e.shape.size() - 2];
-    const size_t cols = e.shape[e.shape.size() - 1];
-    const size_t sl_sz = rows * cols;
-
-    float mx = 0.f;
-    for (float v: e.data) mx = std::max(mx, v);
-
-    const size_t gap = std::max(scale / 2, size_t(1));
-    const size_t img_w = n_sl * cols * scale + (n_sl > 1 ? (n_sl - 1) * gap : 0);
-    const size_t img_h = rows * scale;
-
-    std::ofstream f(path, std::ios::binary);
-    f << "P6\n" << img_w << " " << img_h << "\n255\n";
-    auto put = [&](RGB c) {
-        f.put(c.r);
-        f.put(c.g);
-        f.put(c.b);
-    };
-    const RGB dark{20, 20, 20};
-
-    for (size_t r = 0; r < rows; ++r)
-        for (size_t py = 0; py < scale; ++py)
-            for (size_t sl = 0; sl < n_sl; ++sl) {
-                for (size_t c = 0; c < cols; ++c) {
-                    float v = mx > 1e-6f ? e.data[sl * sl_sz + r * cols + c] / mx : 0.f;
-                    for (size_t px = 0; px < scale; ++px) put(hotRGB(v));
-                }
-                if (sl + 1 < n_sl)
-                    for (size_t px = 0; px < gap; ++px) put(dark);
-            }
-}
-
-void viz_snapshot(const std::string &dir, const SnapshotMap &snaps, size_t scale = 8) {
-    std::filesystem::create_directories(dir);
-    for (const auto &[key, entry]: snaps) {
-        if (entry.shape.size() < 2) continue;
-        std::string fname = key;
-        for (char &c: fname) if (c == '.') c = '_';
-        const std::string path = dir + "/" + fname + "ppm";
-        viz_entry(path, entry, scale);
-        std::cout << "  viz -> " << path << "\n";
-        std::system(("open " + path).c_str());
-    }
-}
-
-// ── MNIST attention visualizer ────────────────────────────────────────────────
-//
-// Checkerboard row+col attention on 28×28 images.
-// Terminal: digit | row-attn | col-attn  (unicode shading, 28 rows).
-// Image:    viz/attn_viz.ppm  (grayscale digit + hot attn panels, stacked).
-
-template<size_t H, size_t S>
-static Tensor<S, S> headAvgNorm(const Tensor<H, S, S> &t) {
-    Tensor<S, S> out;
-    const float inv = 1.f / static_cast<float>(H);
-    for (size_t h = 0; h < H; ++h)
-        for (size_t q = 0; q < S; ++q)
-            for (size_t k = 0; k < S; ++k)
-                out(q, k) += t(h, q, k) * inv;
-    float mx = 0.f;
-    for (size_t i = 0; i < S * S; ++i) mx = std::max(mx, out.flat(i));
-    if (mx > 1e-6f) for (size_t i = 0; i < S * S; ++i) out.flat(i) /= mx;
-    return out;
-}
-
-static void printAttnViz(const Tensor<28, 28> &digit,
-                         const Tensor<28, 28> &row_attn,
-                         const Tensor<28, 28> &col_attn) {
-    static constexpr const char *shade[] = {" ", "░", "▒", "▓", "█"};
-    auto cell = [](float v) { return shade[static_cast<size_t>(std::clamp(v, 0.f, 1.f) * 4.f)]; };
-    std::cout << "  digit                        "
-            << "row-attn (row→row)           "
-            << "col-attn (col→col)\n";
-    for (size_t r = 0; r < 28; ++r) {
-        std::cout << "  ";
-        for (size_t c = 0; c < 28; ++c) std::cout << cell(digit(r, c));
-        std::cout << "   ";
-        for (size_t c = 0; c < 28; ++c) std::cout << cell(row_attn(r, c));
-        std::cout << "   ";
-        for (size_t c = 0; c < 28; ++c) std::cout << cell(col_attn(r, c));
-        std::cout << "\n";
-    }
-}
-
-struct AttnSample {
-    size_t label, pred;
-    Tensor<28, 28> digit, row_attn, col_attn;
-};
-
-static void writeAndOpenAttnPPM(const std::string &path,
-                                const std::vector<AttnSample> &samples,
-                                size_t scale = 8) {
-    const size_t cell = 28 * scale;
-    const size_t gap = scale;
-    const size_t sep = scale / 2;
-    const size_t img_w = cell * 3 + gap * 2;
-    const size_t n = samples.size();
-    const size_t img_h = n * cell + (n > 1 ? (n - 1) * sep : 0);
-
-    std::ofstream f(path, std::ios::binary);
-    f << "P6\n" << img_w << " " << img_h << "\n255\n";
-    auto put = [&](RGB c) {
-        f.put(c.r);
-        f.put(c.g);
-        f.put(c.b);
-    };
-    const RGB dark{20, 20, 20};
-
-    for (size_t si = 0; si < n; ++si) {
-        const auto &s = samples[si];
-        for (size_t py = 0; py < cell; ++py) {
-            const size_t r = py / scale;
-            for (size_t px = 0; px < cell; ++px) put(grayRGB(s.digit(r, px / scale)));
-            for (size_t px = 0; px < gap; ++px) put(dark);
-            for (size_t px = 0; px < cell; ++px) put(hotRGB(s.row_attn(r, px / scale)));
-            for (size_t px = 0; px < gap; ++px) put(dark);
-            for (size_t px = 0; px < cell; ++px) put(hotRGB(s.col_attn(r, px / scale)));
-        }
-        if (si + 1 < n)
-            for (size_t py = 0; py < sep; ++py)
-                for (size_t px = 0; px < img_w; ++px) put(dark);
-    }
-    std::cout << "  image -> " << path << "  (" << img_w << "x" << img_h << " px)\n";
-    std::system(("open " + path).c_str());
-}
-
-template<typename Net>
-static AttnSample extractAttnSample(const Net &net, const Tensor<28, 28> &img, size_t label) {
-    const auto pred_out = img >> net;
-    size_t pred = 0;
-    for (size_t c = 1; c < 10; ++c)
-        if (pred_out.flat(c) > pred_out.flat(pred)) pred = c;
-
-    const auto &inner_par = net.template block<0>().block_a();
-    const auto &row_mhattn = inner_par.block_a().template block<0>();
-    const auto &col_mhattn = inner_par.block_b().inner().template block<0>();
-
-    return {
-        label, pred, img,
-        headAvgNorm(row_mhattn.attn_weights()),
-        headAvgNorm(col_mhattn.attn_weights())
-    };
-}
-
-void runMNISTAttnViz() {
-    std::cout << "\n=== MNIST Attention Visualizer (checkerboard row+col) ===\n";
-
-    auto train_data = LoadCSV<20000, 785>("data/mnist_train.csv", true);
-
-    using RowAttn = ComposeBlocks<
-        MHAttention<7, 28>,
-        MapDense<1, Tensor<28>, ReLU>,
-        MapDense<1, Tensor<28> >
-    >;
-    using ColAttn = Transposed<ComposeBlocks<
-        MHAttention<7, 28>,
-        MapDense<1, Tensor<28>, ReLU>,
-        MapDense<1, Tensor<28> >
-    > >;
-
-    typename NetworkBuilder<
-        Input<28, 28>,
-        Residual<Parallel<RowAttn, ColAttn> >,
-        Dense<10>,
-        SoftmaxLayer<0>
-    >::type net;
-    std::cout << "    params: " << net.TotalParamCount << "\n\n";
-
-    std::mt19937 rng{42};
-    constexpr size_t Batch = 64;
-
-    Tensor<20000, 28, 28> X_train;
-    Tensor<20000, 10> Y_train;
-    for (size_t i = 0; i < 20000; ++i) {
-        for (size_t p = 0; p < 784; ++p)
-            X_train.flat(i * 784 + p) = train_data(i, p + 1) / 255.f;
-        const auto label = static_cast<size_t>(train_data(i, 0));
-        for (size_t c = 0; c < 10; ++c)
-            Y_train(i, c) = (c == label) ? 1.f : 0.f;
-    }
-
-    for (int epoch = 0; epoch < 10; ++epoch) {
-        const float loss = net.template RunEpoch<CEL, Batch>(X_train, Y_train, rng, 0.001f);
-        std::cout << "  epoch " << epoch << "  CEL=" << std::fixed << std::setprecision(4) << loss << "\n";
-    }
-
-    std::cout << "\n  -- attention patterns (one sample per digit) --\n";
-    std::vector<AttnSample> ppm_samples;
-    std::array<int, 10> shown{};
-    shown.fill(0);
-
-    for (size_t i = 0; i < 2000 && *std::min_element(shown.begin(), shown.end()) == 0; ++i) {
-        const auto label = static_cast<size_t>(train_data(i, 0));
-        if (shown[label]) continue;
-        shown[label] = 1;
-
-        Tensor<28, 28> img;
-        for (size_t p = 0; p < 784; ++p)
-            img.flat(p) = train_data(i, p + 1) / 255.f;
-
-        const auto s = extractAttnSample(net, img, label);
-        std::cout << "\n  [digit " << s.label << "  pred=" << s.pred << "]\n\n";
-        printAttnViz(s.digit, s.row_attn, s.col_attn);
-        ppm_samples.push_back(s);
-    }
-
-    std::sort(ppm_samples.begin(), ppm_samples.end(),
-              [](const AttnSample &a, const AttnSample &b) { return a.label < b.label; });
-
-    std::filesystem::create_directories("viz");
-    writeAndOpenAttnPPM("viz/attn_viz.ppm", ppm_samples);
-}
-
-// ── Bracket attention visualizer ──────────────────────────────────────────────
-//
-// Token vocab: 0=(  1=)  2=[  3=]  4={  5=}  6=blank
-// Network: Input<32,7> → embed → MHAttn(4 heads) → FFN → Dense<2> → Softmax
-// snap() collects "block_1.attn_weights" (shape [4,32,32]) after each Forward.
-// PPM: 4 files (one per head) with token-color labeled query/key axes.
-
-static constexpr const char *BRACKET_CHARS = "()[]{} ";
-
-static const RGB BRACKET_COLORS[7] = {
-    {100, 149, 237}, // ( cornflower blue
-    {135, 206, 250}, // ) sky blue
-    {60, 179, 113}, // [ medium sea green
-    {144, 238, 144}, // ] light green
-    {255, 165, 0}, // { orange
-    {220, 20, 60}, // } crimson
-    {25, 25, 25}, // blank
-};
-
-// 5-wide × 7-tall pixel bitmaps for ()[]{} and blank.
-// Each row is 5 bits; bit 4 = leftmost pixel (col 0).
-static const uint8_t BRACKET_FONT[7][7] = {
-    {0x04, 0x08, 0x10, 0x10, 0x10, 0x08, 0x04}, // (
-    {0x04, 0x02, 0x01, 0x01, 0x01, 0x02, 0x04}, // )
-    {0x0C, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0C}, // [
-    {0x06, 0x02, 0x02, 0x02, 0x02, 0x02, 0x06}, // ]
-    {0x06, 0x08, 0x08, 0x10, 0x08, 0x08, 0x06}, // {
-    {0x0C, 0x02, 0x02, 0x01, 0x02, 0x02, 0x0C}, // }
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // blank
-};
-
-struct BracketSample {
-    size_t label, pred;
-    std::array<int, 32> tokens;
-    SnapshotMap snaps; // from net.snap() — contains "block_1.attn_weights"
-};
-
-static void printBracketsViz(const BracketSample &s) {
-    static constexpr const char *shade[] = {" ", "░", "▒", "▓", "█"};
-    auto cell = [](float v) { return shade[static_cast<size_t>(std::clamp(v, 0.f, 1.f) * 4.f)]; };
-
-    std::cout << "  seq: ";
-    for (int tok: s.tokens) std::cout << BRACKET_CHARS[tok];
-    std::cout << "\n  label=" << s.label << "  pred=" << s.pred
-            << "  (" << (s.label == s.pred ? "correct" : "WRONG") << ")\n\n";
-
-    const auto &e = s.snaps.at("block_1.attn_weights");
-    // shape [4, 32, 32] — normalize each head, show all 4 side by side
-    std::array<std::array<float, 32 * 32>, 4> norm;
-    for (size_t h = 0; h < 4; ++h) {
-        float mx = 0.f;
-        for (size_t i = 0; i < 32 * 32; ++i) mx = std::max(mx, e.data[h * 32 * 32 + i]);
-        for (size_t i = 0; i < 32 * 32; ++i)
-            norm[h][i] = mx > 1e-6f ? e.data[h * 32 * 32 + i] / mx : 0.f;
-    }
-
-    std::cout << "  head-0                          "
-            << "head-1                          "
-            << "head-2                          "
-            << "head-3\n";
-    for (size_t q = 0; q < 32; ++q) {
-        std::cout << "  ";
-        for (size_t h = 0; h < 4; ++h) {
-            for (size_t k = 0; k < 32; ++k) std::cout << cell(norm[h][q * 32 + k]);
-            if (h < 3) std::cout << "  ";
-        }
-        std::cout << "\n";
-    }
-}
-
-// PPM: 4 separate files (one per head) in `dir/`.
-// Layout: [corner | key-token labels →] / [query-token labels ↓ | heatmap]
-// Samples stacked vertically with a dark separator.
-static void writeBracketsAttnPPM(const std::string &dir,
-                                 const std::vector<BracketSample> &samples,
-                                 size_t scale = 16) {
-    std::filesystem::create_directories(dir);
-
-    static constexpr size_t FW = 5, FH = 7;
-    const RGB dark{20, 20, 20};
-
-    auto draw_cell = [&](std::ofstream &f, int tok, size_t py_in_cell) {
-        auto put = [&](RGB c) {
-            f.put(c.r);
-            f.put(c.g);
-            f.put(c.b);
-        };
-        RGB bg = BRACKET_COLORS[tok];
-        int cy = (int) py_in_cell - (int) (scale - FH) / 2;
-        for (size_t px = 0; px < scale; ++px) {
-            int cx = (int) px - (int) (scale - FW) / 2;
-            bool lit = cx >= 0 && cx < (int) FW && cy >= 0 && cy < (int) FH
-                       && ((BRACKET_FONT[tok][cy] >> (FW - 1 - cx)) & 1);
-            put(lit ? RGB{255, 255, 255} : bg);
-        }
-    };
-
-    const size_t n = samples.size();
-    const size_t sep = scale / 2;
-    const size_t img_w = scale + 32 * scale;
-    const size_t block_h = scale + 32 * scale;
-    const size_t img_h = n * block_h + (n > 1 ? (n - 1) * sep : 0);
-
-    for (size_t head = 0; head < 4; ++head) {
-        const std::string path = dir + "/head_" + std::to_string(head) + ".ppm";
-        std::ofstream f(path, std::ios::binary);
-        f << "P6\n" << img_w << " " << img_h << "\n255\n";
-        auto put = [&](RGB c) {
-            f.put(c.r);
-            f.put(c.g);
-            f.put(c.b);
-        };
-
-        for (size_t si = 0; si < n; ++si) {
-            const auto &s = samples[si];
-            const auto &e = s.snaps.at("block_1.attn_weights");
-            const size_t off = head * 32 * 32;
-
-            // normalize this head
-            float mx = 0.f;
-            for (size_t i = 0; i < 32 * 32; ++i) mx = std::max(mx, e.data[off + i]);
-            auto val = [&](size_t q, size_t k) {
-                return mx > 1e-6f ? e.data[off + q * 32 + k] / mx : 0.f;
-            };
-
-            // top margin: corner + key token labels
-            for (size_t py = 0; py < scale; ++py) {
-                for (size_t px = 0; px < scale; ++px) put(dark);
-                for (size_t k = 0; k < 32; ++k) draw_cell(f, s.tokens[k], py);
-            }
-
-            // 32 query rows
-            for (size_t q = 0; q < 32; ++q)
-                for (size_t py = 0; py < scale; ++py) {
-                    draw_cell(f, s.tokens[q], py);
-                    for (size_t k = 0; k < 32; ++k)
-                        for (size_t px = 0; px < scale; ++px)
-                            put(hotRGB(val(q, k)));
-                }
-
-            if (si + 1 < n)
-                for (size_t py = 0; py < sep; ++py)
-                    for (size_t px = 0; px < img_w; ++px) put(dark);
-        }
-
-        std::cout << "  image -> " << path << "  (" << img_w << "x" << img_h << " px)\n";
-        std::system(("open " + path).c_str());
-    }
-}
-
-template<typename Net>
-static BracketSample extractBracketSample(const Net &net,
-                                          const Tensor<32, 7> &x,
-                                          size_t label,
-                                          const std::array<int, 32> &tokens) {
-    const auto pred_out = x >> net;
-    const size_t pred = pred_out.flat(1) > pred_out.flat(0) ? 1u : 0u;
-    return {label, pred, tokens, net.snap()};
-}
-
-// ── Numeric sequence attention visualizer ─────────────────────────────────────
-//
-// Shared transformer for 4 sequence tasks (sorted / palindrome / modular / parity).
-// Token vocab: 0-6 = integer values, 7 = blank.
-// Network: Input<32,8> → embed → MHAttn(4 heads) → FFN → Dense<2> → Softmax
-// Same CSV shape as brackets (label, t0..t31); blank=7 for all tasks.
-
-static const RGB NUM_COLORS[8] = {
-    {70, 130, 200}, // 0 blue
-    {60, 179, 113}, // 1 green
-    {210, 80, 80}, // 2 red
-    {220, 180, 50}, // 3 yellow
-    {160, 60, 200}, // 4 purple
-    {50, 200, 200}, // 5 cyan
-    {230, 140, 50}, // 6 orange
-    {25, 25, 25}, // 7 blank (dark)
-};
-
-// 5-wide × 7-tall pixel bitmaps for digits 0-6 and blank.
-// Each row is 5 bits; bit 4 = leftmost pixel (col 0).
-static const uint8_t NUM_FONT[8][7] = {
-    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, // 0
-    {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}, // 1
-    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}, // 2
-    {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E}, // 3
-    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, // 4
-    {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}, // 5
-    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, // 6
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // 7 blank
-};
-
-// PPM: 4 files (one per head). Token label row/col = solid color square per value.
-static void writeSeqAttnPPM(const std::string &dir,
-                            const std::vector<BracketSample> &samples,
-                            size_t scale = 16) {
-    std::filesystem::create_directories(dir);
-    const RGB dark{20, 20, 20};
-    const size_t n = samples.size();
-    const size_t sep = scale / 2;
-    const size_t img_w = scale + 32 * scale;
-    const size_t block_h = scale + 32 * scale;
-    const size_t img_h = n * block_h + (n > 1 ? (n - 1) * sep : 0);
-
-    const size_t img_sq = scale + 32 * scale;
-
-    // digit font helper: is pixel (px, py) within cell lit for this token?
-    auto font_pixel = [&](int tok, size_t px, size_t py) -> bool {
-        const int cx = static_cast<int>(px) - (static_cast<int>(scale) - 5) / 2;
-        const int cy = static_cast<int>(py) - (static_cast<int>(scale) - 7) / 2;
-        if (cx < 0 || cx >= 5 || cy < 0 || cy >= 7) return false;
-        return (NUM_FONT[tok][cy] >> (4 - cx)) & 1;
-    };
-
-    for (size_t si = 0; si < n; ++si) {
-        const auto &s = samples[si];
-        const SnapshotEntry *ep = nullptr;
-        for (const auto &[k, v]: s.snaps)
-            if (k.find("attn_weights") != std::string::npos) {
-                ep = &v;
-                break;
-            }
-        if (!ep) continue;
-        const auto &e = *ep;
-
-        const std::string path = dir + "/attn_" + std::to_string(si) + "_lbl" +
-                                 std::to_string(s.label) + ".ppm";
-        std::ofstream f(path, std::ios::binary);
-        f << "P6\n" << img_sq << " " << img_sq << "\n255\n";
-        auto put = [&](RGB c) {
-            f.put(c.r);
-            f.put(c.g);
-            f.put(c.b);
-        };
-        auto put_tok = [&](int tok, size_t px, size_t py) {
-            put(font_pixel(tok, px, py) ? RGB{255, 255, 255} : NUM_COLORS[tok]);
-        };
-
-        // average attention weights across all 4 heads, then renorm
-        std::array<float, 32 * 32> avg{};
-        for (size_t h = 0; h < 4; ++h)
-            for (size_t i = 0; i < 32 * 32; ++i)
-                avg[i] += e.data[h * 32 * 32 + i];
-        float mx = *std::max_element(avg.begin(), avg.end());
-        auto val = [&](size_t q, size_t k) {
-            return mx > 1e-6f ? avg[q * 32 + k] / mx : 0.f;
-        };
-
-        // top row: dark corner + key-token color squares with digit overlay
-        for (size_t py = 0; py < scale; ++py) {
-            for (size_t px = 0; px < scale; ++px) put(dark);
-            for (size_t k = 0; k < 32; ++k)
-                for (size_t px = 0; px < scale; ++px) put_tok(s.tokens[k], px, py);
-        }
-        // 32 query rows: query token cell + heatmap
-        for (size_t q = 0; q < 32; ++q)
-            for (size_t py = 0; py < scale; ++py) {
-                for (size_t px = 0; px < scale; ++px) put_tok(s.tokens[q], px, py);
-                for (size_t k = 0; k < 32; ++k)
-                    for (size_t px = 0; px < scale; ++px)
-                        put(hotRGB(val(q, k)));
-            }
-
-        std::cout << "  -> " << path << "\n";
-        std::system(("open " + path).c_str());
-    }
-}
-
-void runSeqTasksViz() {
-    std::cout << "\n=== Sequence Tasks (sorted / palindrome / modular / parity) ===\n";
-
-    // One architecture for all 4 tasks — vocab size 8 (0-6 = values, 7 = blank)
-    using SeqNet = typename NetworkBuilder<
-        Input<32, 8>,
-        MapDense<1, Tensor<32> >,
-        Transformer<4, 64>,
-        Dense<2>,
-        SoftmaxLayer<0>
-    >::type;
-
-    constexpr size_t TrainN = 10000, TestN = 1000, Cols = 33;
-    constexpr size_t Batch = 32;
-    constexpr size_t EvalN = 500;
-    constexpr int Epochs = 10;
-    constexpr float LR = 0.0005f;
-
-    auto make_input = [](const auto &ds, size_t row) {
-        Tensor<32, 8> x;
-        for (size_t t = 0; t < 32; ++t) {
-            const auto tok = static_cast<size_t>(ds(row, t + 1));
-            for (size_t c = 0; c < 8; ++c) x(t, c) = (c == tok) ? 1.f : 0.f;
-        }
-        return x;
-    };
-
-
-    struct Task {
-        std::string name, train_csv, test_csv, viz_dir;
-    };
-    const std::array<Task, 4> tasks = {
-        {
-            {"Sorted", "data/sorted_train.csv", "data/sorted_test.csv", "viz/sorted"},
-            {"Palindrome", "data/reverse_train.csv", "data/reverse_test.csv", "viz/reverse"},
-            {"Modular-7", "data/modular_train.csv", "data/modular_test.csv", "viz/modular"},
-            {"Parity", "data/parity_train.csv", "data/parity_test.csv", "viz/parity"},
-        }
-    };
-
-    for (const auto &task: tasks) {
-        std::cout << "\n--- " << task.name << " ---\n";
-        auto train_data = LoadCSV<TrainN, Cols>(task.train_csv, true);
-        auto test_data = LoadCSV<TestN, Cols>(task.test_csv, true);
-
-        Tensor<TrainN, 32, 8> X_train;
-        Tensor<TrainN, 2> Y_train;
-        for (size_t i = 0; i < TrainN; ++i) {
-            const auto label = static_cast<size_t>(train_data(i, 0));
-            for (size_t t = 0; t < 32; ++t) {
-                const auto tok = static_cast<size_t>(train_data(i, t + 1));
-                for (size_t c = 0; c < 8; ++c) X_train(i, t, c) = (c == tok) ? 1.f : 0.f;
-            }
-            for (size_t c = 0; c < 2; ++c) Y_train(i, c) = (c == label) ? 1.f : 0.f;
-        }
-
-        SeqNet net;
-        std::mt19937 rng{42};
-        std::cout << "    params: " << net.TotalParamCount << "\n\n";
-
-        auto sample_acc = [&](const auto &dataset) {
-            auto eval = RandomBatch<EvalN>(dataset, rng);
-            Tensor<EvalN, 32, 8> Xe;
-            Tensor<EvalN, 2> Ye;
-            for (size_t b = 0; b < EvalN; ++b) {
-                const auto label = static_cast<size_t>(eval(b, 0));
-                for (size_t t = 0; t < 32; ++t) {
-                    const auto tok = static_cast<size_t>(eval(b, t + 1));
-                    for (size_t c = 0; c < 8; ++c) Xe(b, t, c) = (c == tok) ? 1.f : 0.f;
-                }
-                for (size_t c = 0; c < 2; ++c) Ye(b, c) = (c == label) ? 1.f : 0.f;
-            }
-            const auto A = net.template BatchedForwardAll<EvalN>(Xe);
-            return OneHotAccuracy(A, Ye);
-        };
-
-        for (int epoch = 0; epoch < Epochs; ++epoch) {
-            const float bef = sample_acc(train_data);
-            const float loss = net.template RunEpoch<CEL, Batch>(X_train, Y_train, rng, LR);
-            const float aft = sample_acc(train_data);
-            std::cout << "  epoch " << std::setw(2) << epoch
-                    << "  CEL=" << std::fixed << std::setprecision(4) << loss
-                    << "  train: " << std::setprecision(1) << bef << "% -> " << aft << "%\n";
-        }
-
-        {
-            auto raw = RandomBatch<1000>(test_data, rng);
-            Tensor<1000, 32, 8> Xt;
-            Tensor<1000, 2> Yt;
-            for (size_t b = 0; b < 1000; ++b) {
-                const auto label = static_cast<size_t>(raw(b, 0));
-                for (size_t t = 0; t < 32; ++t) {
-                    const auto tok = static_cast<size_t>(raw(b, t + 1));
-                    for (size_t c = 0; c < 8; ++c) Xt(b, t, c) = (c == tok) ? 1.f : 0.f;
-                }
-                for (size_t c = 0; c < 2; ++c) Yt(b, c) = (c == label) ? 1.f : 0.f;
-            }
-            const auto At = net.template BatchedForwardAll<1000>(Xt);
-            std::cout << "\n  test accuracy: " << std::setprecision(1)
-                    << OneHotAccuracy(At, Yt) << "%\n";
-        }
-
-        // pick top-3 longest sequences per class for richer attention patterns
-        constexpr int NPick = 3;
-        struct Candidate {
-            size_t row;
-            int nonblank;
-        };
-        std::vector<Candidate> cand0, cand1;
-        for (size_t i = 0; i < TrainN; ++i) {
-            const auto lbl = static_cast<size_t>(train_data(i, 0));
-            int nb = 0;
-            for (size_t t = 0; t < 32; ++t)
-                if (static_cast<int>(train_data(i, t + 1)) != 7) ++nb;
-            if (lbl == 1) cand1.push_back({i, nb});
-            else cand0.push_back({i, nb});
-        }
-        auto by_len = [](const Candidate &a, const Candidate &b) { return a.nonblank > b.nonblank; };
-        std::sort(cand0.begin(), cand0.end(), by_len);
-        std::sort(cand1.begin(), cand1.end(), by_len);
-
-        std::vector<BracketSample> ppm_samples;
-        auto pick = [&](const std::vector<Candidate> &cands, size_t lbl) {
-            const int n = std::min(NPick, (int) cands.size());
-            for (int k = 0; k < n; ++k) {
-                const size_t i = cands[k].row;
-                std::array<int, 32> tokens;
-                for (size_t t = 0; t < 32; ++t)
-                    tokens[t] = static_cast<int>(train_data(i, t + 1));
-                const auto pred_out = make_input(train_data, i) >> net;
-                const size_t pred = pred_out.flat(1) > pred_out.flat(0) ? 1u : 0u;
-                ppm_samples.push_back({lbl, pred, tokens, net.Snap()});
-            }
-        };
-        pick(cand1, 1);
-        pick(cand0, 0);
-
-        std::cout << "\n  -- attention patterns --\n";
-        writeSeqAttnPPM(task.viz_dir, ppm_samples);
-    }
-}
-
-// ── Generic CSV classifier ────────────────────────────────────────────────────
-//
-// col 0 = integer class label, cols 1..Cols-1 = features.
-// Network: Input<Features> → Dense<128,ReLU> → Dense<64,ReLU> → Dense<NumClasses> → Softmax
-
-template<size_t TrainRows, size_t TestRows, size_t Cols, size_t NumClasses,
-    size_t Batch = 32, size_t EvalN = 1000, size_t TestBatch = 1000>
-void RunCSVClassifier(const std::string &name,
-                      const std::string &train_csv,
-                      const std::string &test_csv,
-                      float lr = 0.001f,
-                      int epochs = 5,
-                      float norm = 255.f,
-                      bool skip_hdr = true) {
-    constexpr size_t Features = Cols - 1;
-
-    std::cout << "\n=== " << name << " ("
-            << Features << " -> 128 -> 64 -> " << NumClasses << ", Softmax+CEL) ===\n";
-
-    auto train_data = LoadCSV<TrainRows, Cols>(train_csv, skip_hdr);
-    auto test_data = LoadCSV<TestRows, Cols>(test_csv, skip_hdr);
-
-    typename NetworkBuilder<
-        Input<Features>,
-        Dense<128, ReLU>,
-        Dense<64, ReLU>,
-        Dense<NumClasses>,
-        SoftmaxLayer<0>
-    >::type net;
-    std::cout << "    params: " << net.TotalParamCount << "\n\n";
-
-    std::mt19937 rng{42};
-
-    Tensor<TrainRows, Features> X_train;
-    Tensor<TrainRows, NumClasses> Y_train;
-    for (size_t i = 0; i < TrainRows; ++i) {
-        const auto label = static_cast<size_t>(train_data(i, 0));
-        for (size_t p = 0; p < Features; ++p) X_train(i, p) = train_data(i, p + 1) / norm;
-        for (size_t c = 0; c < NumClasses; ++c) Y_train(i, c) = (c == label) ? 1.f : 0.f;
-    }
-
-    auto sample_acc = [&](const auto &dataset) {
-        auto eval = RandomBatch<EvalN>(dataset, rng);
-        Tensor<EvalN, Features> Xe;
-        Tensor<EvalN, NumClasses> Ye;
-        for (size_t b = 0; b < EvalN; ++b) {
-            const auto label = static_cast<size_t>(eval(b, 0));
-            for (size_t p = 0; p < Features; ++p) Xe(b, p) = eval(b, p + 1) / norm;
-            for (size_t c = 0; c < NumClasses; ++c) Ye(b, c) = (c == label) ? 1.f : 0.f;
-        }
-        const auto A = net.template BatchedForwardAll<EvalN>(Xe);
-        return OneHotAccuracy(A, Ye);
-    };
-
-    for (int epoch = 0; epoch < epochs; ++epoch) {
-        const float bef = sample_acc(train_data);
-        const float loss = net.template RunEpoch<CEL, Batch>(X_train, Y_train, rng, lr);
-        const float aft = sample_acc(train_data);
-        std::cout << "  epoch " << std::setw(2) << epoch
-                << "  CEL=" << std::fixed << std::setprecision(4) << loss
-                << "  train: " << std::setprecision(1) << bef << "% -> " << aft << "%\n";
-    }
-
-    auto raw = RandomBatch<TestBatch>(test_data, rng);
-    Tensor<TestBatch, Features> Xt;
-    Tensor<TestBatch, NumClasses> Yt;
-    for (size_t b = 0; b < TestBatch; ++b) {
-        const auto label = static_cast<size_t>(raw(b, 0));
-        for (size_t p = 0; p < Features; ++p) Xt(b, p) = raw(b, p + 1) / norm;
-        for (size_t c = 0; c < NumClasses; ++c) Yt(b, c) = (c == label) ? 1.f : 0.f;
-    }
-    const auto At = net.template BatchedForwardAll<TestBatch>(Xt);
-    std::cout << "\n  test accuracy (" << TestBatch << " held-out): "
-            << std::fixed << std::setprecision(1)
-            << OneHotAccuracy(At, Yt) << "%\n";
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-void runLCSmoke() {
-    std::cout << "\n=== LearnedContraction smoke test ===\n";
-
-    using Net = typename NetworkBuilder<
-        Input<128>,
-        Dense<256, ReLU>,
-        Dense<256, ReLU>,
-        Dense<256, ReLU>,
-        Dense<256, ReLU>,
-        Dense<256, ReLU>,
-        Dense<256, ReLU>,
-        Dense<256, ReLU>,
-        Dense<256, ReLU>,
-        Dense<4>
-    >::type;
-
-    Net net;
-    constexpr size_t Batch = 4;
-
-    Tensor<Batch, 128> X;
-    for (size_t i = 0; i < Tensor<Batch, 128>::Size; ++i) X.flat(i) = static_cast<float>(i % 5) * 0.1f;
-    Tensor<Batch, 4> target;
-    target.fill(0.f);
-
-    for (int step = 0; step < 100; ++step) {
-        const float loss = net.template BatchFit<MSE, Batch>(X, target, 0.001f);
-        std::cout << "  step " << step << "  loss=" << loss << "\n";
-    }
-}
-
-void runMNISTDense() {
-    std::cout << "\n=== MNIST Dense (LearnedContraction) ===\n";
-
-    auto train_data = LoadCSV<20000, 785>("data/mnist_train.csv", true);
-    auto test_data = LoadCSV<2000, 785>("data/mnist_test.csv", true);
-
-    typename NetworkBuilder<
-        Input<784>,
-        Dense<256, ReLU>,
-        Dense<64, ReLU>,
-        Dense<10>,
-        SoftmaxLayer<0>
-    >::type net;
-    std::cout << "    params: " << net.TotalParamCount << "\n\n";
-
-    constexpr size_t TrainN = 20000, TestN = 2000;
-    Tensor<TrainN, 784> X_train;
-    Tensor<TrainN, 10> Y_train;
-    for (size_t i = 0; i < TrainN; ++i) {
-        for (size_t p = 0; p < 784; ++p)
-            X_train.flat(i * 784 + p) = train_data(i, p + 1) / 255.f;
-        const auto label = static_cast<size_t>(train_data(i, 0));
-        for (size_t c = 0; c < 10; ++c)
-            Y_train(i, c) = (c == label) ? 1.f : 0.f;
-    }
-    Tensor<TestN, 784> X_test;
-    Tensor<TestN, 10> Y_test;
-    for (size_t i = 0; i < TestN; ++i) {
-        for (size_t p = 0; p < 784; ++p)
-            X_test.flat(i * 784 + p) = test_data(i, p + 1) / 255.f;
-        const auto label = static_cast<size_t>(test_data(i, 0));
-        for (size_t c = 0; c < 10; ++c)
-            Y_test(i, c) = (c == label) ? 1.f : 0.f;
-    }
-
-    std::mt19937 rng{42};
-    constexpr size_t Batch = 64;
-
-    for (int epoch = 0; epoch < 10; ++epoch) {
-        const float loss = net.template RunEpoch<CEL, Batch>(X_train, Y_train, rng, 0.001f);
-
-        // accuracy on test set
-        size_t correct = 0;
-        for (size_t i = 0; i < TestN; ++i) {
-            Tensor<784> x;
-            for (size_t p = 0; p < 784; ++p) x.flat(p) = X_test.flat(i * 784 + p);
-            const auto out = x >> net;
-            size_t pred = 0;
-            for (size_t c = 1; c < 10; ++c) if (out.flat(c) > out.flat(pred)) pred = c;
-            const auto label = static_cast<size_t>(test_data(i, 0));
-            if (pred == label) ++correct;
-        }
-        std::cout << "  epoch " << epoch
-                << "  CEL=" << std::fixed << std::setprecision(4) << loss
-                << "  acc=" << std::fixed << std::setprecision(1)
-                << (100.f * correct / TestN) << "%\n";
-    }
-}
-
-// ── Sequence translation training smoke test ──────────────────────────────────
-//
-// ProCC config: SrcLen=128, TgtLen=384, VocabSize=72, PadId=0.
-// Single training pair (no real data). Trains N steps via
-// TrainableTensorNetwork::Fit<SequenceSoftmaxCEL<0>>, which:
-//   - runs Forward to get raw logits [TgtLen, Vocab]
-//   - applies Softmax<1> per row
-//   - computes token-wise CEL (masked at PAD positions)
-//   - backprops combined (probs - target) / n_nonpad gradient
-//   - steps Adam and updates all params
-
-// Build a stacked batch tensor from one sample, run BatchFit N/B steps, return ms.
-template<size_t Batch, size_t N, size_t SrcLen, size_t TgtLen, size_t Vocab, size_t PadId, typename Net>
-double runBatched(Net &net,
-                  const Tensor<SrcLen + TgtLen, Vocab> &inp,
-                  const Tensor<TgtLen, Vocab> &tgt_oh,
-                  float LR) {
-    static_assert(N % Batch == 0);
-    Tensor<Batch, SrcLen + TgtLen, Vocab> X;
-    Tensor<Batch, TgtLen, Vocab> Y;
-    for (size_t b = 0; b < Batch; ++b) {
-        for (size_t i = 0; i < (SrcLen + TgtLen) * Vocab; ++i)
-            X.flat(b * (SrcLen + TgtLen) * Vocab + i) = inp.flat(i);
-        for (size_t i = 0; i < TgtLen * Vocab; ++i)
-            Y.flat(b * TgtLen * Vocab + i) = tgt_oh.flat(i);
-    }
-    using Clock = std::chrono::high_resolution_clock;
-    const auto t0 = Clock::now();
-    for (size_t s = 0; s < N / Batch; ++s)
-        net.template BatchFit<SequenceSoftmaxCEL<PadId>, Batch>(X, Y, LR);
-    const auto t1 = Clock::now();
-    return std::chrono::duration<double, std::milli>(t1 - t0).count();
-}
-
-// Sweep batch sizes 1/4/8/20/40 over N total examples.
-// inp and tgt are passed in as concrete types from the caller so Net::InputTensor matches exactly.
-template<typename Net, size_t PadId, size_t N, size_t SrcTgtLen, size_t Vocab, size_t TgtLen>
-void batchSweep(const char *label,
-                const Tensor<SrcTgtLen, Vocab> &inp,
-                const Tensor<TgtLen, Vocab> &tgt,
-                float LR) {
-    std::cout << "\n" << label << "  (N=" << N << " examples each)\n";
-
-    auto row = [&](size_t B, size_t steps, double ms) {
-        std::cout << "  batch=" << std::setw(2) << B
-                << "  steps=" << std::setw(3) << steps
-                << "  ms/example=" << std::setw(7) << std::fixed << std::setprecision(2)
-                << ms / static_cast<double>(N) << "\n";
-    };
-
-    using Clock = std::chrono::high_resolution_clock;
-    {
-        Net net;
-        const auto t0 = Clock::now();
-        for (size_t s = 0; s < N; ++s)
-            net.template Fit<SequenceSoftmaxCEL<PadId> >(inp, tgt, LR);
-        row(1, N, std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
-    }
-
-    {
-        Net net;
-        row(4, N / 4, runBatched<4, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
-    }
-    {
-        Net net;
-        row(8, N / 8, runBatched<8, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
-    }
-    {
-        Net net;
-        row(20, N / 20, runBatched<20, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
-    }
-    {
-        Net net;
-        row(40, N / 40, runBatched<40, N, SrcTgtLen - TgtLen, TgtLen, Vocab, PadId>(net, inp, tgt, LR));
-    }
-}
-
-void runSeqTranslation() {
-    constexpr float LR = 3e-4f;
-    constexpr size_t N = 40;
-
-    // ── ProCC model (big: 60 MB) ──────────────────────────────────────────────
-    {
-        constexpr size_t SrcLen = 128, TgtLen = 384, Vocab = 72, PadId = 0;
-        Tensor<SrcLen, Vocab> src;
-        Tensor<TgtLen, Vocab> tgt;
-        src.fill(0.f);
-        tgt.fill(0.f);
-        for (size_t t = 0; t < SrcLen; ++t) src(t, 1 + t % 71) = 1.f;
-        for (size_t t = 0; t < TgtLen / 4; ++t) tgt(t, 1 + t % 71) = 1.f;
-        for (size_t t = TgtLen / 4; t < TgtLen; ++t) tgt(t, PadId) = 1.f;
-        const auto inp = ConcatAxis<0>(src, tgt);
-        using Net = TrainableTensorNetwork<EncoderDecoderBlock<SrcLen, TgtLen, Vocab, 256, 8, 512, 3, 3, PadId> >;
-        batchSweep<Net, PadId, N>(
-            "=== ProCC model  (SrcLen=128 TgtLen=384 EmbDim=256 Heads=8 Layers=3)",
-            inp, tgt, LR);
-    }
-
-    // ── Small model (fits in L2: EmbDim=32, short seqs) ──────────────────────
-    {
-        constexpr size_t SrcLen = 16, TgtLen = 32, Vocab = 16, PadId = 0;
-        Tensor<SrcLen, Vocab> src;
-        Tensor<TgtLen, Vocab> tgt;
-        src.fill(0.f);
-        tgt.fill(0.f);
-        for (size_t t = 0; t < SrcLen; ++t) src(t, 1 + t % 15) = 1.f;
-        for (size_t t = 0; t < TgtLen / 4; ++t) tgt(t, 1 + t % 15) = 1.f;
-        for (size_t t = TgtLen / 4; t < TgtLen; ++t) tgt(t, PadId) = 1.f;
-        const auto inp = ConcatAxis<0>(src, tgt);
-        using Net = TrainableTensorNetwork<EncoderDecoderBlock<SrcLen, TgtLen, Vocab, 32, 4, 64, 2, 2, PadId> >;
-        batchSweep<Net, PadId, N>(
-            "=== Small model  (SrcLen=16  TgtLen=32  EmbDim=32  Heads=4 Layers=2)",
-            inp, tgt, LR);
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 int main() {
-    // runMNISTAttnViz();
-    // runBracketsAttnViz();
-    // runSeqTasksViz();
-    // runLCSmoke();
-    // runMNISTDense();
+    using BPEType = BytePairTokenizer<8192>;
+    BPEType bpe;
 
-    runSeqTranslation();
+    // ---- FIT ----
+    std::puts("=== Fitting BPE on corpus ===");
+    bpe.BPE("tttn_dump.txt", "corpus_tokenized.bin");
+    bpe.Save("bpe_model.bin");
+    std::puts("Model saved to bpe_model.bin\n");
 
-    using Model = EncoderDecoderBlock<128, 384, 72, 256, 8, 512, 3, 3, 0>;
-    Model model;
+    // ---- PRINT MAP ----
+    std::puts("=== Token Map ===");
+    bpe.PrintMap();
+    std::putchar('\n');
 
-    // ---- model size ----
-    const size_t nfloats = floats(model);
-    const size_t nbytes = bytes(model);
-    std::cout << "\n=== ProCC EncoderDecoder ===\n"
-            << "  floats : " << nfloats << "\n"
-            << "  bytes  : " << nbytes << "  ("
-            << std::fixed << std::setprecision(2)
-            << static_cast<double>(nbytes) / (1 << 20) << " MB)\n\n";
+    // ---- TOKENIZE A TEXT FILE ----
+    std::puts("=== Tokenizing text.txt ===");
+    BPEType::TextToWords("oldmain.txt", "text_words.bin");
+    auto tokens = bpe.Tokenize("text_words.bin");
 
-    // // ---- single-sample forward+backward benchmark ----
-    // constexpr int N = 10;
-    // Model::InputTensor inp{};
-    // Model::OutputTensor outp{};
-    //
-    // std::cout << "--- single-sample forward+backward x" << N << " ---\n";
-    // timed("total fwd+bwd", [&]() -> int {
-    //     for (int i = 0; i < N; ++i) {
-    //         outp = timed("fwd", [&]() { return model.Forward(inp); });
-    //         timed("bwd", [&]() { return model.Backward(outp, outp, inp); });
-    //     }
-    //     return 0;
-    // });
+    std::puts("--- Token sequence ---");
+    for (const uint16_t tok: tokens) {
+        const auto &entry = bpe.GetMap()[tok];
+        std::string display;
+        for (uint8_t i = 0; i < entry.len; ++i) {
+            uint8_t b = entry.bytes[i];
+            if (b >= 32 && b < 127) display += static_cast<char>(b);
+            else display += "[" + std::to_string(b) + "]";
+        }
+        std::printf("%5u : %s\n", tok, display.c_str());
+    }
+
+    // ---- DETOKENIZE ----
+    std::putchar('\n');
+    std::puts("=== Detokenized output ===");
+    std::string reconstructed = bpe.Detokenize(tokens);
+    std::puts(reconstructed.c_str());
+
+    // ---- RELOAD AND VERIFY ----
+    std::putchar('\n');
+    std::puts("=== Reload from disk and re-detokenize ===");
+    BPEType bpe2;
+    bpe2.Load("bpe_model.bin");
+    std::printf("Loaded MapLen=%u MergeOrder.size=%zu\n", bpe2.GetMapLen(), bpe2.GetMergeOrder().size());
+
+    auto tokens2 = bpe2.Tokenize("text_words.bin");
+    std::string reconstructed2 = bpe2.Detokenize(tokens2);
+    std::puts(reconstructed2 == reconstructed ? "MATCH" : "MISMATCH");
 
     return 0;
 }
-
 
 
 // ======================================================================

@@ -12,3 +12,5 @@
 #include "BranchTrainer.hpp"
 #include "EncoderDecoder.hpp"
 #include "TransformerTrainer.hpp"
+
+#include "BytePairTokenizer.hpp"
