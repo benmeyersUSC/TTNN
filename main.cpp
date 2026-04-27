@@ -19,9 +19,9 @@ int main() {
     std::putchar('\n');
 
     // ---- TOKENIZE A TEXT FILE ----
-    std::puts("=== Tokenizing text.txt ===");
-    BPEType::TextToWords("oldmain.txt", "text_words.bin");
-    auto tokens = bpe.Tokenize("text_words.bin");
+    std::puts("=== Tokenizing new file ===");
+    BPEType::TextToWords("Journal.md", "journal.bin");
+    auto tokens = bpe.Tokenize("journal.bin");
 
     std::puts("--- Token sequence ---");
     for (const uint16_t tok: tokens) {
@@ -48,7 +48,7 @@ int main() {
     bpe2.Load("bpe_model.bin");
     std::printf("Loaded MapLen=%u MergeOrder.size=%zu\n", bpe2.GetMapLen(), bpe2.GetMergeOrder().size());
 
-    auto tokens2 = bpe2.Tokenize("text_words.bin");
+    auto tokens2 = bpe2.Tokenize("journal.bin");
     std::string reconstructed2 = bpe2.Detokenize(tokens2);
     std::puts(reconstructed2 == reconstructed ? "MATCH" : "MISMATCH");
 
