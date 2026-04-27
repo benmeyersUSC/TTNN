@@ -9,11 +9,11 @@
 #include <cstdint>
 
 
-template<int VOCAB_SIZE>
+template<int VOCAB_SIZE = 65536>
 class BytePairTokenizer {
     static constexpr int MAX_TOKEN_LEN = 64;
     static constexpr int MAX_VOCAB_SIZE = 65536;
-    static_assert(VOCAB_SIZE < MAX_VOCAB_SIZE, "Vocabulary size must be <= 2^16 (65536)");
+    static_assert(VOCAB_SIZE <= MAX_VOCAB_SIZE, "Vocabulary size must be <= 2^16 (65536)");
 
     // collision free hash of two 16-bits by just mapping them to a 32-bit int
     struct PairHash {
@@ -109,6 +109,8 @@ class BytePairTokenizer {
     }
 
 public:
+    ~BytePairTokenizer() { delete[] Map; }
+
     [[nodiscard]] const std::vector<std::pair<uint16_t, uint16_t> > &GetMergeOrder() const { return MergeOrder; }
     [[nodiscard]] const TokenEntry *GetMap() const { return Map; }
     [[nodiscard]] unsigned GetMapLen() const { return MapLen; }

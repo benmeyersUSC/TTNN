@@ -4,7 +4,7 @@ using namespace TTTN;
 
 
 int main() {
-    using BPEType = BytePairTokenizer<8192>;
+    using BPEType = BytePairTokenizer<>;
     BPEType bpe;
 
     // ---- FIT ----
