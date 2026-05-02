@@ -265,8 +265,8 @@ namespace TTTN {
         // for each batch
         for (size_t m = 0; m < K::Batch_Size; ++m) {
             cblas_sgemm(
-                // A is [free, contracted] row-major — no transpose; lda = Contracted_Size (cols per row)
-                // B is [free, contracted] row-major — CblasTrans so sgemm reads it as [contracted, free]
+                // A is [free, contracted] row-major - no transpose; lda = Contracted_Size (cols per row)
+                // B is [free, contracted] row-major - CblasTrans so sgemm reads it as [contracted, free]
                 CblasRowMajor, CblasNoTrans, CblasTrans,
                 // M = A_Free, N = B_Free, K = Contracted
                 static_cast<int>(K::A_Free_Size),
@@ -360,8 +360,8 @@ namespace TTTN {
         using PermA = BC_Permute<ARank, AxisList<>{}, AAxes>;
         using PermB = BC_Permute<BRank, AxisList<>{}, BAxes>;
 
-        auto&& permutedA = ConditionalPermute<PermA::value>(A, std::make_index_sequence<ARank>{});
-        auto&& permutedB = ConditionalPermute<PermB::value>(B, std::make_index_sequence<BRank>{});
+        auto &&permutedA = ConditionalPermute<PermA::value>(A, std::make_index_sequence<ARank>{});
+        auto &&permutedB = ConditionalPermute<PermB::value>(B, std::make_index_sequence<BRank>{});
 
         return MinorContract<N>(permutedA, permutedB, init, map, reduce);
     }
@@ -500,8 +500,8 @@ namespace TTTN {
         using PermA = BC_Permute<A_Rank, ABatchAxes, AContractAxes>;
         using PermB = BC_Permute<B_Rank, BBatchAxes, BContractAxes>;
 
-        auto&& permA = ConditionalPermute<PermA::value>(A, std::make_index_sequence<A_Rank>{});
-        auto&& permB = ConditionalPermute<PermB::value>(B, std::make_index_sequence<B_Rank>{});
+        auto &&permA = ConditionalPermute<PermA::value>(A, std::make_index_sequence<A_Rank>{});
+        auto &&permB = ConditionalPermute<PermB::value>(B, std::make_index_sequence<B_Rank>{});
 
         return BatchMinorContract<BatchSize, InnerSize>(
             permA, permB, init, map, reduce
