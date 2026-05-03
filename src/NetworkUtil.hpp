@@ -1,10 +1,12 @@
 #pragma once
 #include <concepts>
-#include "Tensor.hpp"
-#include "Snapshot.hpp"
+#include <random>
 #include <cmath>
 #include <fstream>
 #include <tuple>
+#include "Tensor.hpp"
+#include "Snapshot.hpp"
+#include "TensorContract.hpp"  // provides SplitAt, PrependBatch, ConcatSeqs, Contract, AxisList, etc.
 
 
 namespace TTTN {
@@ -29,62 +31,69 @@ namespace TTTN {
     };
 
 
+    // @doc: template<typename TensorT> struct TrajectoryMetrics
+    /**
+     * Per-parameter trajectory accumulators. Both fields are Tensors of the same shape as the parameter.
+     * `gross_path[i]`       = Σ_t |Δθ_i(t)|  — total L1 distance element i has travelled
+     * `net_displacement[i]` = Σ_t  Δθ_i(t)   — net signed displacement (= θ_current - θ_init)
+     *
+     * Efficiency ratio across a set of params: FrobeniusNorm(net_displacement) / sum(gross_path).
+     * Values range from 0 (pure churn) to 1 (monotone geodesic movement).
+     * Populated unconditionally on every Param::update call; zero overhead to ignore.
+     */
+    template<typename TensorT>
+    struct TrajectoryMetrics {
+        TensorT gross_path{};       // running Σ|Δθ| per element
+        TensorT net_displacement{}; // running ΣΔθ per element
+
+        void reset() { gross_path.fill(0.f); net_displacement.fill(0.f); }
+
+        void save(std::ofstream &f) const { gross_path.Save(f); net_displacement.Save(f); }
+        void load(std::ifstream &f)       { gross_path.Load(f); net_displacement.Load(f); }
+    };
+
+
     // @doc: template<typename TensorT> struct Param
-    /** `struct` layer around a `Block` to abstract away management, Adam updates */
+    /** Owns value, grad, Adam moments, and trajectory metrics for one parameter tensor. */
     template<typename TensorT>
     struct Param {
         TensorT value{};
         TensorT grad{};
         TensorT m{};
         TensorT v{};
+        TrajectoryMetrics<TensorT> metrics{};
 
-        // @doc: static constexpr size_t Param::Size
-        /** Size of parameter `Tensor` */
         static constexpr size_t Size = TensorT::Size;
 
-        // @doc: void Param::zero_grad()
-        /** Fill `grad` with `0.f` */
         void zero_grad() { grad.fill(0.f); }
 
         // @doc: void Param::update(const AdamState &adam, float lr)
-        /** For each `float` parameter in `value`, use Adam moments and gradient to update */
+        /** Adam step; captures Δθ and accumulates trajectory metrics unconditionally. */
         void update(const AdamState &adam, float lr) {
             ParForEach(Size, [&](const size_t i) {
                 const float g = grad.flat(i);
                 m.flat(i) = adam.beta1 * m.flat(i) + (1.f - adam.beta1) * g;
                 v.flat(i) = adam.beta2 * v.flat(i) + (1.f - adam.beta2) * g * g;
-                value.flat(i) -= lr * (m.flat(i) * adam.mCorr) / (std::sqrt(v.flat(i) * adam.vCorr) + adam.eps);
+                const float delta = -lr * (m.flat(i) * adam.mCorr) /
+                                    (std::sqrt(v.flat(i) * adam.vCorr) + adam.eps);
+                value.flat(i) += delta;
+                metrics.gross_path.flat(i)       += std::abs(delta);
+                metrics.net_displacement.flat(i) += delta;
             });
         }
 
-        void save(std::ofstream &f) const {
-            value.Save(f);
-            m.Save(f);
-            v.Save(f);
-        }
+        void save_weights(std::ofstream &f) const { value.Save(f); }
+        void load_weights(std::ifstream &f)       { value.Load(f); }
 
-        void load(std::ifstream &f) {
-            value.Load(f);
-            m.Load(f);
-            v.Load(f);
-        }
-
-        void save_weights(std::ofstream &f) const {
-            value.Save(f);
-        }
-
-        void load_weights(std::ifstream &f) {
-            value.Load(f);
-        }
+        void save(std::ofstream &f) const { value.Save(f); m.Save(f); v.Save(f); metrics.save(f); }
+        void load(std::ifstream &f)       { value.Load(f); m.Load(f); v.Load(f); metrics.load(f); }
     };
 
     template<typename T>
-    struct is_param : std::false_type {
-    };
+    struct is_param : std::false_type {};
 
     template<typename TensorT>
-    struct is_param<Param<TensorT> > : std::true_type {
-    };
+    struct is_param<Param<TensorT>> : std::true_type {};
 
     // @doc: template<typename T> concept IsParam
     /** Concept to verify that a type `T` is a `Param` */
@@ -144,23 +153,17 @@ namespace TTTN {
     }
 
     // ---- free size queries ----
-    // bytes(x) / floats(x) work for any IsTensor, IsParam, or type with all_params().
-    // No per-class implementation needed — types get coverage by satisfying a concept.
 
-    // Leaf: raw Tensor storage
     template<IsTensor T>
     constexpr size_t bytes(const T&)  { return T::Size * sizeof(float); }
     template<IsTensor T>
     constexpr size_t floats(const T&) { return T::Size; }
 
-    // Leaf: Param stores value + grad + m + v (4 float tensors)
     template<IsParam T>
     constexpr size_t bytes(const T&)  { return 4 * T::Size * sizeof(float); }
     template<IsParam T>
     constexpr size_t floats(const T&) { return 4 * T::Size; }
 
-    // Interior: anything with all_params() -> IsParamTuple (blocks, sequences, networks, ...)
-    // Sums bytes()/floats() over every Param in the tuple.
     template<typename T>
         requires (!IsTensor<T> && !IsParam<T> &&
                   requires(const T& t) { { t.all_params() } -> IsParamTuple; })
@@ -180,16 +183,11 @@ namespace TTTN {
 
 
     // @doc: template<IsParam... Params> constexpr size_t TotalParamSize
-    /**
-     * Sum of all `Param` sizes in variadic list of `Param`s
-     * `(Params::Size + ...)`
-     */
     template<IsParam... Params>
     constexpr size_t TotalParamSize = (Params::Size + ...);
 
 
     // @doc: template<IsParamTuple Tuple, size_t... Is> constexpr size_t tuple_param_count_impl(std::index_sequence<Is...>)
-    /** Unpacks `IsParamTuple` and sums each `Param::Size`, giving the net size of a `std::tuple` of `Param`s */
     template<IsParamTuple Tuple, size_t... Is>
     constexpr size_t tuple_param_count_impl(std::index_sequence<Is...>) {
         return (static_cast<size_t>(0) + ... + std::remove_reference_t<std::tuple_element_t<Is, Tuple> >::Size);
@@ -197,262 +195,100 @@ namespace TTTN {
 
 
     // @doc: template<IsParamTuple Tuple> constexpr size_t TupleParamCount
-    /**
-     * Sum of all `Param` sizes in a `std::tuple` of `Param`s
-     * Calls `tuple_param_count_impl`
-     */
     template<IsParamTuple Tuple>
     constexpr size_t TupleParamCount =
             tuple_param_count_impl<std::remove_cvref_t<Tuple> >(
                 std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<Tuple> > >{});
 
 
+    // @doc: template<size_t... Dims> void XavierInitMD(Tensor<Dims...> &W, size_t fan_in, size_t fan_out)
+    /** Xavier/Glorot uniform initialisation for a weight Tensor. */
+    template<size_t... Dims>
+    void XavierInitMD(Tensor<Dims...> &W, const size_t fan_in, const size_t fan_out) {
+        static std::mt19937 rng{std::random_device{}()};
+        const float limit = std::sqrt(6.f / static_cast<float>(fan_in + fan_out));
+        std::uniform_real_distribution<float> dist{-limit, limit};
+        for (size_t i = 0; i < Tensor<Dims...>::Size; ++i)
+            W.flat(i) = dist(rng);
+    }
+
+
     template<typename InDims, typename OutDims, size_t NumFree>
     struct LearnedContraction {
     };
 
-    // @doc: template<size_t... InDims, size_t... OutDims, size_t NumFree> struct LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree>
+    // @doc: template<size_t... InDims, size_t... OutDims, size_t NumFree> struct LearnedContraction
     /**
-     * Abstraction of learned weight `Tensor` component to any `Block`, handling forward and backward pass internally
-     * Templated by `Tensor<InDims...>`, `Tensor<OutDims...>`, and the number of leading (from the left) free axes you want to pass through the transformation, the internal `WeightTensor` type is deduced, initialized, stored, and updated internally
-     * Learned weight `Tensor`s are as easy as simply declaring what your desired input and output shapes are.
+     * Pure learned weight contraction — no internal caching.
+     * `forward<Batch>(X)` computes output; `backward<Batch>(deltaO, X)` accumulates `W_.grad` and returns upstream gradient.
+     * `X` is passed explicitly to `backward` rather than cached, keeping this type stateless between forward and backward.
      */
     template<size_t... InDims, size_t... OutDims, size_t NumFree>
     struct LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> {
         // @doc: using LearnedContraction::InputTensor
-        /** Alias for input type: `Tensor<InDims...>` */
         using InputTensor = Tensor<InDims...>;
         // @doc: using LearnedContraction::OutputTensor
-        /** Alias for output type: `Tensor<OutDims...>` */
         using OutputTensor = Tensor<OutDims...>;
 
-        // @doc: static constexpr size_t LearnedContraction::N_contract_in
-        /**
-         * Deduced number of contracted axes of `InputTensor`
-         * `InputTensor::Rank - NumFree`
-         */
-        static constexpr size_t N_contract_in = InputTensor::Rank - NumFree;
-        // @doc: static constexpr size_t LearnedContraction::N_contract_out
-        /**
-         * Deduced number of contracted axes of `OutputTensor`
-         * `OutputTensor::Rank - NumFree`
-         */
+        static constexpr size_t N_contract_in  = InputTensor::Rank  - NumFree;
         static constexpr size_t N_contract_out = OutputTensor::Rank - NumFree;
-        // @doc: using LearnedContraction::InSplit
-        /** Split `InDims...` into first `NumFree` free axes (`InSplit::head`) and latter `N_contract_in` contracted axes of `InputTensor` (`InSplit::tail`) */
-        using InSplit = SplitAt<NumFree, InDims...>;
-        // @doc: using LearnedContraction::OutSplit
-        /** Split `OutDims...` into first `NumFree` free axes (`OutSplit::head`) and latter `N_contract_out` contracted axes of `OutputTensor` (`OutSplit::tail`) */
-        using OutSplit = SplitAt<NumFree, OutDims...>;
+
+        using InSplit   = SplitAt<NumFree, InDims...>;
+        using OutSplit  = SplitAt<NumFree, OutDims...>;
 
         static_assert(std::is_same_v<typename InSplit::head, typename OutSplit::head>,
                       "Free dims of InputTensor and OutputTensor must match");
-        // @doc: using LearnedContraction::WeightSeq
-        /**
-         * `std::integer_sequence` of two splits fused together:
-         * `[OutSplit::tail, InSplit::tail]`
-         * `WeightTensor` needs to minor-contract with `InSplit::tail` (the contracted axes of `InputTensor`)
-         */
-        using WeightSeq = ConcatSeqs<typename OutSplit::tail, typename InSplit::tail>::type;
-        // @doc: using LearnedContraction::WeightTensor
-        /** `Tensor` type created from `WeightSeq` using `SeqToTensor` */
+
+        using WeightSeq    = ConcatSeqs<typename OutSplit::tail, typename InSplit::tail>::type;
         using WeightTensor = SeqToTensor<WeightSeq>::type;
 
         // @doc: Param<WeightTensor> LearnedContraction::W_
-        /** `Param` type, holding a `WeightTensor` */
         Param<WeightTensor> W_;
-        // @doc: mutable InputTensor LearnedContraction::X_cache_
-        /** `mutable` cache for `InputTensor`, used for efficient backward pass */
-        mutable InputTensor X_cache_{};
-        // @doc: mutable std::vector<float> LearnedContraction::bX_buf_
-        /**
-         * `mutable` cache for batched input `Tensor`, used for efficient backward pass
-         * Uses `std::vector<float>` instead of `Tensor` type because `Batch` is only templated in `>>` and `<<` functions (i.e. `LearnedContraction` and its `WeightTensor` are oblivious to `Batch` dimensions)
-         */
-        mutable std::vector<float> bX_buf_;
 
-
-        // @doc: auto LearnedContraction::all_params()
-        /** Return `std::tuple` of `Param&` to weight parameter */
-        auto all_params() { return std::tie(W_); }
-        // @doc: auto LearnedContraction::all_params() const
-        /** Return `std::tuple` of `const Param&` to weight parameter */
+        auto all_params()       { return std::tie(W_); }
         auto all_params() const { return std::tie(W_); }
 
-        // @doc: LearnedContraction::LearnedContraction()
-        /** Default construct, call `XavierInitMD` on `W_.value` */
         LearnedContraction() {
             XavierInitMD(W_.value, SeqProduct<typename InSplit::tail>::value,
                          SeqProduct<typename OutSplit::tail>::value);
         }
 
-        // @doc: OutputTensor LearnedContraction::forward(const InputTensor &X) const
-        /**
-         * Forward pass implementation, called by `>>`
-         * Executes general pattern, implementation heavily documented in code
-         */
-        OutputTensor forward(const InputTensor &X) const {
-            // cache input
-            X_cache_ = X;
-
-            // for I in N_contract_in
-            return [&]<size_t... I>(std::index_sequence<I...>) {
-                // X: [FX..., CX...]
-                // W_: [CY..., CX...]
-                // contract:
-                //      X[NumFree + I...] = [CX[0], ..., CX[N_contract_in]]
-                //      W_[N_contract_out + I...] = [CX[0], ..., CX[N_contract_out + N_contract_in]]
-                //
-                //      -> OutputTensor: Tensor<FX..., CY...>
-                return Contract<AxisList<(NumFree + I)...>{}, AxisList<(N_contract_out + I)...>{}, Mul, Add>(
-                    X, W_.value);
-            }(std::make_index_sequence<N_contract_in>{});
-        }
-
-        // @doc: InputTensor LearnedContraction::backward(const OutputTensor &deltaO)
-        /**
-         * Backward pass implementation, called by `<<`
-         * Executes general pattern, implementation heavily documented in code
-         */
-        InputTensor backward(const OutputTensor &deltaO) {
-            // for I in NumFree
-            [&]<size_t... I>(std::index_sequence<I...>) {
-                // deltaO: [FX..., CY...]
-                // X_cache_: [FX..., CX...]
-                // contract:
-                //      deltaO[I...] = [FX[0], ..., FX[NumFree]]
-                //      X_cache_[I...] = [FX[0], ..., FX[NumFree]]
-                //
-                //      -> WeightTensor<CY..., CX...>
-                W_.grad += Contract<AxisList<I...>{}, AxisList<I...>{}, Mul, Add>(deltaO, X_cache_);
-            }(std::make_index_sequence<NumFree>{});
-
-            // for I in N_contract_out
-            return [&]<size_t... I>(std::index_sequence<I...>) {
-                // deltaO: [FX..., CY...]
-                // W_: [CY..., CX...]
-                // contract:
-                //      deltaO[NumFree + I...] = [CY[0], ..., CY[N_contract_out]]
-                //      W_[I...] = [CY[0], ..., CY[N_contract_out]]
-                //
-                //      -> InputTensor<FX..., CX...>
-                return Contract<AxisList<(NumFree + I)...>{}, AxisList<I...>{}, Mul, Add>(deltaO, W_.value);
-            }(std::make_index_sequence<N_contract_out>{});
-        }
-
-        // @doc: template<size_t Batch> Tensor<Batch, OutDims...> LearnedContraction::batched_forward(const Tensor<Batch, InDims...> &X) const
-        /**
-         * Batched forward pass implementation, called by `>>`
-         * Executes general pattern, implementation heavily documented in code
-         */
+        // @doc: template<size_t Batch> Tensor<Batch, OutDims...> LearnedContraction::forward(const Tensor<Batch, InDims...> &X) const
+        /** Pure batched forward — X: [B, FX..., CX...], W: [CY..., CX...] → [B, FX..., CY...] */
         template<size_t Batch>
-        Tensor<Batch, OutDims...> batched_forward(const Tensor<Batch, InDims...> &X) const {
-            // efficiently copy batched X into buffer
-            bX_buf_.assign(X.data(), X.data() + Tensor<Batch, InDims...>::Size);
-
-            // for I in N_contract_in
+        Tensor<Batch, OutDims...> forward(const Tensor<Batch, InDims...> &X) const {
             return [&]<size_t... I>(std::index_sequence<I...>) {
-                // X: [B, FX..., CX...]
-                // W_: [CY..., CX...]
-                // contract:
-                //      X[NumFree + 1 + I...] = [CX[1], ..., CX[N_contract_in]]
-                //      W_[N_contract_out + I...] = [CX[0], ..., CX[N_contract_out + N_contract_in]]
-                //
-                //      -> OutputTensor: Tensor<B, FX..., CY...>
                 return Contract<AxisList<(NumFree + 1 + I)...>{}, AxisList<(N_contract_out + I)...>{}, Mul, Add>(
                     X, W_.value);
             }(std::make_index_sequence<N_contract_in>{});
         }
 
-        // @doc: template<size_t Batch> Tensor<Batch, InDims...> LearnedContraction::batched_backward(const Tensor<Batch, OutDims...> &deltaO)
-        /**
-         * Batched backward pass implementation, called by `<<`
-         * Executes general pattern, implementation heavily documented in code
-         */
+        // @doc: template<size_t Batch> Tensor<Batch, InDims...> LearnedContraction::backward(const Tensor<Batch, OutDims...> &deltaO, const Tensor<Batch, InDims...> &X)
+        /** Accumulates W_.grad from (deltaO, X); returns upstream gradient dX. X must be the same value passed to forward. */
         template<size_t Batch>
-        Tensor<Batch, InDims...> batched_backward(const Tensor<Batch, OutDims...> &deltaO) {
-            // load in cached batched X
-            Tensor<Batch, InDims...> bX;
-            std::copy(bX_buf_.begin(), bX_buf_.begin() + Tensor<Batch, InDims...>::Size, bX.data());
-
-            // for I in NumFree+1
+        Tensor<Batch, InDims...> backward(const Tensor<Batch, OutDims...> &deltaO,
+                                          const Tensor<Batch, InDims...>  &X) {
             [&]<size_t... I>(std::index_sequence<I...>) {
-                // deltaO: [B, FX..., CY...]
-                // X_cache_: [B, FX..., CX...]
-                // contract:
-                //      deltaO[I...] = [B, FX[0], ..., FX[NumFree + 1]]
-                //      X_cache_[I...] = [B, FX[0], ..., FX[NumFree + 1]]
-                //
-                //      -> WeightTensor<CY..., CX...>
-                auto localW = Contract<AxisList<I...>{}, AxisList<I...>{}, Mul, Add>(deltaO, bX);
-                W_.grad += localW;
+                W_.grad += Contract<AxisList<I...>{}, AxisList<I...>{}, Mul, Add>(deltaO, X);
             }(std::make_index_sequence<NumFree + 1>{});
 
-            // for I in N_contract_out
             return [&]<size_t... I>(std::index_sequence<I...>) {
-                // deltaO: [B, FX..., CY...]
-                // W_: [CY..., CX...]
-                // contract:
-                //      deltaO[NumFree + 1 + I...] = [CY[0], ..., CY[N_contract_out]]
-                //      W_[I...] = [CY[0], ..., CY[N_contract_out]]
-                //
-                //      -> InputTensor<B, FX..., CX...>
                 return Contract<AxisList<(NumFree + 1 + I)...>{}, AxisList<I...>{}, Mul, Add>(deltaO, W_.value);
             }(std::make_index_sequence<N_contract_out>{});
         }
     };
 
-    // @doc: template<size_t...InDims, size_t... OutDims, size_t NumFree> auto operator>>(const Tensor<InDims...> &X, const LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc)
-    /**
-     * Terse operator for forward pass (takes `const Tensor<InDims...> &X` on the left of the operator, `LearnedContraction` on the right)
-     * *Propagate signal forward through `W_`*
-     */
-    template<size_t... InDims, size_t... OutDims, size_t NumFree>
-    auto operator>>(const Tensor<InDims...> &X,
-                    const LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc) {
-        return lc.forward(X);
-    }
-
-
-    // @doc: template<size_t...InDims, size_t... OutDims, size_t NumFree> auto operator<<(LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc, const Tensor<OutDims...> &deltaO)
-    /**
-     * Terse operator for backward pass (takes `LearnedContraction` on the left of the operator, `const Tensor<OutDims...> &deltaO` on the right)
-     * *Propagate gradient backward through `W_`*
-     */
-    template<size_t... InDims, size_t... OutDims, size_t NumFree>
-    auto operator<<(LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc,
-                    const Tensor<OutDims...> &deltaO) {
-        return lc.backward(deltaO);
-    }
-
-    // @doc: template<size_t Batch, size_t... InDims, size_t... OutDims, size_t NumFree> auto operator>>(const Tensor<Batch, InDims...> &X, const LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc)
-    /**
-     * Terse operator for batched forward pass (takes `const Tensor<Batch, InDims...> &X` on the left of the operator, `LearnedContraction` on the right)
-     * *Propagate signal forward through `W_`*
-     */
+    // @doc: template<size_t Batch, size_t... InDims, size_t... OutDims, size_t NumFree> auto operator>>(...)
+    /** Batched forward: routes to `lc.forward<Batch>(X)` */
     template<size_t Batch, size_t... InDims, size_t... OutDims, size_t NumFree>
     auto operator>>(const Tensor<Batch, InDims...> &X,
                     const LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc) {
-        return lc.template batched_forward<Batch>(X);
-    }
-
-    // @doc: template<size_t Batch, size_t... InDims, size_t... OutDims, size_t NumFree> auto operator<<(LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc, const Tensor<Batch, OutDims...> &deltaO)
-    /**
-     * Terse operator for backward pass (takes `LearnedContraction` on the left of the operator, `const Tensor<Batch, OutDims...> &deltaO` on the right)
-     * *Propagate gradient backward through `W_`*
-     */
-    template<size_t Batch, size_t... InDims, size_t... OutDims, size_t NumFree>
-    auto operator<<(LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc,
-                    const Tensor<Batch, OutDims...> &deltaO) {
-        return lc.template batched_backward<Batch>(deltaO);
+        return lc.template forward<Batch>(X);
     }
 
 
     // @doc: template<typename T> concept PeekableBlock
-    /**
-     * Opt-in `concept` for `Block`s to be able to expose their internal activations to an owning `TrainableTensorNetwork`
-     * Compliant `Block`s must implement `void peek(SnapshotMap& m, const std::string& s)`
-     */
+    /** Opt-in concept: blocks satisfying this expose internals to `Snap`/`peek` via `void peek(SnapshotMap&, const std::string&) const` */
     template<typename T>
     concept PeekableBlock = requires(const T &t, SnapshotMap &m, const std::string &s)
     {
@@ -462,185 +298,94 @@ namespace TTTN {
 
     // @doc: template<typename T> concept Block
     /**
-     * Any block in a `TrainableTensorNetwork` must satisfy `Block`:
-     * Defined `InputTensor` and `OutputTensor` types which are `Tensor` objects
-     * `OutputTensor Forward(InputTensor)`
-     * `InputTensor Backward(OutputTensor, OutputTensor, InputTensor)`
-     * `auto all_params()` and `auto all_params() const`
-     * `TrainableTensorNetwork` blocks need not belong to a specific hierarchy; just satisfy this `concept`
+     * Every block in a network must satisfy:
+     * - `InputTensor`, `OutputTensor` are `IsTensor` types
+     * - `template<size_t Batch> using TrainingCache` — per-call scratch allocated by the trainer
+     * - `Forward<Batch>(Tensor<Batch,InDims...>) -> Tensor<Batch,OutDims...>` — pure inference, no side effects
+     * - `Forward<Batch>(Tensor<Batch,InDims...>, TrainingCache<Batch>&) -> Tensor<Batch,OutDims...>` — training; populates cache
+     * - `Backward<Batch>(dY, a, a_prev, const TrainingCache<Batch>&) -> Tensor<Batch,InDims...>` — accumulates Param::grad, returns dX
+     * - `all_params()` / `all_params() const`
      */
     template<typename T> concept Block =
-            requires { typename T::InputTensor; } &&
-            requires { typename T::OutputTensor; } &&
-            IsTensor<typename T::InputTensor> &&
-            IsTensor<typename T::OutputTensor> &&
-            requires(T t, const T ct,
-                     typename T::InputTensor in,
-                     typename T::OutputTensor out)
-            {
-                { ct.Forward(in) } -> std::same_as<typename T::OutputTensor>;
-                { t.Backward(out, out, in) } -> std::same_as<typename T::InputTensor>;
-                { t.all_params() }; // non-const: ZeroGrad + Update
-                { ct.all_params() }; // const: Save
-            };
+        requires { typename T::InputTensor; } &&
+        requires { typename T::OutputTensor; } &&
+        IsTensor<typename T::InputTensor> &&
+        IsTensor<typename T::OutputTensor> &&
+        requires { typename T::template TrainingCache<1>; } &&
+        requires(T t, const T ct,
+                 typename PrependBatch<1, typename T::InputTensor>::type  in1,
+                 typename PrependBatch<1, typename T::OutputTensor>::type out1,
+                 typename T::template TrainingCache<1>       cache,
+                 const typename T::template TrainingCache<1> const_cache)
+        {
+            { ct.template Forward<1>(in1) }
+                -> std::same_as<typename PrependBatch<1, typename T::OutputTensor>::type>;
+            { ct.template Forward<1>(in1, cache) }
+                -> std::same_as<typename PrependBatch<1, typename T::OutputTensor>::type>;
+            { t.template Backward<1>(out1, out1, in1, const_cache) }
+                -> std::same_as<typename PrependBatch<1, typename T::InputTensor>::type>;
+            { t.all_params() };
+            { ct.all_params() };
+        };
 
-
-    // @doc: template<Block B, size_t... InDims> auto operator>>(const Tensor<InDims...> &x, const B &b)
-    /**
-     * Forward pass: `InDims...` deduced from `x`, `requires B::InputTensor == Tensor<InDims...>`; routes to `b.Forward(x)`
-     * Single-sample overload — batched overload selected automatically when input has a prepended batch dim
-     */
-    template<Block B, size_t... InDims>
-        requires std::same_as<typename B::InputTensor, Tensor<InDims...>>
-    auto operator>>(const Tensor<InDims...>& x, const B& b) {
-        return b.Forward(x);
-    }
 
     // @doc: template<Block B, size_t Batch, size_t... InDims> auto operator>>(const Tensor<Batch, InDims...> &X, const B &b)
-    /** Batched forward pass: `Batch` and `InDims...` deduced directly from `X`, `requires B::InputTensor == Tensor<InDims...>`; routes to `b.BatchedForward<Batch>(X)` */
+    /** Batched pure forward: routes to `b.Forward<Batch>(X)`. Single samples use Batch=1. */
     template<Block B, size_t Batch, size_t... InDims>
         requires std::same_as<typename B::InputTensor, Tensor<InDims...>>
     auto operator>>(const Tensor<Batch, InDims...>& X, const B& b) {
-        return b.template BatchedForward<Batch>(X);
+        return b.template Forward<Batch>(X);
     }
 
-    // @doc: template<typename DeltaT, typename AT, typename APrevT> struct BackwardArgs
-    /**
-     * Carrier struct bundling the three arguments to `Backward`: `delta_A`, `a`, `a_prev`
-     * Used as the right-hand operand of `operator<<` on `Block`s
-     * Single-sample callsite: `block << BackwardArgs{delta_A, a, a_prev}` (implicit — no type name needed once `B` is deduced from block)
-     * Batched callsite: `block << BackwardArgs{delta_batched, a_batched, a_prev_batched}` (explicit type name required; `Batch` deduced from tensor dims)
-     */
-    template<typename DeltaT, typename AT, typename APrevT>
-    struct BackwardArgs {
-        const DeltaT&    delta_A;
-        const AT&        a;
-        const APrevT&    a_prev;
-    };
-
-    // @doc: template<Block B> auto operator<<(B &b, const BackwardArgs<B::OutputTensor, B::OutputTensor, B::InputTensor> &args)
-    /** Single-sample backward pass: routes to `b.Backward(args.delta_A, args.a, args.a_prev)` */
-    template<Block B>
-    auto operator<<(B& b, const BackwardArgs<
-        typename B::OutputTensor,
-        typename B::OutputTensor,
-        typename B::InputTensor>& args) {
-        return b.Backward(args.delta_A, args.a, args.a_prev);
-    }
-
-    // @doc: template<Block B, size_t Batch, size_t... OutDims, size_t... InDims> auto operator<<(B &b, const BackwardArgs<Tensor<Batch, OutDims...>, Tensor<Batch, OutDims...>, Tensor<Batch, InDims...>> &args)
-    /** Batched backward pass: `Batch`, `OutDims...`, `InDims...` deduced from the `BackwardArgs` tensor types; `requires` enforces match against `B::OutputTensor`/`B::InputTensor`; routes to `b.BatchedBackward<Batch>(...)` */
-    template<Block B, size_t Batch, size_t... OutDims, size_t... InDims>
-        requires std::same_as<typename B::OutputTensor, Tensor<OutDims...>> &&
-                 std::same_as<typename B::InputTensor,  Tensor<InDims...>>
-    auto operator<<(B& b, const BackwardArgs<
-        Tensor<Batch, OutDims...>,
-        Tensor<Batch, OutDims...>,
-        Tensor<Batch, InDims...>>& args) {
-        return b.template BatchedBackward<Batch>(args.delta_A, args.a, args.a_prev);
-    }
 
     // @doc: template<typename TupleT> class ActivationsWrap
     /**
-     * Wrapper around a `std::tuple` of `Tensor`s representing intermediate activations of a `TrainableTensorNetwork`
-     * Internally stores `std::tuple` and provides safe access to elements and entire `std::tuple` via overloaded `get` methods
+     * Wrapper around a `std::tuple` of `Tensor`s representing intermediate activations.
+     * Provides safe indexed access; rvalue `get` is deleted to prevent dangling references.
      */
     template<typename TupleT>
     class ActivationsWrap {
         TupleT data_;
 
     public:
-        // @doc: explicit ActivationsWrap::ActivationsWrap(TupleT t)
-        /** `explicit` constructor which `move`s incoming `std::tuple` into member `data_` */
-        explicit ActivationsWrap(TupleT t) : data_(std::move(t)) {
-        }
+        explicit ActivationsWrap(TupleT t) : data_(std::move(t)) {}
 
-        // @doc: template<size_t N> auto ActivationsWrap::get() const & -> const std::tuple_element_t<N, TupleT> &
-        /** `const &` getter, valid as long as `ActivationsWrap` object exists */
         template<size_t N>
-        auto get() const & -> const std::tuple_element_t<N, TupleT> & {
-            return std::get<N>(data_);
-        }
+        auto get() const & -> const std::tuple_element_t<N, TupleT> & { return std::get<N>(data_); }
 
-        // @doc: template<size_t N> auto ActivationsWrap::get() & -> std::tuple_element_t<N, TupleT> &
-        /** `&` getter, valid as long as `ActivationsWrap` object exists */
         template<size_t N>
-        auto get() & -> std::tuple_element_t<N, TupleT> & {
-            return std::get<N>(data_);
-        }
+        auto get() & -> std::tuple_element_t<N, TupleT> & { return std::get<N>(data_); }
 
-        // @doc: template<size_t N> auto ActivationsWrap::get() && -> std::tuple_element_t<N, TupleT> &&
-        /**
-         * Explicitly `delete`d function!
-         * Getting temporary activation `Tensor` from temporary `ActivationsWrap` is a compile error, you must bind the `ActivationsWrap` object to a variable and get a reference
-         * This is because it would return a dangling reference to a soon-deleted `ActivationsWrap` object
-         * Instead of:
-         * `auto& act = net.BatchedForwardAll(X).get<2>();`
-         * You must do:
-         * `auto& wrap = net.BatchedForwardAll(X);`
-         * `auto& act = wrap.get<2>();`
-         */
         template<size_t N>
         auto get() && -> std::tuple_element_t<N, TupleT> && = delete;
 
-        // @doc: const TupleT &ActivationsWrap::tuple() const
-        /** `const &` to raw `std::tuple` */
         const TupleT &tuple() const { return data_; }
     };
 
 
-    template<typename... Bs>
+    // @doc: template<size_t Batch, typename... Bs> struct TensorTupleBuilder
+    /**
+     * Builds the `std::tuple` type of batched activation tensors for a sequence of blocks.
+     * Tuple has N+1 entries: [input of block 0, output of block 0 = input of block 1, ..., output of block N-1].
+     * Base case: one block → tuple<Tensor<Batch,InDims...>, Tensor<Batch,OutDims...>>.
+     * Recursive case: prepend Tensor<Batch,First::InputTensor> to TensorTupleBuilder<Batch, Rest...>.
+     */
+    template<size_t Batch, typename... Bs>
     struct TensorTupleBuilder;
 
-    // @doc: template<typename Last> struct TensorTupleBuilder<Last>
-    /**
-     * Recursively build `std::tuple` of `Tensor` objects representing intermediate activations of the network, wrapped by `ActivationsWrap`
-     * Base case: one single `Block` left, whose `InputTensor` and `OutputTensor` are wrapped in a `std::tuple`
-     */
-    template<typename Last>
-    struct TensorTupleBuilder<Last> {
-        using type = std::tuple<typename Last::InputTensor, typename Last::OutputTensor>;
-    };
-
-    // @doc: template<typename First, typename... Rest> struct TensorTupleBuilder<First, Rest...>
-    /**
-     * Recursively build `std::tuple` of `Tensor` objects representing intermediate activations of the network, wrapped by `ActivationsWrap`
-     * Recursive case: `std::tuple_cat` of `First` `InputTensor` object and `TensorTupleBuilder<Rest...>`
-     */
-    template<typename First, typename... Rest>
-    struct TensorTupleBuilder<First, Rest...> {
-        using type = decltype(std::tuple_cat(
-            std::declval<std::tuple<typename First::InputTensor> >(),
-            std::declval<typename TensorTupleBuilder<Rest...>::type>()
-        ));
-    };
-
-
-    template<size_t Batch, typename... Bs>
-    struct BatchedTensorTupleBuilder;
-
-    // @doc: template<size_t Batch, typename Last> struct BatchedTensorTupleBuilder<Batch, Last>
-    /**
-     * For `Batched` functions and use-cases, create a `Batched` version of a `std::tuple` of activations by passing `PrependBatch<Batch, ...>` on all `Tensor`s that `TensorTupleBuilder` adds raw
-     * Base case: one single `Block` left, whose `InputTensor` and `OutputTensor` are wrapped in `PrependBatch<Batch, ...>` and then in a `std::tuple`
-     */
     template<size_t Batch, typename Last>
-    struct BatchedTensorTupleBuilder<Batch, Last> {
+    struct TensorTupleBuilder<Batch, Last> {
         using type = std::tuple<
             typename PrependBatch<Batch, typename Last::InputTensor>::type,
             typename PrependBatch<Batch, typename Last::OutputTensor>::type>;
     };
 
-    // @doc: template<size_t Batch, typename First, typename... Rest> struct BatchedTensorTupleBuilder<Batch, First, Rest...>
-    /**
-     * For `Batched` functions and use-cases, create a `Batched` version of a `std::tuple` of activations by passing `PrependBatch<Batch, ...>` on all `Tensor`s that `TensorTupleBuilder` adds raw
-     * Recursive case: `std::tuple_cat` of `First` `PrependBatch<Batch, InputTensor>` object and `BatchedTensorTupleBuilder<Rest...>`
-     */
     template<size_t Batch, typename First, typename... Rest>
-    struct BatchedTensorTupleBuilder<Batch, First, Rest...> {
+    struct TensorTupleBuilder<Batch, First, Rest...> {
         using type = decltype(std::tuple_cat(
-            std::declval<std::tuple<typename PrependBatch<Batch, typename First::InputTensor>::type> >(),
-            std::declval<typename BatchedTensorTupleBuilder<Batch, Rest...>::type>()
+            std::declval<std::tuple<typename PrependBatch<Batch, typename First::InputTensor>::type>>(),
+            std::declval<typename TensorTupleBuilder<Batch, Rest...>::type>()
         ));
     };
-};
+
+} // namespace TTTN

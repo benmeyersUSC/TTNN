@@ -65,45 +65,40 @@ namespace TTTN {
         /** Alias for `Tensor<SeqLen, EmbDim>` */
         using OutputTensor = Tensor<SeqLen, EmbDim>;
 
-        // @doc: void TransformerBlock::peek(SnapshotMap &out, const std::string &prefix) const
-        /** Forwards peek to `inner_`, propagating the prefix so nested peekable blocks (e.g. `MultiHeadAttentionBlock`) are reachable */
+        // @doc: using TransformerBlock::TrainingCache
+        /** Delegates to `Inner_::TrainingCache<Batch>`. */
+        template<size_t Batch> using TrainingCache = typename Inner_::template TrainingCache<Batch>;
+
         void peek(SnapshotMap &out, const std::string &prefix) const { inner_.peek(out, prefix); }
 
-        // @doc: auto TransformerBlock::all_params()
-        /** Return `std::tuple` from `inner_.all_params()` */
-        auto all_params() { return inner_.all_params(); }
-        // @doc: auto TransformerBlock::all_params() const
-        /** Return `std::tuple` from `inner_.all_params()` */
+        auto all_params()       { return inner_.all_params(); }
         auto all_params() const { return inner_.all_params(); }
 
-        // @doc: OutputTensor TransformerBlock::Forward(const InputTensor &x) const
-        /** Forward pass, simply: `inner_.Forward(x)` */
-        OutputTensor Forward(const InputTensor &x) const {
-            return x >> inner_;
-        }
-
-        // @doc: InputTensor TransformerBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev)
-        /** Backward pass, simply: `inner_.Backward(delta_A, a, a_prev)` */
-        InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor &a_prev) {
-            return inner_ << BackwardArgs{delta_A, a, a_prev};
-        }
-
-        // @doc: template<size_t Batch> auto TransformerBlock::BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const -> PrependBatch<Batch, OutputTensor>::type
-        /** Batched forward pass, simply: `inner_.template BatchedForward<Batch>(X)` */
+        // @doc: template<size_t Batch> auto TransformerBlock::Forward(X) const
+        /** Pure inference: delegates to inner_. */
         template<size_t Batch>
-        auto BatchedForward(const PrependBatch<Batch, InputTensor>::type &X) const
-            -> PrependBatch<Batch, OutputTensor>::type {
+        auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X) const
+            -> typename PrependBatch<Batch, OutputTensor>::type {
             return X >> inner_;
         }
 
-        // @doc: template<size_t Batch> auto TransformerBlock::BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A, const PrependBatch<Batch, OutputTensor>::type &a, const PrependBatch<Batch, InputTensor>::type &a_prev) -> PrependBatch<Batch, InputTensor>::type
-        /** Batched backward pass, simply: `inner_.template BatchedBackward<Batch>(delta_A, a, a_prev)` */
+        // @doc: template<size_t Batch> auto TransformerBlock::Forward(X, cache) const
+        /** Training forward: populates cache via inner_. */
         template<size_t Batch>
-        auto BatchedBackward(const PrependBatch<Batch, OutputTensor>::type &delta_A,
-                             const PrependBatch<Batch, OutputTensor>::type &a,
-                             const PrependBatch<Batch, InputTensor>::type &a_prev)
-            -> PrependBatch<Batch, InputTensor>::type {
-            return inner_ << BackwardArgs{delta_A, a, a_prev};
+        auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X,
+                     TrainingCache<Batch> &cache) const
+            -> typename PrependBatch<Batch, OutputTensor>::type {
+            return inner_.template Forward<Batch>(X, cache);
+        }
+
+        // @doc: template<size_t Batch> auto TransformerBlock::Backward(dY, a, a_prev, cache)
+        template<size_t Batch>
+        auto Backward(const typename PrependBatch<Batch, OutputTensor>::type &delta_A,
+                      const typename PrependBatch<Batch, OutputTensor>::type &a,
+                      const typename PrependBatch<Batch, InputTensor>::type  &a_prev,
+                      const TrainingCache<Batch> &cache)
+            -> typename PrependBatch<Batch, InputTensor>::type {
+            return inner_.template Backward<Batch>(delta_A, a, a_prev, cache);
         }
     };
 

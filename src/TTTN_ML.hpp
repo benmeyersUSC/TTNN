@@ -1,7 +1,7 @@
 #pragma once
-#include <random>
 #include "TensorContract.hpp"
 #include "TensorReduce.hpp"
+#include "NetworkUtil.hpp"
 
 namespace TTTN {
     // @doc: static constexpr float EPS
@@ -75,18 +75,6 @@ namespace TTTN {
     }
 
 
-    // @doc: template<size_t... Dims> void XavierInitMD(Tensor<Dims...> &W, const size_t fan_in, const size_t fan_out)
-    /** ***Xavier Initializes*** a `Tensor` inplace, given `fan_in` and `fan_out` values denoting net size of input and output to a neural network layer */
-    template<size_t... Dims>
-    void XavierInitMD(Tensor<Dims...> &W, const size_t fan_in, const size_t fan_out) {
-        static std::mt19937 rng{std::random_device{}()};
-        const float limit = std::sqrt(6.f / static_cast<float>(fan_in + fan_out));
-        std::uniform_real_distribution<float> dist{-limit, limit};
-        for (size_t i = 0; i < Tensor<Dims...>::Size; ++i)
-            W.flat(i) = dist(rng);
-    }
-
-
     // @doc: template<size_t Axis, float Temp = 1.f, size_t... Dims> Tensor<Dims...> Softmax(const Tensor<Dims...> &x)
     /**
      * Given an `Axis` on which to normalize, perform `Softmax` normalization with optional temperature `Temp` (default `1.f`)
@@ -130,51 +118,41 @@ namespace TTTN {
     class SoftmaxBlock;
 
     // @doc: template<size_t Axis, float Temp, size_t... Dims> class SoftmaxBlock<Axis, Temp, Tensor<Dims...> >
-    /** Class representing the concrete block of a `Softmax` layer in a `TrainableTensorNetwork`, satisfying the `Block` `concept`; `Temp` is the softmax temperature (default `1.f` via `SoftmaxLayer`) */
+    /**
+     * Softmax block. `Axis` indexes into the sample dimensions (Batch is prepended, so the actual softmax axis is `Axis+1`).
+     * `TrainingCache` is empty — backward only needs `a` (output), passed from the trainer's activation record.
+     */
     template<size_t Axis, float Temp, size_t... Dims>
     class SoftmaxBlock<Axis, Temp, Tensor<Dims...> > {
     public:
-        using InputTensor = Tensor<Dims...>;
+        using InputTensor  = Tensor<Dims...>;
         using OutputTensor = Tensor<Dims...>;
 
-        // @doc: auto all_params()
-        /** Returns `std::tuple<>{}` (no parameters) */
-        auto all_params() { return std::tuple<>{}; }
+        template<size_t> using TrainingCache = std::tuple<>;
 
-        // @doc: auto all_params()
-        /** Returns `std::tuple<>{}` (no parameters) */
+        auto all_params()       { return std::tuple<>{}; }
         auto all_params() const { return std::tuple<>{}; }
 
-        // @doc: OutputTensor SoftmaxBlock::Forward(const InputTensor &x) const
-        /** Calls `Softmax<Axis, Temp>(x)` */
-        OutputTensor Forward(const InputTensor &x) const {
-            return Softmax<Axis, Temp>(x);
-        }
-
-        // @doc: InputTensor SoftmaxBlock::Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor & /*a_prev*/)
-        /** Calls `SoftmaxPrime<Axis, Temp>(delta_A, a)` */
-        InputTensor Backward(const OutputTensor &delta_A, const OutputTensor &a, const InputTensor & /*a_prev*/) {
-            return SoftmaxPrime<Axis, Temp>(delta_A, a);
-        }
-
-        // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::BatchedForward(const Tensor<Batch, Dims...> &X) const
-        /**
-         * Calls `Softmax<Axis + 1, Temp>(X)`
-         * NOTE: assumes first axis is `Batch` axis
-         */
+        // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::Forward(const Tensor<Batch, Dims...> &X) const
+        /** Pure inference forward: `Softmax<Axis+1, Temp>(X)`. */
         template<size_t Batch>
-        Tensor<Batch, Dims...> BatchedForward(const Tensor<Batch, Dims...> &X) const {
+        Tensor<Batch, Dims...> Forward(const Tensor<Batch, Dims...> &X) const {
             return Softmax<Axis + 1, Temp>(X);
         }
 
-        // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::BatchedBackward(const Tensor<Batch, Dims...> &delta_A, const Tensor<Batch, Dims...> &a, const Tensor<Batch, Dims...> & /*a_prev*/)
-        /**
-         * Calls `SoftmaxPrime<Axis + 1, Temp>(delta_A, a)`
-         * NOTE: assumes first axis is `Batch` axis
-         */
+        // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::Forward(X, cache) const
         template<size_t Batch>
-        Tensor<Batch, Dims...> BatchedBackward(const Tensor<Batch, Dims...> &delta_A, const Tensor<Batch, Dims...> &a,
-                                               const Tensor<Batch, Dims...> & /*a_prev*/) {
+        Tensor<Batch, Dims...> Forward(const Tensor<Batch, Dims...> &X, TrainingCache<Batch> &) const {
+            return Forward<Batch>(X);
+        }
+
+        // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::Backward(...)
+        /** Backward: `SoftmaxPrime<Axis+1, Temp>(delta_A, a)`. */
+        template<size_t Batch>
+        Tensor<Batch, Dims...> Backward(const Tensor<Batch, Dims...> &delta_A,
+                                        const Tensor<Batch, Dims...> &a,
+                                        const Tensor<Batch, Dims...> & /*a_prev*/,
+                                        const TrainingCache<Batch> &) {
             return SoftmaxPrime<Axis + 1, Temp>(delta_A, a);
         }
     };
