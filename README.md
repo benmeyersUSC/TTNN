@@ -3,7 +3,15 @@
 A header-only C++20 neural network library built around a fully type-safe, arbitrary-rank
 `Tensor` type. Network topology, tensor shapes, and layer connectivity are all encoded at compile time.
 
-Used in my [AlphaToe](https://github.com/benmeyersUSC/AlphaToe) library.
+Used in the following other repositories:
+- [`Training Metrics`](https://github.com/benmeyersUSC/Training-Metrics)
+  - current frontier
+- [`NeuralCompiler`](https://github.com/benmeyersUSC/NeuralCompiler)
+  - outdated use of **TTTN**...
+- [`AlphaToe`](https://github.com/benmeyersUSC/AlphaToe)
+  - outdated use of **TTTN**...
+
+*When we say **outdated** we mean that when these project were written, **TTTN** was in a younger, less developed state. What happened with both of these projects and their use of **TTTN** was beautiful: as a client of the library in these projects, I found countless APIs and tools that I found to be necessarily upstream in the library. For instance, the [`Train_RL.cpp`](https://github.com/benmeyersUSC/NeuralCompiler/blob/main/Train_RL.cpp) file in [`NeuralCompiler`](https://github.com/benmeyersUSC/NeuralCompiler) has been entirely generalized and lifted into [`TransformerTrainer.hpp`](./src/TransformerTrainer.hpp). The multi-headed network of [`AlphaToe`](https://github.com/benmeyersUSC/AlphaToe) is now being generalized and redeveloped in [`BranchTrainer.hpp`](./src/TransformerTrainer.hpp).*
 
 **Namespace:** `TTTN`
 **Umbrella include:** `#include "src/TTTN.hpp"`
