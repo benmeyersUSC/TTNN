@@ -4,8 +4,9 @@ A header-only C++20 neural network library built around a fully type-safe, arbit
 `Tensor` type. Network topology, tensor shapes, and layer connectivity are all encoded at compile time.
 
 Used in the following other repositories:
+- [`GrokkingMetrics`](https://github.com/benmeyersUSC/GrokkingMetrics)
+  - current frontier: Nanda-style grokking replicated and instrumented with **TTTN**'s movement/leverage metrics
 - [`Training Metrics`](https://github.com/benmeyersUSC/Training-Metrics)
-  - current frontier
 - [`NeuralCompiler`](https://github.com/benmeyersUSC/NeuralCompiler)
   - outdated use of **TTTN**...
 - [`AlphaToe`](https://github.com/benmeyersUSC/AlphaToe)
@@ -16,7 +17,7 @@ Used in the following other repositories:
 **Namespace:** `TTTN`
 **Umbrella include:** `#include "src/TTTN.hpp"`
 
-**Framework note:** [`PARAMETER_MOVEMENT.md`](./PARAMETER_MOVEMENT.md) — the consolidated write-up of the *learning-as-movement* metrics that the library instruments (parameter-space gross path & net displacement, per-source attribution, output-native Jacobian influence, structural potential, positional leverage, and the accord ratio). The Nanda-style grokking runner at [`nanda_grokking.cpp`](./nanda_grokking.cpp) with the dashboard at [`tools/nanda_grokking_dashboard.py`](./tools/nanda_grokking_dashboard.py) is the first empirical use.
+**Framework note:** [`PARAMETER_MOVEMENT.md`](./PARAMETER_MOVEMENT.md) — the consolidated write-up of the *learning-as-movement* metrics that the library instruments (parameter-space gross path & net displacement, per-source attribution, output-native Jacobian influence, structural potential, positional leverage, and the accord ratio). The first empirical use — a Nanda-style grokking replication with the full instrument suite — lives in [`GrokkingMetrics`](https://github.com/benmeyersUSC/GrokkingMetrics), which pulls **TTTN** as a dependency.
 
 ---
 
