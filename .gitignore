@@ -14,5 +14,6 @@
 !Journal.md
 !BranchLeverageForGrokkingResearch.md
 !parameter_movement_metrics.md
-!NetworkViz.md!PARAMETER_MOVEMENT.md
+!NetworkViz.md
+!PARAMETER_MOVEMENT.md
 tools/__pycache__/
