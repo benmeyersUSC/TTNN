@@ -66,7 +66,6 @@ namespace TTTN {
         using OutputTensor = Tensor<SeqLen, EmbDim>;
 
         // @doc: using TransformerBlock::TrainingCache
-        /** Delegates to `Inner_::TrainingCache<Batch>`. */
         template<size_t Batch> using TrainingCache = typename Inner_::template TrainingCache<Batch>;
 
         void peek(SnapshotMap &out, const std::string &prefix) const { inner_.peek(out, prefix); }
@@ -75,7 +74,7 @@ namespace TTTN {
         auto all_params() const { return inner_.all_params(); }
 
         // @doc: template<size_t Batch> auto TransformerBlock::Forward(X) const
-        /** Pure inference: delegates to inner_. */
+        /** Forward pass, simply: `inner_.Forward(x)` */
         template<size_t Batch>
         auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X) const
             -> typename PrependBatch<Batch, OutputTensor>::type {
@@ -83,7 +82,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> auto TransformerBlock::Forward(X, cache) const
-        /** Training forward: populates cache via inner_. */
+        /** Forward pass, simply: `inner_.Forward(x)` */
         template<size_t Batch>
         auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X,
                      TrainingCache<Batch> &cache) const

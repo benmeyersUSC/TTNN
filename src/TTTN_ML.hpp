@@ -118,10 +118,7 @@ namespace TTTN {
     class SoftmaxBlock;
 
     // @doc: template<size_t Axis, float Temp, size_t... Dims> class SoftmaxBlock<Axis, Temp, Tensor<Dims...> >
-    /**
-     * Softmax block. `Axis` indexes into the sample dimensions (Batch is prepended, so the actual softmax axis is `Axis+1`).
-     * `TrainingCache` is empty — backward only needs `a` (output), passed from the trainer's activation record.
-     */
+    /** Class representing the concrete block of a `Softmax` layer in a `TrainableTensorNetwork`, satisfying the `Block` `concept`; `Temp` is the softmax temperature (default `1.f` via `SoftmaxLayer`) */
     template<size_t Axis, float Temp, size_t... Dims>
     class SoftmaxBlock<Axis, Temp, Tensor<Dims...> > {
     public:
@@ -134,20 +131,24 @@ namespace TTTN {
         auto all_params() const { return std::tuple<>{}; }
 
         // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::Forward(const Tensor<Batch, Dims...> &X) const
-        /** Pure inference forward: `Softmax<Axis+1, Temp>(X)`. */
+        /** Calls `SoftmaxPrime<Axis, Temp>(delta_A, a)` */
         template<size_t Batch>
         Tensor<Batch, Dims...> Forward(const Tensor<Batch, Dims...> &X) const {
             return Softmax<Axis + 1, Temp>(X);
         }
 
         // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::Forward(X, cache) const
+        /**
+         * Computes ***Cross Entropy*** between two `Tensor`s, `output` and `target`, and returns `float`
+         * Calls `Collapse<Mul, Add>(target, Map<Compose<Log, Clamp<EPS>>>(output)) * -1.f`
+         */
         template<size_t Batch>
         Tensor<Batch, Dims...> Forward(const Tensor<Batch, Dims...> &X, TrainingCache<Batch> &) const {
             return Forward<Batch>(X);
         }
 
         // @doc: template<size_t Batch> Tensor<Batch, Dims...> SoftmaxBlock::Backward(...)
-        /** Backward: `SoftmaxPrime<Axis+1, Temp>(delta_A, a)`. */
+        /** Calls `SoftmaxPrime<Axis, Temp>(delta_A, a)` */
         template<size_t Batch>
         Tensor<Batch, Dims...> Backward(const Tensor<Batch, Dims...> &delta_A,
                                         const Tensor<Batch, Dims...> &a,

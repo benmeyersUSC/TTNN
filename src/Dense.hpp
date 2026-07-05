@@ -10,8 +10,8 @@ namespace TTTN {
 
     // @doc: template<size_t... InDims, size_t... OutDims, ActivationOp Act_> class DenseMDBlock
     /**
-     * Generalized multi-dimensional Dense layer.
-     * `TrainingCache` is empty — backward receives `a` and `a_prev` from the trainer's activation record.
+     * `Block` implementation for a generalized, multidimensional **Dense** layer
+     * Input and output dimensions are variadic `size_t...`, letting **Dense ** contraction be far more general than the typical Rank-2 matrix multiplication
      */
     template<size_t... InDims, size_t... OutDims, ActivationOp Act_>
     class DenseMDBlock<Tensor<InDims...>, Tensor<OutDims...>, Act_> {
@@ -33,7 +33,7 @@ namespace TTTN {
         DenseMDBlock() = default;
 
         // @doc: template<size_t Batch> Tensor<Batch, OutDims...> DenseMDBlock::Forward(const Tensor<Batch, InDims...> &X) const
-        /** Pure inference forward. */
+        /** Computes `delta_z` from `delta_A`, propagates to `W_` and `b_`, passes `InputTensor delta_Input` upstream */
         template<size_t Batch>
         Tensor<Batch, OutDims...> Forward(const Tensor<Batch, InDims...> &X) const {
             auto z = X >> W_;
@@ -41,14 +41,14 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> Tensor<Batch, OutDims...> DenseMDBlock::Forward(const Tensor<Batch, InDims...> &X, TrainingCache<Batch> &) const
-        /** Training forward — cache is empty for Dense, delegates to pure Forward. */
+        /** Contracts `W_` and `Tensor<Batch, InDims...>& X` using `ΣΠ`, adds `b_`, maps with `Act` */
         template<size_t Batch>
         Tensor<Batch, OutDims...> Forward(const Tensor<Batch, InDims...> &X, TrainingCache<Batch> &) const {
             return Forward<Batch>(X);
         }
 
         // @doc: template<size_t Batch> Tensor<Batch, InDims...> DenseMDBlock::Backward(...)
-        /** Backward: delta_z from Act::prime(a), b_.grad accumulated, W_.grad via LC backward with a_prev. */
+        /** Computes `delta_z` from `delta_A`, propagates to `W_` and `b_`, passes `InputTensor delta_Input` upstream */
         template<size_t Batch>
         Tensor<Batch, InDims...> Backward(const Tensor<Batch, OutDims...> &delta_A,
                                           const Tensor<Batch, OutDims...> &a,
@@ -62,6 +62,11 @@ namespace TTTN {
 
 
     // @doc: template<typename OutT, ActivationOp Act_ = Linear> requires IsTensor<OutT> struct DenseMD
+    /**
+     * `BlockRecipe` for `DenseMDBlock`
+     * Customarily, takes in a `Tensor` to be `OutputTensor` as well as an `ActivationOp`
+     * `Resolve` takes an `IsTensor<InputT>` and defines the correct full-fledged `DenseMDBlock` type
+     */
     template<typename OutT, ActivationOp Act_ = Linear> requires IsTensor<OutT>
     struct DenseMD {
         using OutputTensor = OutT;
@@ -70,6 +75,11 @@ namespace TTTN {
     };
 
     // @doc: template<size_t N, ActivationOp Act_ = Linear> using Dense
+    /**
+     * Convenience wrapper around `BlockRecipe DenseMD` for the case where `OutT::Rank == 1`
+     * User specifies how large the outgoing vector is to be and gets the corresponding `DenseMD` under the hood
+     * Simple as: `using Dense = DenseMD<Tensor<N>, Act_>`
+     */
     template<size_t N, ActivationOp Act_ = Linear>
     using Dense = DenseMD<Tensor<N>, Act_>;
 
@@ -78,10 +88,7 @@ namespace TTTN {
     class MapDenseMDBlock;
 
     // @doc: template<size_t... InDims, size_t... PartOutDims, size_t N_map, ActivationOp Act_> class MapDenseMDBlock
-    /**
-     * Dense layer that preserves the first `N_map` axes and independently maps the remainder.
-     * `TrainingCache` is empty — backward uses `a` and `a_prev` from the trainer.
-     */
+    /** `DenseMDBlock` that preserves first `N_map` axes, using shared weights to independently map the last `Rank - N_map` axes of `InDims...` to `PartOutDims...` */
     template<size_t... InDims, size_t... PartOutDims, size_t N_map, ActivationOp Act_>
     class MapDenseMDBlock<Tensor<InDims...>, Tensor<PartOutDims...>, N_map, Act_> {
         static_assert(N_map < sizeof...(InDims),
@@ -114,6 +121,7 @@ namespace TTTN {
         MapDenseMDBlock() = default;
 
         // @doc: template<size_t Batch> auto MapDenseMDBlock::Forward(const Tensor<Batch,InDims...> &X) const
+        /** Computes `delta_z` from `delta_A`, propagates to `W_` and `b_`, passes `InputTensor delta_Input` upstream */
         template<size_t Batch>
         auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X) const
             -> typename PrependBatch<Batch, OutputTensor>::type {
@@ -125,6 +133,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> auto MapDenseMDBlock::Forward(X, cache) const
+        /** Compute standard `ΣΠ<N_contract>(x, W_.value)`, add `b_`, wrap in `Act` */
         template<size_t Batch>
         auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X, TrainingCache<Batch> &) const
             -> typename PrependBatch<Batch, OutputTensor>::type {
@@ -132,6 +141,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> auto MapDenseMDBlock::Backward(...)
+        /** Computes `delta_z` from `delta_A`, propagates to `W_` and `b_`, passes `InputTensor delta_Input` upstream */
         template<size_t Batch>
         auto Backward(const typename PrependBatch<Batch, OutputTensor>::type &delta_A,
                       const typename PrependBatch<Batch, OutputTensor>::type &a,
@@ -154,6 +164,10 @@ namespace TTTN {
 
 
     // @doc: template<size_t N_map, typename PartOutT, ActivationOp Act_ = Linear> requires IsTensor<PartOutT> struct MapDense
+    /**
+     * `BlockRecipe` for `MapDenseMDBlock`
+     * Takes in `N_map` and `Tensor<PartOutDims...> PartOutT`
+     */
     template<size_t N_map, typename PartOutT, ActivationOp Act_ = Linear>
         requires IsTensor<PartOutT>
     struct MapDense {

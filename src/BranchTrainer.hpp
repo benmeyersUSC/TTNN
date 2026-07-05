@@ -8,7 +8,7 @@
 
 namespace TTTN {
     // @doc: struct NoLoss
-    /** Sentinel type. Pass as `TrunkLoss` or any head loss to suppress that source's gradient. */
+    /** Sentinel type. Pass as `TrunkLoss` or any `HeadLosses...` entry to suppress loss computation and gradient contribution for that branch. */
     struct NoLoss {};
 
     template<size_t TapIndex, typename HeadNet, typename HeadLoss>
@@ -26,7 +26,7 @@ namespace TTTN {
     concept IsHeadBranch = is_head_branch_v<T>;
 
     // @doc: template<size_t TapIndex, typename HeadNet, typename HeadLoss = NoLoss> struct HeadBranch
-    /** Wraps a head network with its trunk tap index and loss. Use `NoLoss` to silence gradient. */
+    /** `concept` wrapper around `is_head_branch_v` */
     template<size_t TapIndex, typename HeadNet, typename HeadLoss = NoLoss>
         requires IsTrainableNetwork<HeadNet> &&
                  (std::is_same_v<HeadLoss, NoLoss> || LossFunction<HeadLoss, typename HeadNet::OutputTensor>)
@@ -39,24 +39,7 @@ namespace TTTN {
 
 
     // @doc: template<typename TrunkNet, typename... Heads> class BranchTrainer
-    /**
-     * Multi-head branched trainer.
-     * Owns the trunk network, head networks, and per-source attribution storage.
-     *
-     * Sources are numbered:
-     *   0           = trunk loss
-     *   1..NumHeads = head I-1 (same order as the Heads... pack)
-     * NoLoss sources contribute zero gradient and zero attribution every step.
-     *
-     * Two training paths:
-     *   Fit<TrunkLoss, Batch>(...)            — standard combined backward, no attribution breakdown
-     *   InstrumentedFit<TrunkLoss, Batch>(...)— per-source isolated backwards + attribution
-     *
-     * Query trajectory at any time:
-     *   TrunkTrajectory()   — combined gross/net/efficiency from Param::metrics (always populated)
-     *   SourceTrajectory()  — per-source breakdown (only meaningful after InstrumentedFit calls)
-     *   ResetMetrics()      — zero both combined Param::metrics and per-source accumulators
-     */
+    /** Getter for `const &` to `I`-th `HeadBranch` from `heads_` */
     template<typename TrunkNet, typename... Heads>
         requires IsTrainableNetwork<TrunkNet> && (IsHeadBranch<Heads> && ...)
     class BranchTrainer {
@@ -461,13 +444,7 @@ namespace TTTN {
         // ── Leverage queries (Metric II + Metric III) ──────────────────────────
 
         // @doc: template<size_t Batch> std::vector<float> ComputeFunctionalInfluence(X)
-        /**
-         * Metric II — Functional Influence.
-         * Per-parameter ||∂output/∂θ_i||_2 evaluated at the trunk's CURRENT weights.
-         * Returns flat vector of size TrunkNet::TotalParamCount, in the order of trunk_.all_params().
-         * Cost: Batch × OutSize backward passes (no Update — trained values, m, v, metrics untouched).
-         * Snapshot quantity — call at checkpoints, not inside the training loop.
-         */
+        /** ###### */
         template<size_t Batch>
         std::vector<float> ComputeFunctionalInfluence(
             const typename PrependBatch<Batch, InputTensor>::type &X)
@@ -476,14 +453,6 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch, size_t KInits> void PrecomputeStructuralPotential(X_ref)
-        /**
-         * Metric III — Structural Potential under the Xavier init distribution.
-         * Constructs `KInits` fresh trunk networks (each Xavier-initialised by its constructor),
-         * computes per-parameter Jacobian norms on `X_ref` for each, averages the result.
-         * Stores the result internally; access via `StructuralPotential()`.
-         * Cost: KInits × Batch × OutSize backward passes — one-time precompute per architecture.
-         * Idempotent: calling again recomputes from scratch.
-         */
         template<size_t Batch, size_t KInits = 50>
         void PrecomputeStructuralPotential(
             const typename PrependBatch<Batch, InputTensor>::type &X_ref)
@@ -492,7 +461,7 @@ namespace TTTN {
         }
 
         // @doc: const std::vector<float>& StructuralPotential() const
-        /** Returns the precomputed StructuralPotential vector. Empty if PrecomputeStructuralPotential hasn't been called. */
+        /** Getter for `const &` to `I`-th `HeadBranch` from `heads_` */
         const std::vector<float> &StructuralPotential() const { return structural_potential_; }
 
 
@@ -505,15 +474,7 @@ namespace TTTN {
         };
 
         // @doc: WeightedSourceSnapshot WeightedSourceTrajectory(weights) const
-        /**
-         * Per-source trajectory weighted by an arbitrary leverage vector (e.g. FunctionalInfluence
-         * or StructuralPotential). `weights` must have size TrunkNet::TotalParamCount, in the same
-         * flat order as `trunk_.all_params()`.
-         *
-         * gross[s]    = Σ_i  weights[i] · source_gross_[s][i]    (output-displacement attribution)
-         * net_norm[s] = ||weights[i] · source_net_[s][i]||_2     (weighted directed displacement)
-         * efficiency[s] = net_norm[s] / gross[s]
-         */
+        /** Getter for `const &` to `I`-th `HeadBranch` from `heads_` */
         WeightedSourceSnapshot WeightedSourceTrajectory(const std::vector<float> &weights) const {
             WeightedSourceSnapshot snap{};
             for (size_t s = 0; s < NumSources; ++s) {
@@ -531,7 +492,7 @@ namespace TTTN {
         }
 
         // @doc: WeightedTrajectorySnapshot WeightedTrunkTrajectory(weights) const
-        /** Combined-trunk trajectory (across all sources) weighted by the given leverage vector. */
+        /** Getter for `const &` to `I`-th `HeadBranch` from `heads_` */
         WeightedTrajectorySnapshot WeightedTrunkTrajectory(const std::vector<float> &weights) const {
             return TTTN::WeightedTrajectoryOf(trunk_, weights);
         }

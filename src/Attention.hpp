@@ -6,9 +6,9 @@
 namespace TTTN {
     // @doc: template<size_t SeqLen, size_t Heads, bool Masked, size_t... EmbDims> class MultiHeadAttentionBlock
     /**
-     * Multi-head self-attention over sequences.
-     * TrainingCache holds Q, K, V, attn weights, and attended_perm (input to lc_O_).
-     * attn_weights_ mutable member is kept solely for peek()/snapshot visualization.
+     * `Block` implementation for **mult-head self-attention** over sequences of arbitrary-rank token embeddings
+     * Parameterized by `size_t SeqLen`, `size_t Heads`, `bool Masked` (causal mask), and `size_t...EmbDims`
+     * When `Masked = true`, positions `k > q` in the attention score matrix are set to `-inf` before softmax
      */
     template<size_t SeqLen, size_t Heads, bool Masked, size_t... EmbDims>
     class MultiHeadAttentionBlock {
@@ -76,6 +76,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> Forward(X, cache) -- training forward; populates cache.
+        /** Setter for batch cache `std::vector<float>`s */
         template<size_t Batch>
         Tensor<Batch, SeqLen, EmbDims...> Forward(const Tensor<Batch, SeqLen, EmbDims...> &X,
                                                   TrainingCache<Batch> &cache) const {
@@ -100,6 +101,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> Backward(dY, a, a_prev, cache).
+        /** Cached `mutable` `Tensor` for `InputTensor x`, used by `Backward` */
         template<size_t Batch>
         Tensor<Batch, SeqLen, EmbDims...> Backward(const Tensor<Batch, SeqLen, EmbDims...> &delta_A,
                                                    const Tensor<Batch, SeqLen, EmbDims...> & /*a*/,
@@ -129,10 +131,6 @@ namespace TTTN {
 
 
     // @doc: template<size_t SeqLenQ, size_t SeqLenKV, size_t Heads, size_t EmbDim> class MultiHeadCrossAttentionBlock
-    /**
-     * Multi-head cross-attention. Input is packed [Q-side | KV-side] along the sequence axis.
-     * TrainingCache holds Q, K, V, attn, attended_perm.
-     */
     template<size_t SeqLenQ, size_t SeqLenKV, size_t Heads, size_t EmbDim>
     class MultiHeadCrossAttentionBlock {
     public:
@@ -219,6 +217,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> Backward(dY, a, a_prev, cache).
+        /** Cached `mutable` `Tensor` for `InputTensor x`, used by `Backward` */
         template<size_t Batch>
         Tensor<Batch, SeqLenQ + SeqLenKV, EmbDim> Backward(
             const Tensor<Batch, SeqLenQ, EmbDim> &delta_A,
@@ -252,6 +251,12 @@ namespace TTTN {
 
 
     // @doc: template<size_t Heads, size_t... EmbDims> struct MHAttention
+    /**
+     * `BlockRecipe` for unmasked `MultiHeadAttentionBlock`
+     * Takes in `size_t Heads` for head count and `size_t...EmbDims` indicating the dimensionality of the embeddings
+     * `InputT` passed to `Resolve` should have its first axis be `SeqLen`
+     * `Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, false, EmbDims...>`
+     */
     template<size_t Heads, size_t... EmbDims>
     struct MHAttention {
         using OutputTensor = Tensor<1, EmbDims...>;
@@ -260,6 +265,11 @@ namespace TTTN {
     };
 
     // @doc: template<size_t Heads, size_t... EmbDims> struct MHCausalAttention
+    /**
+     * `BlockRecipe` for causal (masked) `MultiHeadAttentionBlock`
+     * Identical to `MHAttention` but passes `Masked = true` — positions `k > q` are masked to `-inf` before softmax
+     * `Resolve = MultiHeadAttentionBlock<TensorFirstDim<InputT>::value, Heads, true, EmbDims...>`
+     */
     template<size_t Heads, size_t... EmbDims>
     struct MHCausalAttention {
         using OutputTensor = Tensor<1, EmbDims...>;

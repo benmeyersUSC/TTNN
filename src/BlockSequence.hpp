@@ -1,18 +1,12 @@
 #pragma once
+#include <array>
 #include <stdexcept>
 #include <string>
 #include "NetworkUtil.hpp"
 
 namespace TTTN {
     // @doc: template<Block... Blocks> class BlockSequence
-    /**
-     * Generic sequential composition of Blocks.
-     * Satisfies Block itself (for nesting), plus exposes ForwardAll / BackwardRange for training.
-     *
-     * TrainingCache<Batch> bundles:
-     *   - activations: tuple of Tensor<Batch,...> for every inter-block boundary (N+1 entries)
-     *   - block_caches: tuple of each block's own TrainingCache<Batch>
-     */
+    /** Unified sequential core: wraps a shape-compliant chain of `Block`s and provides both the `Block` interface (for nesting) and the explicit activation API (for top-level training) */
     template<Block... Blocks>
     class BlockSequence {
         static_assert(sizeof...(Blocks) >= 1, "BlockSequence needs at least one block");
@@ -43,6 +37,39 @@ namespace TTTN {
         static constexpr size_t TotalParamCount =
             (TupleParamCount<decltype(std::declval<Blocks &>().all_params())> + ...);
 
+        // Per-block param counts, in the order Blocks... appear.
+        static constexpr std::array<size_t, NumBlocks> BlockParamCounts = {
+            TupleParamCount<decltype(std::declval<Blocks &>().all_params())>...
+        };
+
+        // Metric I — Positional Leverage per block.
+        // Block k's leverage = (# params strictly downstream of k) / TotalParamCount  ∈ [0, 1].
+        // Early blocks (deep upstream) score highest; the final block scores 0.
+        static constexpr std::array<float, NumBlocks> PositionalLeveragePerBlock = [] {
+            std::array<float, NumBlocks> r{};
+            size_t downstream = 0;
+            for (size_t i = 0; i < NumBlocks; ++i) {
+                const size_t k = NumBlocks - 1 - i;
+                r[k] = TotalParamCount > 0
+                     ? static_cast<float>(downstream) / static_cast<float>(TotalParamCount)
+                     : 0.f;
+                downstream += BlockParamCounts[k];
+            }
+            return r;
+        }();
+
+        // Metric I — Positional Leverage per parameter (flat, all_params() order).
+        // Every parameter in block k receives PositionalLeveragePerBlock[k].
+        static constexpr std::array<float, TotalParamCount> PositionalLeveragePerParam = [] {
+            std::array<float, TotalParamCount> r{};
+            size_t idx = 0;
+            for (size_t k = 0; k < NumBlocks; ++k) {
+                const float lev = PositionalLeveragePerBlock[k];
+                for (size_t i = 0; i < BlockParamCounts[k]; ++i) r[idx++] = lev;
+            }
+            return r;
+        }();
+
         // N+1 batched tensors: [X, A0, A1, ..., A_{N-1}]
         template<size_t Batch>
         using ActivationsTuple = typename TensorTupleBuilder<Batch, Blocks...>::type;
@@ -51,6 +78,7 @@ namespace TTTN {
         using Activations = ActivationsWrap<ActivationsTuple<Batch>>;
 
         // @doc: TrainingCache<Batch>
+        /** Access-safe `ActivationsWrap` wrapper around `BatchedActivationsTuple` */
         template<size_t Batch>
         struct TrainingCacheData {
             ActivationsTuple<Batch> activations;
@@ -175,6 +203,10 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch, size_t Lo, size_t Hi> BackwardRange(cache, grad) -- partial backward.
+        /**
+         * Starts with `Delta` (derivative of loss w.r.t. activation `I`), recurses down to `I == 1`, returning `InputTensor` gradient
+         * At each `I`, calls `Block::Backward(delta, A[I], A[I-1])` or `Block::Backward(gradient wrt this block's output, this block's output, this block's input / previous block's output)`
+         */
         // Note: normalises by 1/Batch before entry (mirrors old BatchedBackwardRange behaviour).
         template<size_t Batch, size_t Lo, size_t Hi>
         auto BackwardRange(const TrainingCache<Batch> &cache,

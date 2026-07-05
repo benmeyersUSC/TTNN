@@ -4,6 +4,7 @@
 #include "TensorUtil.hpp"
 
 #include "NetworkComposition.hpp"
+#include "FunctionalInfluence.hpp"
 #include "Dense.hpp"
 #include "Attention.hpp"
 #include "MoreNets.hpp"

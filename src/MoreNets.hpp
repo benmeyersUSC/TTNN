@@ -6,7 +6,10 @@
 
 namespace TTTN {
     // @doc: template<IsTensor T> class IdentityBlock
-    /** Identity pass-through block. TrainingCache is empty. */
+    /**
+     * `Block` that performs identity transformation
+     * Used by `ResidualBlock`
+     */
     template<IsTensor T>
     class IdentityBlock {
     public:
@@ -37,9 +40,8 @@ namespace TTTN {
 
     // @doc: template<Block BlockA, Block BlockB> class ParallelBlock
     /**
-     * Runs two blocks in parallel on the same input; sums their outputs.
-     * TrainingCache holds the individual outputs of A and B (needed for their separate backwards)
-     * plus each block's own training sub-cache.
+     * Take two `Block`s who have the same `InputTensor`s and `OutputTensor`s and compute their forward and backward passes, effectively, in parallel
+     * Forward pass results are summed
      */
     template<Block BlockA, Block BlockB>
     class ParallelBlock {
@@ -78,7 +80,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> auto ParallelBlock::Forward(X) const
-        /** Pure inference: sums A and B outputs without populating any cache. */
+        /** Return `X` */
         template<size_t Batch>
         auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X) const
             -> typename PrependBatch<Batch, OutputTensor>::type {
@@ -86,6 +88,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> auto ParallelBlock::Forward(X, cache) const
+        /** `Permute<1,0>(inner_.Forward(Permute<1,0>(x)))` */
         template<size_t Batch>
         auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X,
                      TrainingCache<Batch> &cache) const
@@ -96,6 +99,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> auto ParallelBlock::Backward(...)
+        /** Return `delta_A` */
         template<size_t Batch>
         auto Backward(const typename PrependBatch<Batch, OutputTensor>::type &delta_A,
                       const typename PrependBatch<Batch, OutputTensor>::type & /*a*/,
@@ -111,10 +115,15 @@ namespace TTTN {
 
 
     // @doc: template<Block B> using ResidualBlock
+    /**
+     * `Block` type alias for residual connections, defined as a `ParallelBlock` with some `Block B` and `IdentityBlock`
+     * `ParallelBlock` handles both forward and backward passes!
+     */
     template<Block B>
     using ResidualBlock = ParallelBlock<B, IdentityBlock<typename B::InputTensor>>;
 
     // @doc: template<typename RecipeA, typename RecipeB> struct Parallel
+    /** `BlockRecipe` for `ParallelBlock` */
     template<typename RecipeA, typename RecipeB>
     struct Parallel {
         using OutputTensor = RecipeA::OutputTensor;
@@ -125,6 +134,10 @@ namespace TTTN {
     };
 
     // @doc: template<typename Recipe> struct Residual
+    /**
+     * `Block` type alias for residual connections, defined as a `ParallelBlock` with some `Block B` and `IdentityBlock`
+     * `ParallelBlock` handles both forward and backward passes!
+     */
     template<typename Recipe>
     struct Residual {
         using OutputTensor = Recipe::OutputTensor;
@@ -135,9 +148,8 @@ namespace TTTN {
 
     // @doc: template<Block InnerBlock> class TransposeBlock
     /**
-     * Wraps a block and runs it on the transposed (Permute<0,2,1>) input, transposing results back.
-     * TrainingCache is the inner block's TrainingCache — no extra state needed since a/a_prev
-     * are passed through permutation from the outer activations.
+     * Wraps a `Block InnerBlock` and runs its forward and backward passes on the transposed input, transposing results back out
+     * Requires `InputTensor == OutputTensor` (transposing preserves shape)
      */
     template<Block InnerBlock>
     class TransposeBlock {
@@ -159,6 +171,7 @@ namespace TTTN {
         auto all_params() const { return inner_.all_params(); }
 
         // @doc: template<size_t Batch> auto TransposeBlock::Forward(X) const
+        /** Return `X` */
         template<size_t Batch>
         auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X) const
             -> typename PrependBatch<Batch, OutputTensor>::type {
@@ -166,6 +179,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> auto TransposeBlock::Forward(X, cache) const
+        /** `Permute<1,0>(inner_.Forward(Permute<1,0>(x)))` */
         template<size_t Batch>
         auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X,
                      TrainingCache<Batch> &cache) const
@@ -174,6 +188,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> auto TransposeBlock::Backward(...)
+        /** Return `delta_A` */
         template<size_t Batch>
         auto Backward(const typename PrependBatch<Batch, OutputTensor>::type &delta_A,
                       const typename PrependBatch<Batch, OutputTensor>::type &a,
@@ -190,6 +205,7 @@ namespace TTTN {
     };
 
     // @doc: template<typename InnerRecipe> struct Transposed
+    /** `BlockRecipe` for `TransposeBlock` */
     template<typename InnerRecipe>
     struct Transposed {
         using OutputTensor = InnerRecipe::OutputTensor;
@@ -199,11 +215,7 @@ namespace TTTN {
 
 
     // @doc: template<size_t SeqLen, size_t... EmbDims> class LayerNormBlock
-    /**
-     * Per-token layer normalisation.
-     * TrainingCache stores per-sample x_hat and inv_sigma so that batched backward is correct
-     * (the old mutable-member approach was buggy: Forward overwrote the cache on each sample).
-     */
+    /** Subtract mean from each token, divide by standard deviation, apply learned elementwise `gamma_` and `beta_` transformation */
     template<size_t SeqLen, size_t... EmbDims>
     class LayerNormBlock {
         static_assert(sizeof...(EmbDims) == 1, "LayerNormBlock: only 1D embeddings supported");
@@ -258,7 +270,7 @@ namespace TTTN {
         auto all_params() const { return std::tie(gamma_, beta_); }
 
         // @doc: template<size_t Batch> auto LayerNormBlock::Forward(X) const
-        /** Pure inference forward — no cache. */
+        /** Return `X` */
         template<size_t Batch>
         auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X) const
             -> typename PrependBatch<Batch, OutputTensor>::type {
@@ -274,7 +286,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> auto LayerNormBlock::Forward(X, cache) const
-        /** Training forward — populates cache with per-sample x_hat and inv_sigma. */
+        /** `Permute<1,0>(inner_.Forward(Permute<1,0>(x)))` */
         template<size_t Batch>
         auto Forward(const typename PrependBatch<Batch, InputTensor>::type &X,
                      TrainingCache<Batch> &cache) const
@@ -294,7 +306,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> auto LayerNormBlock::Backward(...)
-        /** Backward — reads per-sample x_hat and inv_sigma from cache. */
+        /** Return `delta_A` */
         template<size_t Batch>
         auto Backward(const typename PrependBatch<Batch, OutputTensor>::type &delta_A,
                       const typename PrependBatch<Batch, OutputTensor>::type & /*a*/,
@@ -320,6 +332,7 @@ namespace TTTN {
 
 
     // @doc: template<size_t... EmbDims> struct LayerNorm
+    /** `BlockRecipe` for `LayerNormBlock` */
     template<size_t... EmbDims>
     struct LayerNorm {
         using OutputTensor = Tensor<1, EmbDims...>;

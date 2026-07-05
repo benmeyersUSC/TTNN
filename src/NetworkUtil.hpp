@@ -14,6 +14,7 @@ namespace TTTN {
         float beta1 = 0.9f;
         float beta2 = 0.999f;
         float eps = 1e-8f;
+        float wd = 0.f;    // decoupled AdamW weight decay coefficient; 0 = plain Adam
         float mCorr = 1.f; // 1 / (1 - b1^t)
         float vCorr = 1.f; // 1 / (1 - b2^t)
         int t = 0;
@@ -32,15 +33,6 @@ namespace TTTN {
 
 
     // @doc: template<typename TensorT> struct TrajectoryMetrics
-    /**
-     * Per-parameter trajectory accumulators. Both fields are Tensors of the same shape as the parameter.
-     * `gross_path[i]`       = Σ_t |Δθ_i(t)|  — total L1 distance element i has travelled
-     * `net_displacement[i]` = Σ_t  Δθ_i(t)   — net signed displacement (= θ_current - θ_init)
-     *
-     * Efficiency ratio across a set of params: FrobeniusNorm(net_displacement) / sum(gross_path).
-     * Values range from 0 (pure churn) to 1 (monotone geodesic movement).
-     * Populated unconditionally on every Param::update call; zero overhead to ignore.
-     */
     template<typename TensorT>
     struct TrajectoryMetrics {
         TensorT gross_path{};       // running Σ|Δθ| per element
@@ -54,7 +46,7 @@ namespace TTTN {
 
 
     // @doc: template<typename TensorT> struct Param
-    /** Owns value, grad, Adam moments, and trajectory metrics for one parameter tensor. */
+    /** `struct` layer around a `Block` to abstract away management, Adam updates */
     template<typename TensorT>
     struct Param {
         TensorT value{};
@@ -68,15 +60,18 @@ namespace TTTN {
         void zero_grad() { grad.fill(0.f); }
 
         // @doc: void Param::update(const AdamState &adam, float lr)
-        /** Adam step; captures Δθ and accumulates trajectory metrics unconditionally. */
+        /** For each `float` parameter in `value`, use Adam moments and gradient to update */
         void update(const AdamState &adam, float lr) {
             ParForEach(Size, [&](const size_t i) {
+                const float before = value.flat(i);
                 const float g = grad.flat(i);
                 m.flat(i) = adam.beta1 * m.flat(i) + (1.f - adam.beta1) * g;
                 v.flat(i) = adam.beta2 * v.flat(i) + (1.f - adam.beta2) * g * g;
-                const float delta = -lr * (m.flat(i) * adam.mCorr) /
-                                    (std::sqrt(v.flat(i) * adam.vCorr) + adam.eps);
-                value.flat(i) += delta;
+                const float adam_delta = -lr * (m.flat(i) * adam.mCorr) /
+                                          (std::sqrt(v.flat(i) * adam.vCorr) + adam.eps);
+                const float decay_delta = (adam.wd != 0.f) ? -lr * adam.wd * before : 0.f;
+                value.flat(i) = before + adam_delta + decay_delta;
+                const float delta = value.flat(i) - before;
                 metrics.gross_path.flat(i)       += std::abs(delta);
                 metrics.net_displacement.flat(i) += delta;
             });
@@ -183,11 +178,16 @@ namespace TTTN {
 
 
     // @doc: template<IsParam... Params> constexpr size_t TotalParamSize
+    /**
+     * Sum of all `Param` sizes in variadic list of `Param`s
+     * `(Params::Size + ...)`
+     */
     template<IsParam... Params>
     constexpr size_t TotalParamSize = (Params::Size + ...);
 
 
     // @doc: template<IsParamTuple Tuple, size_t... Is> constexpr size_t tuple_param_count_impl(std::index_sequence<Is...>)
+    /** Unpacks `IsParamTuple` and sums each `Param::Size`, giving the net size of a `std::tuple` of `Param`s */
     template<IsParamTuple Tuple, size_t... Is>
     constexpr size_t tuple_param_count_impl(std::index_sequence<Is...>) {
         return (static_cast<size_t>(0) + ... + std::remove_reference_t<std::tuple_element_t<Is, Tuple> >::Size);
@@ -195,6 +195,10 @@ namespace TTTN {
 
 
     // @doc: template<IsParamTuple Tuple> constexpr size_t TupleParamCount
+    /**
+     * Sum of all `Param` sizes in a `std::tuple` of `Param`s
+     * Calls `tuple_param_count_impl`
+     */
     template<IsParamTuple Tuple>
     constexpr size_t TupleParamCount =
             tuple_param_count_impl<std::remove_cvref_t<Tuple> >(
@@ -202,7 +206,6 @@ namespace TTTN {
 
 
     // @doc: template<size_t... Dims> void XavierInitMD(Tensor<Dims...> &W, size_t fan_in, size_t fan_out)
-    /** Xavier/Glorot uniform initialisation for a weight Tensor. */
     template<size_t... Dims>
     void XavierInitMD(Tensor<Dims...> &W, const size_t fan_in, const size_t fan_out) {
         static std::mt19937 rng{std::random_device{}()};
@@ -219,15 +222,17 @@ namespace TTTN {
 
     // @doc: template<size_t... InDims, size_t... OutDims, size_t NumFree> struct LearnedContraction
     /**
-     * Pure learned weight contraction — no internal caching.
-     * `forward<Batch>(X)` computes output; `backward<Batch>(deltaO, X)` accumulates `W_.grad` and returns upstream gradient.
-     * `X` is passed explicitly to `backward` rather than cached, keeping this type stateless between forward and backward.
+     * Abstraction of learned weight `Tensor` component to any `Block`, handling forward and backward pass internally
+     * Templated by `Tensor<InDims...>`, `Tensor<OutDims...>`, and the number of leading (from the left) free axes you want to pass through the transformation, the internal `WeightTensor` type is deduced, initialized, stored, and updated internally
+     * Learned weight `Tensor`s are as easy as simply declaring what your desired input and output shapes are.
      */
     template<size_t... InDims, size_t... OutDims, size_t NumFree>
     struct LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> {
         // @doc: using LearnedContraction::InputTensor
+        /** Alias for input type: `Tensor<InDims...>` */
         using InputTensor = Tensor<InDims...>;
         // @doc: using LearnedContraction::OutputTensor
+        /** Alias for output type: `Tensor<OutDims...>` */
         using OutputTensor = Tensor<OutDims...>;
 
         static constexpr size_t N_contract_in  = InputTensor::Rank  - NumFree;
@@ -243,6 +248,7 @@ namespace TTTN {
         using WeightTensor = SeqToTensor<WeightSeq>::type;
 
         // @doc: Param<WeightTensor> LearnedContraction::W_
+        /** `Param` type, holding a `WeightTensor` */
         Param<WeightTensor> W_;
 
         auto all_params()       { return std::tie(W_); }
@@ -254,7 +260,7 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> Tensor<Batch, OutDims...> LearnedContraction::forward(const Tensor<Batch, InDims...> &X) const
-        /** Pure batched forward — X: [B, FX..., CX...], W: [CY..., CX...] → [B, FX..., CY...] */
+        /** Single-sample backward pass: routes to `b.Backward(args.delta_A, args.a, args.a_prev)` */
         template<size_t Batch>
         Tensor<Batch, OutDims...> forward(const Tensor<Batch, InDims...> &X) const {
             return [&]<size_t... I>(std::index_sequence<I...>) {
@@ -264,7 +270,10 @@ namespace TTTN {
         }
 
         // @doc: template<size_t Batch> Tensor<Batch, InDims...> LearnedContraction::backward(const Tensor<Batch, OutDims...> &deltaO, const Tensor<Batch, InDims...> &X)
-        /** Accumulates W_.grad from (deltaO, X); returns upstream gradient dX. X must be the same value passed to forward. */
+        /**
+         * Batched forward pass implementation, called by `>>`
+         * Executes general pattern, implementation heavily documented in code
+         */
         template<size_t Batch>
         Tensor<Batch, InDims...> backward(const Tensor<Batch, OutDims...> &deltaO,
                                           const Tensor<Batch, InDims...>  &X) {
@@ -279,7 +288,10 @@ namespace TTTN {
     };
 
     // @doc: template<size_t Batch, size_t... InDims, size_t... OutDims, size_t NumFree> auto operator>>(...)
-    /** Batched forward: routes to `lc.forward<Batch>(X)` */
+    /**
+     * Forward pass: `InDims...` deduced from `x`, `requires B::InputTensor == Tensor<InDims...>`; routes to `b.Forward(x)`
+     * Single-sample overload — batched overload selected automatically when input has a prepended batch dim
+     */
     template<size_t Batch, size_t... InDims, size_t... OutDims, size_t NumFree>
     auto operator>>(const Tensor<Batch, InDims...> &X,
                     const LearnedContraction<Tensor<InDims...>, Tensor<OutDims...>, NumFree> &lc) {
@@ -288,7 +300,10 @@ namespace TTTN {
 
 
     // @doc: template<typename T> concept PeekableBlock
-    /** Opt-in concept: blocks satisfying this expose internals to `Snap`/`peek` via `void peek(SnapshotMap&, const std::string&) const` */
+    /**
+     * Opt-in `concept` for `Block`s to be able to expose their internal activations to an owning `TrainableTensorNetwork`
+     * Compliant `Block`s must implement `void peek(SnapshotMap& m, const std::string& s)`
+     */
     template<typename T>
     concept PeekableBlock = requires(const T &t, SnapshotMap &m, const std::string &s)
     {
@@ -298,13 +313,12 @@ namespace TTTN {
 
     // @doc: template<typename T> concept Block
     /**
-     * Every block in a network must satisfy:
-     * - `InputTensor`, `OutputTensor` are `IsTensor` types
-     * - `template<size_t Batch> using TrainingCache` — per-call scratch allocated by the trainer
-     * - `Forward<Batch>(Tensor<Batch,InDims...>) -> Tensor<Batch,OutDims...>` — pure inference, no side effects
-     * - `Forward<Batch>(Tensor<Batch,InDims...>, TrainingCache<Batch>&) -> Tensor<Batch,OutDims...>` — training; populates cache
-     * - `Backward<Batch>(dY, a, a_prev, const TrainingCache<Batch>&) -> Tensor<Batch,InDims...>` — accumulates Param::grad, returns dX
-     * - `all_params()` / `all_params() const`
+     * Any block in a `TrainableTensorNetwork` must satisfy `Block`:
+     * Defined `InputTensor` and `OutputTensor` types which are `Tensor` objects
+     * `OutputTensor Forward(InputTensor)`
+     * `InputTensor Backward(OutputTensor, OutputTensor, InputTensor)`
+     * `auto all_params()` and `auto all_params() const`
+     * `TrainableTensorNetwork` blocks need not belong to a specific hierarchy; just satisfy this `concept`
      */
     template<typename T> concept Block =
         requires { typename T::InputTensor; } &&
@@ -330,7 +344,7 @@ namespace TTTN {
 
 
     // @doc: template<Block B, size_t Batch, size_t... InDims> auto operator>>(const Tensor<Batch, InDims...> &X, const B &b)
-    /** Batched pure forward: routes to `b.Forward<Batch>(X)`. Single samples use Batch=1. */
+    /** Batched forward pass: `Batch` and `InDims...` deduced directly from `X`, `requires B::InputTensor == Tensor<InDims...>`; routes to `b.BatchedForward<Batch>(X)` */
     template<Block B, size_t Batch, size_t... InDims>
         requires std::same_as<typename B::InputTensor, Tensor<InDims...>>
     auto operator>>(const Tensor<Batch, InDims...>& X, const B& b) {
@@ -340,8 +354,8 @@ namespace TTTN {
 
     // @doc: template<typename TupleT> class ActivationsWrap
     /**
-     * Wrapper around a `std::tuple` of `Tensor`s representing intermediate activations.
-     * Provides safe indexed access; rvalue `get` is deleted to prevent dangling references.
+     * Wrapper around a `std::tuple` of `Tensor`s representing intermediate activations of a `TrainableTensorNetwork`
+     * Internally stores `std::tuple` and provides safe access to elements and entire `std::tuple` via overloaded `get` methods
      */
     template<typename TupleT>
     class ActivationsWrap {
@@ -365,10 +379,8 @@ namespace TTTN {
 
     // @doc: template<size_t Batch, typename... Bs> struct TensorTupleBuilder
     /**
-     * Builds the `std::tuple` type of batched activation tensors for a sequence of blocks.
-     * Tuple has N+1 entries: [input of block 0, output of block 0 = input of block 1, ..., output of block N-1].
-     * Base case: one block → tuple<Tensor<Batch,InDims...>, Tensor<Batch,OutDims...>>.
-     * Recursive case: prepend Tensor<Batch,First::InputTensor> to TensorTupleBuilder<Batch, Rest...>.
+     * Recursively build `std::tuple` of `Tensor` objects representing intermediate activations of the network, wrapped by `ActivationsWrap`
+     * Base case: one single `Block` left, whose `InputTensor` and `OutputTensor` are wrapped in a `std::tuple`
      */
     template<size_t Batch, typename... Bs>
     struct TensorTupleBuilder;

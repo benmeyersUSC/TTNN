@@ -16,6 +16,8 @@ Used in the following other repositories:
 **Namespace:** `TTTN`
 **Umbrella include:** `#include "src/TTTN.hpp"`
 
+**Framework note:** [`PARAMETER_MOVEMENT.md`](./PARAMETER_MOVEMENT.md) — the consolidated write-up of the *learning-as-movement* metrics that the library instruments (parameter-space gross path & net displacement, per-source attribution, output-native Jacobian influence, structural potential, positional leverage, and the accord ratio). The Nanda-style grokking runner at [`nanda_grokking.cpp`](./nanda_grokking.cpp) with the dashboard at [`tools/nanda_grokking_dashboard.py`](./tools/nanda_grokking_dashboard.py) is the first empirical use.
+
 ---
 
 ## Templated Tensors
@@ -225,7 +227,8 @@ Replace the parallel CPU dispatch (
 18. [MoreNets.hpp: More helper Block types](#morenetshpp)
 19. [TransformerBlock.hpp: Pre-norm Transformer Block](#transformerblockhpp--pre-norm-transformer-block)
 20. [BranchTrainer.hpp: Shared-Trunk Multi-Head Training](#branchtrainerhpp--shared-trunk-multi-head-training)
-21. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
+21. [FunctionalInfluence.hpp: Output-Native Jacobian & Output-Space Trajectory](#functionalinfluencehpp--output-native-jacobian--output-space-trajectory)
+22. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
 
 ---
 
@@ -3260,6 +3263,64 @@ A variadic utility for training a single shared trunk network with multiple inde
 - ***BranchTrainer::BatchFit*** - [
   `template<size_t Batch, typename TrunkLoss = NoLoss> float BranchTrainer::BatchFit(const PrependBatch<Batch, InputTensor>::type &X, const PrependBatch<Batch, TrunkOutputTensor>::type &trunk_target, float trunk_lr, const std::tuple<typename PrependBatch<Batch, typename Heads::Net::OutputTensor>::type...> &head_targets, const std::array<float, NumHeads> &head_lrs)`](src/BranchTrainer.hpp)
     - ######
+
+---
+
+## [FunctionalInfluence.hpp](src/FunctionalInfluence.hpp): Output-Native Jacobian & Output-Space Trajectory
+
+The output-native counterpart to `ComputeJacobianNorms`. Instead of collapsing each parameter's Jacobian column to a scalar L2, `ComputeJacobian` keeps the full `OutputTensor` per parameter element — every parameter's influence lives in the model's output shape. `OutputSpaceTrajectory` then accumulates `Δθ_i · ∂F/∂θ_i` across training steps as running per-parameter and network-level output-space GROSS and NET tensors, and exposes the accord ratio `‖NET‖ / ‖GROSS‖ ∈ [0, 1]` — a live signal of cross-parameter/time collaboration in output space, computed without ever materialising the full Fisher matrix. See [PARAMETER_MOVEMENT.md](./PARAMETER_MOVEMENT.md) for the framework and [nanda_grokking.cpp](./nanda_grokking.cpp) for a full worked runner.
+
+- ***ComputeJacobian*** - [
+  `template<typename Net, size_t Batch> std::vector<typename Net::OutputTensor> ComputeJacobian(net, X)`](src/FunctionalInfluence.hpp)
+    - Runs `Batch × OutputTensor::Size` backward passes at the current weights; returns `Net::TotalParamCount` output-shape tensors, in `all_params()` flat order. Averages over `Batch` samples. Zeroes `Param::grad` on return; does not touch `m`, `v`, or `Param::metrics`. Snapshot quantity — call at checkpoints or (for small `Net`) every step.
+
+- ***SnapshotFlatValues*** - [
+  `template<typename Net> void SnapshotFlatValues(net, out)`](src/FunctionalInfluence.hpp)
+    - Copies flat concatenation of every `Param::value` into `out` (resized to `Net::TotalParamCount`). Pair with `ComputeFlatDelta` to capture per-step `Δθ` across an Update.
+
+- ***ComputeFlatDelta*** - [
+  `template<typename Net> void ComputeFlatDelta(net, before, delta_out)`](src/FunctionalInfluence.hpp)
+    - After Update: writes `Δθ_i = θ_after − before[i]` into `delta_out` (resized to `Net::TotalParamCount`).
+
+- ***SnapshotFlatGrads*** - [
+  `template<typename Net> void SnapshotFlatGrads(net, out)`](src/FunctionalInfluence.hpp)
+    - Copies flat concatenation of every `Param::grad` into `out` (resized to `Net::TotalParamCount`). Call between `Backward` and `Update` to capture the step's gradient.
+
+- ***OutputSpaceTrajectory*** - [
+  `template<typename Net> class OutputSpaceTrajectory`](src/FunctionalInfluence.hpp)
+    - Owns two per-parameter and two network-level output-shape accumulators (GROSS and NET). Optional per-parameter storage (~`P × OutSize` floats) via constructor flag. Everything else is derived from these — scalar L2 norms, per-output-dim accord, dumps/loads to a single binary stream.
+
+- ***OutputSpaceTrajectory::StepContribution*** - [
+  `struct OutputSpaceTrajectory::StepContribution`](src/FunctionalInfluence.hpp)
+    - One step's network-level output-space movement: `net_j = Σ_i Δθ_i · J_ij` (signed), `gross_j = Σ_i |Δθ_i · J_ij|`. Returned by `Accumulate` so callers can maintain instantaneous and rolling-window accords on top of the cumulative ones. `AccordL2()` on a single step measures pure cross-parameter agreement (no time dimension).
+
+- ***OutputSpaceTrajectory::Accumulate*** - [
+  `StepContribution OutputSpaceTrajectory::Accumulate(const std::vector<float> &delta_theta, const std::vector<OutT> &J)`](src/FunctionalInfluence.hpp)
+    - Adds one training step's contribution: `net += Δθ_i · J_i`, `gross += |Δθ_i · J_i|` elementwise per output dim, both per-param and aggregated across params. Returns the step's own network-level contribution for instantaneous / windowed accords.
+
+- ***OutputSpaceTrajectory::RollingAccord*** - [
+  `template<size_t W> class OutputSpaceTrajectory::RollingAccord`](src/FunctionalInfluence.hpp)
+    - Fixed-window rolling accord over the last `W` steps' `StepContribution`s. Ring-buffered; `add` is O(OutT::Size). `accord()` = ‖Σ_window net‖₂ / ‖Σ_window gross‖₂ — cross-parameter *and* cross-time coherence within the window. Not serialized — warms up over the first `W` steps after any (re)start.
+
+- ***OutputSpaceTrajectory::Reset*** - [
+  `void OutputSpaceTrajectory::Reset()`](src/FunctionalInfluence.hpp)
+    - Zeroes all accumulators. Call at phase boundaries.
+
+- ***OutputSpaceTrajectory::AccordRatioL2*** - [
+  `float OutputSpaceTrajectory::AccordRatioL2() const`](src/FunctionalInfluence.hpp)
+    - `‖NetworkNetOutput‖_2 / ‖NetworkGrossOutput‖_2 ∈ [0, 1]`. Cross-parameter/time collaboration signal in output space — `= 1` iff every per-step per-param output contribution pointed the same way; `< 1` measures destructive interference.
+
+- ***OutputSpaceTrajectory::PerDimAccord*** - [
+  `OutT OutputSpaceTrajectory::PerDimAccord() const`](src/FunctionalInfluence.hpp)
+    - Per-output-dim accord tensor: entry `j` is `|NET_j| / GROSS_j`. Reveals which output directions received collaborative updates versus cancellation.
+
+- ***OutputSpaceTrajectory::SaveTo*** - [
+  `void OutputSpaceTrajectory::SaveTo(std::ofstream &f) const`](src/FunctionalInfluence.hpp)
+    - Serialises step count, per-param flag, network-level tensors, then per-param tensors if enabled.
+
+- ***OutputSpaceTrajectory::LoadFrom*** - [
+  `void OutputSpaceTrajectory::LoadFrom(std::ifstream &f)`](src/FunctionalInfluence.hpp)
+    - Reads back the format written by `SaveTo`.
 
 ---
 

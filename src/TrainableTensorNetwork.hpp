@@ -9,8 +9,9 @@
 namespace TTTN {
     // @doc: template<Block... Blocks> class TrainableTensorNetwork
     /**
-     * Owns a BlockSequence and provides inference, serialization, and a MakeTrainer factory.
-     * Training state (AdamState, forward caches) lives in NetworkTrainer, not here.
+     * Capstone object of the library; owns a `BlockSequence<Blocks...> mSeq_` and an `AdamState mAdam_`
+     * All type aliases (`InputTensor`, `OutputTensor`, `Activations`, etc.) and inference/backward/serialization methods delegate directly to `mSeq_`
+     * Exclusively owns the optimizer state and loss-parameterized training entry points
      */
     template<Block... Blocks>
     class TrainableTensorNetwork {
@@ -25,6 +26,11 @@ namespace TTTN {
         static constexpr size_t OutSize         = Seq::OutSize;
         static constexpr size_t NumBlocks       = Seq::NumBlocks;
         static constexpr size_t TotalParamCount = Seq::TotalParamCount;
+
+        // Metric I — Positional Leverage (architecture-only, compile-time).
+        static constexpr auto BlockParamCounts             = Seq::BlockParamCounts;
+        static constexpr auto PositionalLeveragePerBlock   = Seq::PositionalLeveragePerBlock;
+        static constexpr auto PositionalLeveragePerParam   = Seq::PositionalLeveragePerParam;
 
         template<size_t Batch> using Activations    = typename Seq::template Activations<Batch>;
         template<size_t Batch> using TrainingCache  = typename Seq::template TrainingCache<Batch>;
@@ -117,7 +123,6 @@ namespace TTTN {
     // ── Shared trajectory / leverage helpers (used by NetworkTrainer & BranchTrainer) ─────
 
     // @doc: struct WeightedTrajectorySnapshot
-    /** Aggregate of leverage-weighted trajectory metrics. */
     struct WeightedTrajectorySnapshot {
         float gross;      // Σ_i w_i · gross_path[i]
         float net_norm;   // ||w_i · net_displacement[i]||_2
@@ -125,10 +130,6 @@ namespace TTTN {
     };
 
     // @doc: template<typename Net> WeightedTrajectorySnapshot WeightedTrajectoryOf(net, weights)
-    /**
-     * Walks net.all_params(), aggregates Param::metrics weighted by `weights[i]` (per flat-element).
-     * `weights.size()` must equal Net::TotalParamCount.
-     */
     template<typename Net>
         requires IsTrainableNetwork<Net>
     WeightedTrajectorySnapshot WeightedTrajectoryOf(const Net &net, const std::vector<float> &weights) {
@@ -150,14 +151,7 @@ namespace TTTN {
     }
 
     // @doc: template<typename Net, size_t Batch> std::vector<float> ComputeJacobianNorms(net, X)
-    /**
-     * Per-parameter L2 norm of ∂output/∂θ_i, averaged over `Batch` input samples.
-     * Returns a flat vector of size Net::TotalParamCount, in the order of net.all_params().
-     *
-     * Computes E_x[||J(x)||] (per-sample norm averaged), not ||E_x[J(x)]|| (norm of average).
-     * Modifies net.grad transiently and zeroes it before returning. Does NOT touch m, v, or
-     * Param::metrics. Cost: Batch × OutSize backward passes.
-     */
+    /** Delegates to `BlockSequence::BatchedForwardAll<Batch>` */
     template<typename Net, size_t Batch>
         requires IsTrainableNetwork<Net>
     std::vector<float> ComputeJacobianNorms(
@@ -206,12 +200,6 @@ namespace TTTN {
     }
 
     // @doc: template<typename Net, size_t Batch, size_t KInits> std::vector<float> ComputeStructuralPotentialOf(X_ref)
-    /**
-     * Heap-allocates `KInits` fresh Net instances (each Xavier-init via constructor),
-     * computes ComputeJacobianNorms on each against `X_ref`, returns the average.
-     * One-time precompute per architecture — Net is unchanged by this call.
-     * Cost: KInits × Batch × OutSize backward passes.
-     */
     template<typename Net, size_t Batch, size_t KInits = 50>
         requires IsTrainableNetwork<Net>
     std::vector<float> ComputeStructuralPotentialOf(
@@ -232,11 +220,6 @@ namespace TTTN {
 
 
     // @doc: template<typename Net, size_t Batch_> class NetworkTrainer
-    /**
-     * Training wrapper around a TrainableTensorNetwork (held by reference).
-     * Owns AdamState, TrainingCache<Batch_>, and all training entry points.
-     * Shed it when training is complete; the Net retains only weights.
-     */
     template<typename Net, size_t Batch_>
         requires IsTrainableNetwork<Net>
     class NetworkTrainer {
@@ -278,7 +261,6 @@ namespace TTTN {
         AdamState  &adam()         { return adam_; }
 
         // @doc: struct NetworkTrainer::TrajectorySnapshot
-        /** Aggregate trajectory metrics across all parameters in the network. */
         struct TrajectorySnapshot {
             float gross_path;        // Σ_i gross_path[i] — total L1 distance walked
             float net_norm;          // ||net_displacement||_2 — L2 norm of displacement vector
@@ -286,7 +268,10 @@ namespace TTTN {
         };
 
         // @doc: TrajectorySnapshot NetworkTrainer::Trajectory() const
-        /** Aggregate trajectory metrics from all Param::metrics fields in the network. */
+        /**
+         * Delegates block params to `BlockSequence::Load` (compile-time shapes determine exact byte count consumed), then seeks to `end - sizeof(AdamState)` and reads the trailer back into `mAdam_`
+         * Inverse of `Save` — restores weights, per-parameter Adam moments, and global Adam state in one call
+         */
         TrajectorySnapshot Trajectory() const {
             float gross = 0.f, net_sq = 0.f;
             std::apply([&](const auto &... ps) {
@@ -304,7 +289,6 @@ namespace TTTN {
         }
 
         // @doc: void NetworkTrainer::ResetMetrics()
-        /** Zero all Param::metrics fields — call at the start of a measurement window. */
         void ResetMetrics() {
             std::apply([](auto &... ps) { (ps.metrics.reset(), ...); }, net_.all_params());
         }
@@ -312,28 +296,32 @@ namespace TTTN {
         // ── Leverage queries (Metric II + Metric III) ──────────────────────────
 
         // @doc: std::vector<float> NetworkTrainer::ComputeFunctionalInfluence(X)
-        /** Per-parameter ||∂output/∂θ_i|| at the network's current weights, averaged over `X`. */
+        /** Delegates to `BlockSequence::BatchedForwardAll<Batch>` */
         std::vector<float> ComputeFunctionalInfluence(const BatchIn &X) {
             return TTTN::ComputeJacobianNorms<Net, Batch_>(net_, X);
         }
 
         // @doc: template<size_t KInits = 50> void NetworkTrainer::PrecomputeStructuralPotential(X_ref)
-        /** Compute and cache StructuralPotential under the Net's Xavier init distribution. */
         template<size_t KInits = 50>
         void PrecomputeStructuralPotential(const BatchIn &X_ref) {
             structural_potential_ = TTTN::ComputeStructuralPotentialOf<Net, Batch_, KInits>(X_ref);
         }
 
         // @doc: const std::vector<float>& NetworkTrainer::StructuralPotential() const
+        /** Delegates to `BlockSequence::block<I>()` */
         const std::vector<float> &StructuralPotential() const { return structural_potential_; }
 
         // @doc: WeightedTrajectorySnapshot NetworkTrainer::WeightedTrajectory(weights) const
-        /** Aggregate Param::metrics weighted by an arbitrary leverage vector. */
+        /** Delegates to `BlockSequence::Forward` */
         WeightedTrajectorySnapshot WeightedTrajectory(const std::vector<float> &weights) const {
             return TTTN::WeightedTrajectoryOf(net_, weights);
         }
 
         // @doc: template<typename Loss> float NetworkTrainer::Fit(X, Y, lr)
+        /**
+         * `ForwardAll` -> `ZeroGrad` -> `BackwardAll` -> `Update`
+         * `grad` is `dLoss/dOutputTensor`, computed externally
+         */
         template<typename Loss>
         float Fit(const BatchIn &X, const BatchOut &Y, float lr) {
             const BatchOut pred = Forward(X);
@@ -358,6 +346,10 @@ namespace TTTN {
         }
 
         // @doc: template<typename Loss, size_t N> float NetworkTrainer::RunEpoch(X_data, Y_data, rng, lr)
+        /**
+         * `ForwardAll` -> `ZeroGrad` -> `BackwardAll` -> `Update`
+         * `grad` is `dLoss/dOutputTensor`, computed externally
+         */
         template<typename Loss, size_t N, size_t... InDims, size_t... OutDims>
         float RunEpoch(const Tensor<N, InDims...> &X_data, const Tensor<N, OutDims...> &Y_data,
                        std::mt19937 &rng, float lr) {
