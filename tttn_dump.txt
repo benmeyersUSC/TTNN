@@ -1,4 +1,221 @@
 // ======================================================================
+// FILE: src/ActivationLens.hpp
+// ======================================================================
+
+#pragma once
+#include <cmath>
+#include <cstddef>
+#include "TrainableTensorNetwork.hpp"
+
+namespace TTTN {
+
+    // @doc: inline constexpr size_t LensToOutput
+    /** Sentinel for `TargetIdx` meaning "the network output" — resolved to `Net::NumBlocks` at instantiation. The default everywhere; pass an interior boundary instead for a residual→residual `J` in the paper's original form. */
+    inline constexpr size_t LensToOutput = static_cast<size_t>(-1);
+
+    template<typename T>
+    struct StripBatchDim;
+
+    // @doc: template<size_t B, size_t... Dims> struct StripBatchDim<Tensor<B, Dims...> >
+    /** Removes the leading batch axis from a batched activation type: `Tensor<B, Dims...> → Tensor<Dims...>`. */
+    template<size_t B, size_t... Dims>
+    struct StripBatchDim<Tensor<B, Dims...> > {
+        using type = Tensor<Dims...>;
+    };
+
+    template<typename A, typename B>
+    struct JoinTensorDims;
+
+    // @doc: template<size_t... As, size_t... Bs> struct JoinTensorDims<Tensor<As...>, Tensor<Bs...> >
+    /** Concatenates two tensor types' axes into one: `(Tensor<As...>, Tensor<Bs...>) → Tensor<As..., Bs...>`. Builds the lens type as target-axes-then-activation-axes. */
+    template<size_t... As, size_t... Bs>
+    struct JoinTensorDims<Tensor<As...>, Tensor<Bs...> > {
+        using type = Tensor<As..., Bs...>;
+    };
+
+    // @doc: template<typename Net, size_t I> using BoundaryActivation
+    /** The *unbatched* activation type at boundary `I` of `Net`, deduced from the net's own `TrainingCache` activations tuple. `I = 0` is the input; `I = NumBlocks` is the output. */
+    template<typename Net, size_t I>
+    using BoundaryActivation = typename StripBatchDim<std::remove_cvref_t<
+        std::tuple_element_t<I, decltype(std::declval<typename Net::template TrainingCache<1> &>().activations)>
+    >>::type;
+
+    // @doc: template<typename Net, size_t TargetIdx> inline constexpr size_t ResolvedLensTarget
+    /** `TargetIdx` unless it is `LensToOutput`, in which case `Net::NumBlocks`. */
+    template<typename Net, size_t TargetIdx>
+    inline constexpr size_t ResolvedLensTarget = (TargetIdx == LensToOutput) ? Net::NumBlocks : TargetIdx;
+
+    // @doc: template<typename Net, size_t BoundaryIdx, size_t TargetIdx = LensToOutput> using LensTensor
+    /** The fully-typed lens: `Tensor<TargetDims..., ActDims...>`. Row `j` (over the leading target axes) is `∂target_j/∂h` in the activation's own shape. Sequence activations keep their per-position axes — position averaging is a downstream reduction, never baked in. */
+    template<typename Net, size_t BoundaryIdx, size_t TargetIdx = LensToOutput>
+    using LensTensor = typename JoinTensorDims<
+        BoundaryActivation<Net, ResolvedLensTarget<Net, TargetIdx>>,
+        BoundaryActivation<Net, BoundaryIdx>
+    >::type;
+
+
+    // @doc: template<size_t BoundaryIdx, size_t Batch, size_t TargetIdx = LensToOutput, typename Net> LensTensor<Net, BoundaryIdx, TargetIdx> FitActivationLens(net, X)
+    /** Fits the lens at `BoundaryIdx` over one prompt batch: per sample, one forward with cache, then one `BackwardRange` per flat target dimension with a one-hot cotangent, capturing the returned interior gradient; averages over `Batch`. With `Batch = 1` this is the *per-context* (exact, unaveraged) lens. `Param::grad`s are written as a side effect and zeroed on return; `m`, `v`, and `Param::metrics` are untouched. Cost: `Batch × TargetSize` partial backward passes. `BoundaryIdx == TargetIdx` returns the identity. */
+    template<size_t BoundaryIdx, size_t Batch, size_t TargetIdx = LensToOutput, typename Net>
+        requires IsTrainableNetwork<Net>
+    LensTensor<Net, BoundaryIdx, TargetIdx> FitActivationLens(
+        Net &net,
+        const typename PrependBatch<Batch, typename Net::InputTensor>::type &X)
+    {
+        constexpr size_t Tgt = ResolvedLensTarget<Net, TargetIdx>;
+        static_assert(BoundaryIdx <= Tgt && Tgt <= Net::NumBlocks,
+                      "FitActivationLens: need BoundaryIdx <= TargetIdx <= NumBlocks");
+
+        using LensT = LensTensor<Net, BoundaryIdx, TargetIdx>;
+        using TgtT  = BoundaryActivation<Net, Tgt>;
+        using ActT  = BoundaryActivation<Net, BoundaryIdx>;
+        constexpr size_t TgtSize = TgtT::Size;
+        constexpr size_t ActSize = ActT::Size;
+
+        LensT lens{};
+
+        for (size_t b = 0; b < Batch; ++b) {
+            typename PrependBatch<1, typename Net::InputTensor>::type Xb;
+            for (size_t k = 0; k < Net::InputTensor::Size; ++k)
+                Xb.flat(k) = X.flat(b * Net::InputTensor::Size + k);
+
+            typename Net::template TrainingCache<1> cache;
+            net.template ForwardAll<1>(Xb, cache);
+
+            for (size_t j = 0; j < TgtSize; ++j) {
+                typename PrependBatch<1, TgtT>::type ej{};
+                ej.flat(j) = 1.f;
+                const auto grad_at = net.template BackwardRange<1, BoundaryIdx, Tgt>(cache, ej);
+                for (size_t k = 0; k < ActSize; ++k)
+                    lens.flat(j * ActSize + k) += grad_at.flat(k);
+            }
+        }
+
+        if constexpr (Batch > 1) {
+            constexpr float inv = 1.f / static_cast<float>(Batch);
+            for (size_t i = 0; i < LensT::Size; ++i) lens.flat(i) *= inv;
+        }
+
+        net.ZeroGrad();
+        return lens;
+    }
+
+
+    // @doc: template<size_t... LensDims, size_t... ActDims> auto ApplyLens(const Tensor<LensDims...> &lens, const Tensor<ActDims...> &h)
+    /** Contracts the lens's trailing activation axes against `h` (a `ΣΠ`), yielding the target-shaped **linearized output** — what the network would emit if everything downstream of the boundary were replaced by its fitted linear map. Rows are sensitivities; contracted with an actual `h` they become a prediction. Misses downstream bias constants (affine caveat): compare rankings, not raw values. */
+    template<size_t... LensDims, size_t... ActDims>
+    auto ApplyLens(const Tensor<LensDims...> &lens, const Tensor<ActDims...> &h) {
+        static_assert(sizeof...(LensDims) > sizeof...(ActDims),
+                      "ApplyLens: lens must carry target axes ahead of the activation axes");
+        return SigmaPi<sizeof...(ActDims)>(lens, h);
+    }
+
+    // @doc: template<size_t TgtRank = 1, size_t... LensDims> auto LensVector(const Tensor<LensDims...> &lens, const size_t target_flat)
+    /** Extracts one target row as an activation-shaped tensor: `∂target_t/∂h`. Dual-read as a functional (dot with any `h` gives that target's lens logit) and as a steering direction for activation-space interventions. `TgtRank` is how many leading axes index the target (1 for a vocab of logits). */
+    template<size_t TgtRank = 1, size_t... LensDims>
+    auto LensVector(const Tensor<LensDims...> &lens, const size_t target_flat) {
+        static_assert(TgtRank < sizeof...(LensDims), "LensVector: TgtRank must leave activation axes");
+        using ActT = typename SeqToTensor<typename SplitAt<TgtRank, LensDims...>::tail>::type;
+        ActT v;
+        for (size_t k = 0; k < ActT::Size; ++k)
+            v.flat(k) = lens.flat(target_flat * ActT::Size + k);
+        return v;
+    }
+
+
+    // @doc: template<typename Net, size_t BoundaryIdx, size_t TargetIdx = LensToOutput> class ActivationLensAccumulator
+    /** The E-over-contexts estimator *and* its dispersion instrument. Feed it single contexts; it maintains the running mean lens plus per-row second moments, exposing how much the per-context Jacobians agree with their average — the accord-ratio idea applied across *contexts* instead of across parameters/time. Where the downstream map is linear, per-context lenses are identical and coherence is exactly 1. */
+    template<typename Net, size_t BoundaryIdx, size_t TargetIdx = LensToOutput>
+        requires IsTrainableNetwork<Net>
+    class ActivationLensAccumulator {
+    public:
+        using LensT = LensTensor<Net, BoundaryIdx, TargetIdx>;
+        using TgtT  = BoundaryActivation<Net, ResolvedLensTarget<Net, TargetIdx>>;
+        using ActT  = BoundaryActivation<Net, BoundaryIdx>;
+        static constexpr size_t TgtSize = TgtT::Size;
+        static constexpr size_t ActSize = ActT::Size;
+
+    private:
+        LensT  sum_{};
+        TgtT   row_sqnorm_sum_{};
+        size_t count_ = 0;
+
+    public:
+        // @doc: LensT ActivationLensAccumulator::Add(Net &net, const typename PrependBatch<1, typename Net::InputTensor>::type &x)
+        /** Fits the exact per-context lens for `x` (one `FitActivationLens<BoundaryIdx, 1>` call), folds it into the running sums, and returns it so callers can stream their own per-context analyses without a second fit. */
+        LensT Add(Net &net, const typename PrependBatch<1, typename Net::InputTensor>::type &x) {
+            LensT Lc = FitActivationLens<BoundaryIdx, 1, TargetIdx>(net, x);
+            for (size_t j = 0; j < TgtSize; ++j) {
+                float sq = 0.f;
+                for (size_t k = 0; k < ActSize; ++k) {
+                    const float g = Lc.flat(j * ActSize + k);
+                    sum_.flat(j * ActSize + k) += g;
+                    sq += g * g;
+                }
+                row_sqnorm_sum_.flat(j) += sq;
+            }
+            ++count_;
+            return Lc;
+        }
+
+        // @doc: LensT ActivationLensAccumulator::Mean() const
+        /** The mean lens over all contexts seen so far — the paper's `E[J]` estimator. */
+        LensT Mean() const {
+            LensT m = sum_;
+            if (count_ > 0) {
+                const float inv = 1.f / static_cast<float>(count_);
+                for (size_t i = 0; i < LensT::Size; ++i) m.flat(i) *= inv;
+            }
+            return m;
+        }
+
+        // @doc: TgtT ActivationLensAccumulator::RowCoherence() const
+        /** Per target row `j`: `‖E_c[row_j]‖ / sqrt(E_c[‖row_j‖²]) ∈ [0, 1]` — 1 iff row `j`'s per-context Jacobians are identical (variance decomposition: the ratio is `sqrt(1 − Var/E[‖·‖²])`). Which targets' sensitivities are context-uniform, which are context-specific. */
+        TgtT RowCoherence() const {
+            TgtT r{};
+            if (count_ == 0) return r;
+            const float n = static_cast<float>(count_);
+            for (size_t j = 0; j < TgtSize; ++j) {
+                float mean_sq = 0.f;
+                for (size_t k = 0; k < ActSize; ++k) {
+                    const float m = sum_.flat(j * ActSize + k) / n;
+                    mean_sq += m * m;
+                }
+                const float e_sq = row_sqnorm_sum_.flat(j) / n;
+                r.flat(j) = e_sq > 0.f ? std::sqrt(mean_sq / e_sq) : 0.f;
+            }
+            return r;
+        }
+
+        // @doc: float ActivationLensAccumulator::Coherence() const
+        /** Whole-lens Frobenius version of `RowCoherence`: `‖E_c[L]‖_F / sqrt(E_c[‖L‖_F²])`. How honestly the mean lens speaks for every individual context. */
+        float Coherence() const {
+            if (count_ == 0) return 0.f;
+            const float n = static_cast<float>(count_);
+            float mean_sq = 0.f, e_sq = 0.f;
+            for (size_t i = 0; i < LensT::Size; ++i) {
+                const float m = sum_.flat(i) / n;
+                mean_sq += m * m;
+            }
+            for (size_t j = 0; j < TgtSize; ++j) e_sq += row_sqnorm_sum_.flat(j);
+            e_sq /= n;
+            return e_sq > 0.f ? std::sqrt(mean_sq / e_sq) : 0.f;
+        }
+
+        // @doc: float ActivationLensAccumulator::Dispersion() const
+        /** `1 − Coherence²`: the fraction of per-context Jacobian energy that is context-specific — exactly the linearization-infidelity of `E[J]`. 0 where downstream is linear; hypothesized to collapse at circuit formation. */
+        float Dispersion() const {
+            const float c = Coherence();
+            return 1.f - c * c;
+        }
+
+        size_t count() const { return count_; }
+    };
+
+} // namespace TTTN
+
+
+// ======================================================================
 // FILE: src/Attention.hpp
 // ======================================================================
 
@@ -399,6 +616,13 @@ namespace TTTN {
             }
         }
 
+        // Forward from boundary I: runs blocks I..N-1 on a supplied interior activation.
+        template<size_t Batch, size_t I>
+        auto forward_from_impl(const std::tuple_element_t<I, ActivationsTuple<Batch>> &x) const {
+            if constexpr (I == N) return x;
+            else return forward_from_impl<Batch, I + 1>(x >> std::get<I>(mBlocks));
+        }
+
         // Backward range: recurses from block I-1 down to block Lo.
         template<size_t Batch, size_t I, size_t Lo>
         auto backward_range_impl(const TrainingCache<Batch> &cache,
@@ -489,6 +713,15 @@ namespace TTTN {
                          const TrainingCache<Batch> &cache)
             -> typename PrependBatch<Batch, InputTensor>::type {
             return backward_range_impl<Batch, N, 0>(cache, delta);
+        }
+
+        // @doc: template<size_t Batch, size_t I> ForwardFrom(h) -- pure inference from an interior boundary.
+        /** Runs blocks `I..N-1` on a supplied interior activation at boundary `I` (batched, no cache), returning the network output. The forward mirror of `BackwardRange`: enables activation-space interventions — patch, inject along a `LensVector`, swap, or ablate an interior `h`, then read what the rest of the network makes of it. `I == NumBlocks` returns `h` unchanged. */
+        template<size_t Batch, size_t I>
+        auto ForwardFrom(const std::tuple_element_t<I, ActivationsTuple<Batch>> &h) const
+            -> typename PrependBatch<Batch, OutputTensor>::type {
+            static_assert(I <= N, "ForwardFrom: boundary out of range");
+            return forward_from_impl<Batch, I>(h);
         }
 
         // @doc: template<size_t Batch, size_t Lo, size_t Hi> BackwardRange(cache, grad) -- partial backward.
@@ -2123,6 +2356,63 @@ namespace TTTN {
             dec_.peek(out, prefix + "decoder.");
         }
 
+        // ---- J-lens support: interior activations and interior gradients ----
+
+        struct InteriorActivations {
+            EncHidden enc_out{};                        // encoder output (cross-attn memory)
+            std::array<DecHidden, NDec> dec_layer_in{}; // input of decoder layer i (0 = tgt_emb + PE)
+            DecHidden dec_out{};                        // decoder stack output (pre-projection)
+            OutputTensor logits{};
+        };
+
+        InteriorActivations ForwardInterior(const InputTensor &x) const {
+            InteriorActivations acts;
+            std::tie(src_oh_, tgt_oh_) = SplitAxis<0, SrcLen>(x);
+            src_emb_ = Embed(src_oh_, embed_.value);
+            AddPositionalEncoding(src_emb_);
+            enc_out_ = enc_.Forward(src_emb_);
+            acts.enc_out = enc_out_;
+            tgt_emb_ = Embed(tgt_oh_, embed_.value);
+            AddPositionalEncoding(tgt_emb_);
+            DecHidden h = tgt_emb_;
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                (([&] {
+                    acts.dec_layer_in[Is] = h;
+                    h = dec_.layers_[Is].Forward(h, enc_out_);
+                }()), ...);
+            }(std::make_index_sequence<NDec>{});
+            dec_out_ = h;
+            acts.dec_out = dec_out_;
+            acts.logits = Contract<AxisList<1>{}, AxisList<1>{}, Mul, Add>(dec_out_, embed_.value);
+            return acts;
+        }
+
+        struct InteriorGradients {
+            EncHidden d_enc_out{};                        // cotangent arriving at the encoder output
+            std::array<DecHidden, NDec> d_dec_layer_in{}; // cotangent at decoder layer i's input
+            DecHidden d_dec_out{};                        // cotangent at the decoder stack output
+        };
+
+        InteriorGradients BackwardInterior(const OutputTensor &delta) {
+            InteriorGradients g;
+            // through the weight-tied projection (linear part only; embed_.grad untouched)
+            g.d_dec_out = Contract<AxisList<1>{}, AxisList<0>{}, Mul, Add>(delta, embed_.value);
+            DecHidden d_x = g.d_dec_out;
+            EncHidden d_enc_accum{};
+            for (int i = static_cast<int>(NDec) - 1; i >= 0; --i) {
+                auto [d_in, d_enc] = dec_.layers_[static_cast<size_t>(i)].Backward(d_x);
+                g.d_dec_layer_in[static_cast<size_t>(i)] = d_in;
+                d_x = d_in;
+                d_enc_accum += d_enc;
+            }
+            g.d_enc_out = d_enc_accum;
+            return g;
+        }
+
+        void ZeroGradAll() {
+            ZeroAllGrads(all_params());
+        }
+
         // ---- inference helpers ----
         EncHidden EncodeOnly(const SrcOneHot &src) const {
             auto emb = Embed(src, embed_.value);
@@ -3522,6 +3812,7 @@ namespace TTTN {
 
 #include "NetworkComposition.hpp"
 #include "FunctionalInfluence.hpp"
+#include "ActivationLens.hpp"
 #include "Dense.hpp"
 #include "Attention.hpp"
 #include "MoreNets.hpp"
@@ -6262,6 +6553,13 @@ namespace TTTN {
         template<size_t Batch, size_t Lo, size_t Hi, typename GradT>
         auto BackwardRange(const TrainingCache<Batch> &cache, const GradT &grad) {
             return mSeq_.template BackwardRange<Batch, Lo, Hi>(cache, grad);
+        }
+
+        // @doc: template<size_t Batch, size_t I, typename ActT> auto TrainableTensorNetwork::ForwardFrom(const ActT &h) const
+        /** Delegates to `BlockSequence::ForwardFrom<Batch, I>` — run the network from boundary `I` on a supplied (possibly edited) interior activation. Companion to `FitActivationLens`/`LensVector` for causal interventions. */
+        template<size_t Batch, size_t I, typename ActT>
+        auto ForwardFrom(const ActT &h) const {
+            return mSeq_.template ForwardFrom<Batch, I>(h);
         }
 
         void ZeroGrad() { mSeq_.ZeroGrad(); }

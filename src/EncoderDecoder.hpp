@@ -391,6 +391,63 @@ namespace TTTN {
             dec_.peek(out, prefix + "decoder.");
         }
 
+        // ---- J-lens support: interior activations and interior gradients ----
+
+        struct InteriorActivations {
+            EncHidden enc_out{};                        // encoder output (cross-attn memory)
+            std::array<DecHidden, NDec> dec_layer_in{}; // input of decoder layer i (0 = tgt_emb + PE)
+            DecHidden dec_out{};                        // decoder stack output (pre-projection)
+            OutputTensor logits{};
+        };
+
+        InteriorActivations ForwardInterior(const InputTensor &x) const {
+            InteriorActivations acts;
+            std::tie(src_oh_, tgt_oh_) = SplitAxis<0, SrcLen>(x);
+            src_emb_ = Embed(src_oh_, embed_.value);
+            AddPositionalEncoding(src_emb_);
+            enc_out_ = enc_.Forward(src_emb_);
+            acts.enc_out = enc_out_;
+            tgt_emb_ = Embed(tgt_oh_, embed_.value);
+            AddPositionalEncoding(tgt_emb_);
+            DecHidden h = tgt_emb_;
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                (([&] {
+                    acts.dec_layer_in[Is] = h;
+                    h = dec_.layers_[Is].Forward(h, enc_out_);
+                }()), ...);
+            }(std::make_index_sequence<NDec>{});
+            dec_out_ = h;
+            acts.dec_out = dec_out_;
+            acts.logits = Contract<AxisList<1>{}, AxisList<1>{}, Mul, Add>(dec_out_, embed_.value);
+            return acts;
+        }
+
+        struct InteriorGradients {
+            EncHidden d_enc_out{};                        // cotangent arriving at the encoder output
+            std::array<DecHidden, NDec> d_dec_layer_in{}; // cotangent at decoder layer i's input
+            DecHidden d_dec_out{};                        // cotangent at the decoder stack output
+        };
+
+        InteriorGradients BackwardInterior(const OutputTensor &delta) {
+            InteriorGradients g;
+            // through the weight-tied projection (linear part only; embed_.grad untouched)
+            g.d_dec_out = Contract<AxisList<1>{}, AxisList<0>{}, Mul, Add>(delta, embed_.value);
+            DecHidden d_x = g.d_dec_out;
+            EncHidden d_enc_accum{};
+            for (int i = static_cast<int>(NDec) - 1; i >= 0; --i) {
+                auto [d_in, d_enc] = dec_.layers_[static_cast<size_t>(i)].Backward(d_x);
+                g.d_dec_layer_in[static_cast<size_t>(i)] = d_in;
+                d_x = d_in;
+                d_enc_accum += d_enc;
+            }
+            g.d_enc_out = d_enc_accum;
+            return g;
+        }
+
+        void ZeroGradAll() {
+            ZeroAllGrads(all_params());
+        }
+
         // ---- inference helpers ----
         EncHidden EncodeOnly(const SrcOneHot &src) const {
             auto emb = Embed(src, embed_.value);

@@ -110,6 +110,13 @@ namespace TTTN {
             }
         }
 
+        // Forward from boundary I: runs blocks I..N-1 on a supplied interior activation.
+        template<size_t Batch, size_t I>
+        auto forward_from_impl(const std::tuple_element_t<I, ActivationsTuple<Batch>> &x) const {
+            if constexpr (I == N) return x;
+            else return forward_from_impl<Batch, I + 1>(x >> std::get<I>(mBlocks));
+        }
+
         // Backward range: recurses from block I-1 down to block Lo.
         template<size_t Batch, size_t I, size_t Lo>
         auto backward_range_impl(const TrainingCache<Batch> &cache,
@@ -200,6 +207,15 @@ namespace TTTN {
                          const TrainingCache<Batch> &cache)
             -> typename PrependBatch<Batch, InputTensor>::type {
             return backward_range_impl<Batch, N, 0>(cache, delta);
+        }
+
+        // @doc: template<size_t Batch, size_t I> ForwardFrom(h) -- pure inference from an interior boundary.
+        /** Runs blocks `I..N-1` on a supplied interior activation at boundary `I` (batched, no cache), returning the network output. The forward mirror of `BackwardRange`: enables activation-space interventions — patch, inject along a `LensVector`, swap, or ablate an interior `h`, then read what the rest of the network makes of it. `I == NumBlocks` returns `h` unchanged. */
+        template<size_t Batch, size_t I>
+        auto ForwardFrom(const std::tuple_element_t<I, ActivationsTuple<Batch>> &h) const
+            -> typename PrependBatch<Batch, OutputTensor>::type {
+            static_assert(I <= N, "ForwardFrom: boundary out of range");
+            return forward_from_impl<Batch, I>(h);
         }
 
         // @doc: template<size_t Batch, size_t Lo, size_t Hi> BackwardRange(cache, grad) -- partial backward.

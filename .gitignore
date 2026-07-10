@@ -11,6 +11,8 @@
 !tttn_dump.txt
 !tools/
 !tools/**
+!tests/
+!tests/**
 !Journal.md
 !BranchLeverageForGrokkingResearch.md
 !parameter_movement_metrics.md

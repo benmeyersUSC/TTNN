@@ -229,7 +229,8 @@ Replace the parallel CPU dispatch (
 19. [TransformerBlock.hpp: Pre-norm Transformer Block](#transformerblockhpp--pre-norm-transformer-block)
 20. [BranchTrainer.hpp: Shared-Trunk Multi-Head Training](#branchtrainerhpp--shared-trunk-multi-head-training)
 21. [FunctionalInfluence.hpp: Output-Native Jacobian & Output-Space Trajectory](#functionalinfluencehpp--output-native-jacobian--output-space-trajectory)
-22. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
+22. [ActivationLens.hpp: The Jacobian Lens (Activation-Space Influence)](#activationlenshpp--the-jacobian-lens-activation-space-influence)
+23. [DataIO.hpp: Data Loading and Batching](#dataiohpp--data-loading-and-batching)
 
 ---
 
@@ -1854,6 +1855,10 @@ The unified sequential core shared by `TrainableTensorNetwork` and `ComposeBlock
     - Delegates to `ForwardAll` and extracts back element
     - Satisfies `Block` interface; uses `mActs` cache so a caller can follow with `Backward`
 
+- ***BlockSequence::ForwardFrom*** - [
+  `template<size_t Batch, size_t I> ForwardFrom(h) -- pure inference from an interior boundary.`](src/BlockSequence.hpp)
+    - Runs blocks `I..N-1` on a supplied interior activation at boundary `I` (batched, no cache), returning the network output. The forward mirror of `BackwardRange`: enables activation-space interventions — patch, inject along a `LensVector`, swap, or ablate an interior `h`, then read what the rest of the network makes of it. `I == NumBlocks` returns `h` unchanged.
+
 - ***BlockSequence::forward_impl*** - [
   `template<size_t I = 0> void BlockSequence::forward_impl(ActivationsTuple &A) const`](src/BlockSequence.hpp)
     - Private implementation; recursively fills `ActivationsTuple &A` by calling each
@@ -2031,6 +2036,10 @@ Thin wrapper around `BlockSequence<Blocks...>` that adds an
 - ***TrainableTensorNetwork::BackwardFrom*** - [
   `template<size_t I, typename Delta> void TrainableTensorNetwork::BackwardFrom(const Activations &A, const Delta &grad)`](src/TrainableTensorNetwork.hpp)
     - Delegates to `BlockSequence::BackwardFrom<I>`
+
+- ***TrainableTensorNetwork::ForwardFrom*** - [
+  `template<size_t Batch, size_t I, typename ActT> auto TrainableTensorNetwork::ForwardFrom(const ActT &h) const`](src/TrainableTensorNetwork.hpp)
+    - Delegates to `BlockSequence::ForwardFrom<Batch, I>` — run the network from boundary `I` on a supplied (possibly edited) interior activation. Companion to `FitActivationLens`/`LensVector` for causal interventions.
 
 - ***TrainableTensorNetwork::BackwardAll*** - [
   `void TrainableTensorNetwork::BackwardAll(const Activations &A, const OutputTensor &grad)`](src/TrainableTensorNetwork.hpp)
@@ -3322,6 +3331,72 @@ The output-native counterpart to `ComputeJacobianNorms`. Instead of collapsing e
 - ***OutputSpaceTrajectory::LoadFrom*** - [
   `void OutputSpaceTrajectory::LoadFrom(std::ifstream &f)`](src/FunctionalInfluence.hpp)
     - Reads back the format written by `SaveTo`.
+
+---
+
+## [ActivationLens.hpp](src/ActivationLens.hpp): The Jacobian Lens (Activation-Space Influence)
+
+The activation-space sibling of `ComputeJacobian`, implementing the Jacobian lens of Anthropic's global-workspace paper. Where `FunctionalInfluence` differentiates the output with respect to *weights* at one instant, the lens differentiates it with respect to an *interior activation* and averages over contexts: `L_ℓ = E[∂output/∂h_ℓ]`. Fitting reuses `BlockSequence::BackwardRange`'s returned interior gradient — for each flat target dimension `j`, backpropagate a one-hot cotangent `e_j` from the target boundary down to the lens boundary and record the arriving gradient as lens row `j`. The cotangent lives in *output* space: backprop through the final block manufactures the unembedding row by the chain rule, so the direct-to-logits form needs no separate composition (the naive logit lens is exactly the `J = I` special case). The lens is the *linear part* of the downstream map only — biases are invisible to it — so rankings and softmax reads are the meaningful use, and `ApplyLens(lens, h)` should be read as *linearized* output. Boundary indices follow the activations tuple: `0` = network input, `i` = output of block `i-1`, `NumBlocks` = network output. Completes the influence-geometry 2×2 of [PARAMETER_MOVEMENT.md](./PARAMETER_MOVEMENT.md) (Metric IV): weights-vs-activations × instance-vs-expectation. For encoder–decoder nets, [`EncoderDecoder.hpp`](src/EncoderDecoder.hpp) exposes the same primitives directly on the block — `ForwardInterior(x)` (activations at `enc_out`, every decoder-layer input, and `dec_out`) and `BackwardInterior(delta)` (the cotangent arriving at those same boundaries) — from which per-vocab lens rows are fit by seeding `delta` with one vocab dimension across target positions (see `jlens_compiler.cpp` in NeuralCompiler).
+
+- ***LensToOutput*** - [
+  `inline constexpr size_t LensToOutput`](src/ActivationLens.hpp)
+    - Sentinel for `TargetIdx` meaning "the network output" — resolved to `Net::NumBlocks` at instantiation. The default everywhere; pass an interior boundary instead for a residual→residual `J` in the paper's original form.
+
+- ***StripBatchDim*** - [
+  `template<size_t B, size_t... Dims> struct StripBatchDim<Tensor<B, Dims...> >`](src/ActivationLens.hpp)
+    - Removes the leading batch axis from a batched activation type: `Tensor<B, Dims...> → Tensor<Dims...>`.
+
+- ***JoinTensorDims*** - [
+  `template<size_t... As, size_t... Bs> struct JoinTensorDims<Tensor<As...>, Tensor<Bs...> >`](src/ActivationLens.hpp)
+    - Concatenates two tensor types' axes into one: `(Tensor<As...>, Tensor<Bs...>) → Tensor<As..., Bs...>`. Builds the lens type as target-axes-then-activation-axes.
+
+- ***BoundaryActivation*** - [
+  `template<typename Net, size_t I> using BoundaryActivation`](src/ActivationLens.hpp)
+    - The *unbatched* activation type at boundary `I` of `Net`, deduced from the net's own `TrainingCache` activations tuple. `I = 0` is the input; `I = NumBlocks` is the output.
+
+- ***ResolvedLensTarget*** - [
+  `template<typename Net, size_t TargetIdx> inline constexpr size_t ResolvedLensTarget`](src/ActivationLens.hpp)
+    - `TargetIdx` unless it is `LensToOutput`, in which case `Net::NumBlocks`.
+
+- ***LensTensor*** - [
+  `template<typename Net, size_t BoundaryIdx, size_t TargetIdx = LensToOutput> using LensTensor`](src/ActivationLens.hpp)
+    - The fully-typed lens: `Tensor<TargetDims..., ActDims...>`. Row `j` (over the leading target axes) is `∂target_j/∂h` in the activation's own shape. Sequence activations keep their per-position axes — position averaging is a downstream reduction, never baked in.
+
+- ***FitActivationLens*** - [
+  `template<size_t BoundaryIdx, size_t Batch, size_t TargetIdx = LensToOutput, typename Net> LensTensor<Net, BoundaryIdx, TargetIdx> FitActivationLens(net, X)`](src/ActivationLens.hpp)
+    - Fits the lens at `BoundaryIdx` over one prompt batch: per sample, one forward with cache, then one `BackwardRange` per flat target dimension with a one-hot cotangent, capturing the returned interior gradient; averages over `Batch`. With `Batch = 1` this is the *per-context* (exact, unaveraged) lens. `Param::grad`s are written as a side effect and zeroed on return; `m`, `v`, and `Param::metrics` are untouched. Cost: `Batch × TargetSize` partial backward passes. `BoundaryIdx == TargetIdx` returns the identity.
+
+- ***ApplyLens*** - [
+  `template<size_t... LensDims, size_t... ActDims> auto ApplyLens(const Tensor<LensDims...> &lens, const Tensor<ActDims...> &h)`](src/ActivationLens.hpp)
+    - Contracts the lens's trailing activation axes against `h` (a `ΣΠ`), yielding the target-shaped **linearized output** — what the network would emit if everything downstream of the boundary were replaced by its fitted linear map. Rows are sensitivities; contracted with an actual `h` they become a prediction. Misses downstream bias constants (affine caveat): compare rankings, not raw values.
+
+- ***LensVector*** - [
+  `template<size_t TgtRank = 1, size_t... LensDims> auto LensVector(const Tensor<LensDims...> &lens, const size_t target_flat)`](src/ActivationLens.hpp)
+    - Extracts one target row as an activation-shaped tensor: `∂target_t/∂h`. Dual-read as a functional (dot with any `h` gives that target's lens logit) and as a steering direction for activation-space interventions. `TgtRank` is how many leading axes index the target (1 for a vocab of logits).
+
+- ***ActivationLensAccumulator*** - [
+  `template<typename Net, size_t BoundaryIdx, size_t TargetIdx = LensToOutput> class ActivationLensAccumulator`](src/ActivationLens.hpp)
+    - The E-over-contexts estimator *and* its dispersion instrument. Feed it single contexts; it maintains the running mean lens plus per-row second moments, exposing how much the per-context Jacobians agree with their average — the accord-ratio idea applied across *contexts* instead of across parameters/time. Where the downstream map is linear, per-context lenses are identical and coherence is exactly 1.
+
+- ***ActivationLensAccumulator::Add*** - [
+  `LensT ActivationLensAccumulator::Add(Net &net, const typename PrependBatch<1, typename Net::InputTensor>::type &x)`](src/ActivationLens.hpp)
+    - Fits the exact per-context lens for `x` (one `FitActivationLens<BoundaryIdx, 1>` call), folds it into the running sums, and returns it so callers can stream their own per-context analyses without a second fit.
+
+- ***ActivationLensAccumulator::Mean*** - [
+  `LensT ActivationLensAccumulator::Mean() const`](src/ActivationLens.hpp)
+    - The mean lens over all contexts seen so far — the paper's `E[J]` estimator.
+
+- ***ActivationLensAccumulator::RowCoherence*** - [
+  `TgtT ActivationLensAccumulator::RowCoherence() const`](src/ActivationLens.hpp)
+    - Per target row `j`: `‖E_c[row_j]‖ / sqrt(E_c[‖row_j‖²]) ∈ [0, 1]` — 1 iff row `j`'s per-context Jacobians are identical (variance decomposition: the ratio is `sqrt(1 − Var/E[‖·‖²])`). Which targets' sensitivities are context-uniform, which are context-specific.
+
+- ***ActivationLensAccumulator::Coherence*** - [
+  `float ActivationLensAccumulator::Coherence() const`](src/ActivationLens.hpp)
+    - Whole-lens Frobenius version of `RowCoherence`: `‖E_c[L]‖_F / sqrt(E_c[‖L‖_F²])`. How honestly the mean lens speaks for every individual context.
+
+- ***ActivationLensAccumulator::Dispersion*** - [
+  `float ActivationLensAccumulator::Dispersion() const`](src/ActivationLens.hpp)
+    - `1 − Coherence²`: the fraction of per-context Jacobian energy that is context-specific — exactly the linearization-infidelity of `E[J]`. 0 where downstream is linear; hypothesized to collapse at circuit formation.
 
 ---
 

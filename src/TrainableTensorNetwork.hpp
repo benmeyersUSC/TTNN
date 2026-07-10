@@ -75,6 +75,13 @@ namespace TTTN {
             return mSeq_.template BackwardRange<Batch, Lo, Hi>(cache, grad);
         }
 
+        // @doc: template<size_t Batch, size_t I, typename ActT> auto TrainableTensorNetwork::ForwardFrom(const ActT &h) const
+        /** Delegates to `BlockSequence::ForwardFrom<Batch, I>` — run the network from boundary `I` on a supplied (possibly edited) interior activation. Companion to `FitActivationLens`/`LensVector` for causal interventions. */
+        template<size_t Batch, size_t I, typename ActT>
+        auto ForwardFrom(const ActT &h) const {
+            return mSeq_.template ForwardFrom<Batch, I>(h);
+        }
+
         void ZeroGrad() { mSeq_.ZeroGrad(); }
 
         auto all_params()       { return mSeq_.all_params(); }

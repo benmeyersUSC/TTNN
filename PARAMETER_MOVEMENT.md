@@ -200,6 +200,32 @@ G̃_i^{III} = λ_i^{str} · G_i
 
 ---
 
+## Metric IV — Activation Lens (The Fourth Square)
+
+Metrics II and III differentiate the output with respect to **weights**; the natural completion differentiates with respect to **activations**. This is the Jacobian lens of Anthropic's global-workspace paper (Transformer Circuits, July 2026), implemented natively in [`src/ActivationLens.hpp`](src/ActivationLens.hpp):
+
+```
+L_ℓ = E_contexts[ ∂output / ∂h_ℓ ]
+```
+
+The four metrics now fill a clean 2×2:
+
+| | **instance** (one point) | **expectation** (averaged) |
+|---|---|---|
+| **∂/∂weights** | II. Functional Influence `J_i` | III. Structural Potential (E over inits) |
+| **∂/∂activations** | per-context lens (`Batch = 1` fit) | IV. Activation Lens (E over contexts) |
+
+Fitting reuses the same machinery as Metric II: `BackwardRange` already returns the gradient at an interior boundary, so lens row `j` is the interior gradient of a one-hot output cotangent `e_j` — the chain rule through the final blocks folds the unembedding in automatically. `ApplyLens(L_ℓ, h)` yields the *linearized* output at depth `ℓ`; the naive logit lens is the `J = I` special case, and the tuned lens is its correlational (non-causal) cousin.
+
+Two reads the big-model version cannot give us, both available here because the input space is enumerable:
+
+- **Lens through training**: fit per checkpoint — at which step does each depth's lens first "know" the answer? (State instrument, like crystallization; expected to lead the grok.)
+- **Lens dispersion**: `ActivationLensAccumulator` tracks `‖E_c[L]‖ / sqrt(E_c[‖L‖²])` — the accord-ratio idea applied across *contexts*. Dispersion `= 1 − coherence²` is the exact linearization-infidelity of `E[J]`, which the paper could only validate behaviorally. Hypothesis: dispersion collapses at the grok, when the algorithm becomes context-uniform. Where downstream is linear it is identically 0 (the golden test).
+
+Affine caveat: the lens is the linear part of the downstream map — biases are invisible — so rankings/softmax are the meaningful read.
+
+---
+
 ## Triangulation — What Each Metric Sees
 
 | Metric | Value-dep? | Loss-dep? | What it measures |
@@ -208,6 +234,7 @@ G̃_i^{III} = λ_i^{str} · G_i
 | I. Positional Leverage | No | No | Structural potential by graph topology |
 | II. Functional Influence | Yes | No | Realized behavioral influence right now, output-native |
 | III. Structural Potential | No (averaged out) | No | Architectural influence in expectation |
+| IV. Activation Lens | Yes | No | Average downstream disposition of an interior activation, over contexts |
 
 The metrics triangulate:
 
@@ -276,6 +303,7 @@ Runner uses `BranchTrainer` with `InstrumentedFit`; source attribution and lever
 | Per-source attribution | [`src/SourceTrajectory.hpp`](src/SourceTrajectory.hpp) — `SourceTrajectory<NumSources>` |
 | Instrumented training with heads | [`src/BranchTrainer.hpp`](src/BranchTrainer.hpp) — `InstrumentedFit`, `InstrumentedBatchFit` |
 | Metric II Jacobian | [`src/FunctionalInfluence.hpp`](src/FunctionalInfluence.hpp) — `FunctionalInfluence`, `OutputSpaceGross`, `OutputSpaceNet`, `AccordRatio` |
+| Metric IV activation lens | [`src/ActivationLens.hpp`](src/ActivationLens.hpp) — `FitActivationLens`, `ApplyLens`, `LensVector`, `ActivationLensAccumulator` |
 | Metric III structural potential | [`src/StructuralPotential.hpp`](src/StructuralPotential.hpp) |
 | Metric I positional leverage | [`src/BlockSequence.hpp`](src/BlockSequence.hpp) — `PositionalLeverage` `constexpr` array |
 | Grokking runner (Experiment 1) | [`GrokkingMetrics`](https://github.com/benmeyersUSC/GrokkingMetrics) — `nanda_grokking.cpp` + analysis tools |
