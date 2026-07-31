@@ -169,46 +169,72 @@ This document will explain the definitions and techniques employed to compute th
 \draw[jresid] (-3.4,-0.40) to[out=-90,in=90] (-0.45,-1.15);
 \draw[jresid] (-2.1,-0.40) to[out=-90,in=90] (-0.15,-1.15);
 \draw[jresid] (0.3,-0.40) -- (0.3,-1.15);
-% ---- ONE big nested cutaway of b_0: (1) residual write (vertical cord, g_ell branches to the side); (2) g_ell opens DOWN into attention.
-% connector: b_0 -> Window 1
+% ---- ONE big cutaway of b_0: the residual write, with attention seen happening inside g_ell
+% connector: b_0 -> the window (spans its full height)
 \draw[gray!60,thin] (0.78,-1.2) -- (1.9,0.8);
-\draw[gray!60,thin] (0.78,-1.8) -- (1.9,-2.7);
-% ===== Window 1: the residual write =====
-\draw[rounded corners=7pt,thick,gray!60] (1.9,0.8) rectangle (7.4,-2.7);
-\node[jlabS,gray!70!black] at (4.65,0.52) {Inside $b_\ell$: the residual write};
-% the residual cord: split near the top, sum lower down, output continues
-\draw[jresid] (3.7,0.42) -- (3.7,-0.15);
-\fill (3.7,-0.15) circle (1.4pt);
-\draw[jresid] (3.7,-0.15) -- (3.7,-1.77);
-\node[jlabS,left] at (3.55,-0.95) {$x$};
-\node[draw,circle,inner sep=1.4pt,thick] at (3.7,-1.95) {$+$};
-\draw[jresid,-{Stealth[length=1.8mm]}] (3.7,-2.13) -- (3.7,-2.6);
-\node[jlabS,right] at (3.85,-2.48) {$x + g_\ell(x)$};
-% branch off to the side, through g_ell, back into the sum
-\draw[thin,-{Stealth[length=1.6mm]}] (3.7,-0.15) to[out=0,in=110] (5.35,-0.8);
-\node[draw,thick,fill=gray!12,font=\scriptsize,align=center] at (5.5,-1.05) {$g_\ell$\\[-2pt] {\tiny LN\,$\to$\,attn/MLP}};
-\draw[thin,-{Stealth[length=1.6mm]}] (5.3,-1.32) to[out=-90,in=0] (3.9,-1.92);
-\node[jlabS] at (4.62,-1.64) {$g_\ell(x)$};
-% connector: the g_ell box opens straight DOWN into Window 2
-\draw[gray!60,thin] (5.55,-1.35) -- (4.9,-3.2);
-\draw[gray!60,thin] (5.95,-1.35) -- (6.3,-3.2);
-% ===== Window 2: g_ell opened = causally-masked attention (roomy, below) =====
-\draw[rounded corners=7pt,thick,gray!60] (1.9,-3.2) rectangle (7.4,-6.7);
-\node[jlabS,gray!70!black] at (4.65,-3.5) {Inside $g_\ell$: causally-masked attention};
-\foreach \X in {3.1,4.75,6.4}{
-  \draw (\X-0.27,-4.1) -| (\X-0.41,-5.2) -- (\X-0.27,-5.2);
-  \draw (\X+0.27,-4.1) -| (\X+0.41,-5.2) -- (\X+0.27,-5.2);}
-\draw[jyel,line width=3pt] (3.1,-4.22) -- (3.1,-5.08);
-\draw[jyel,line width=3pt] (4.75,-4.22) -- (4.75,-4.65);
-\draw[jblu,line width=3pt] (4.75,-4.65) -- (4.75,-5.08);
-\draw[jyel,line width=3pt] (6.4,-4.22) -- (6.4,-4.51);
-\draw[jblu,line width=3pt] (6.4,-4.51) -- (6.4,-4.79);
-\draw[jred,line width=3pt] (6.4,-4.79) -- (6.4,-5.08);
-\node[jlabS] at (5.575,-4.65) {$\cdots$};
-\draw[jattnS,jyel] (3.1,-3.98) to[bend left=22] (4.75,-3.98);
-\draw[jattnS,jyel] (3.1,-3.9) to[bend left=15] (6.4,-3.98);
-\draw[jattnS,jblu] (4.75,-3.92) to[bend left=19] (6.4,-4.04);
-\node[jlabS,gray!70!black,align=center] at (4.65,-5.95) {each position reads only those at or before it};
+\draw[gray!60,thin] (0.78,-1.8) -- (1.9,-7.85);
+% ===== the window: inside b_ell, the residual write, ALL S streams =====
+% Every position has its own cord, its own split, its own sum. g_ell is ONE shared
+% compound (attn + MLP) that all cords pass THROUGH; every bypass routes strictly
+% AROUND it, outside its frame. Two crossings are unavoidable (and provably minimal):
+% the middle cord's bypass must hop one neighbour on its way out and back.
+\draw[rounded corners=7pt,thick,gray!60] (1.9,0.8) rectangle (9.1,-7.85);
+\node[jlabS,gray!70!black] at (5.5,0.52) {Inside $b_\ell$: the residual write};
+% ===== g_ell: the compound the cords pass through. Nothing else enters this frame. =====
+% Cord spacing follows the figure's "|| ... |" pattern, which also puts the MLP box's
+% centre in the wide gap --- so its label can sit dead centre without meeting a cord.
+\draw[rounded corners=5pt,thick,fill=gray!8] (3.05,-1.50) rectangle (8.35,-5.55);
+\node[jlabS] at (3.28,-1.72) {$g_\ell$};
+% ---- attention, wired with cords: a coloured cord branches off each INCOMING residual
+% and lands in the top of the latent it reaches. Position t's attention moves what the
+% streams brought IN, not what the mixed latents already hold.
+\foreach \X in {3.75,5.20,7.65}{
+  \draw (\X-0.27,-2.60) -| (\X-0.41,-4.05) -- (\X-0.27,-4.05);
+  \draw (\X+0.27,-2.60) -| (\X+0.41,-4.05) -- (\X+0.27,-4.05);}
+\draw[jyel,line width=3pt] (3.75,-2.72) -- (3.75,-3.93);
+\draw[jyel,line width=3pt] (5.20,-2.72) -- (5.20,-3.325);
+\draw[jblu,line width=3pt] (5.20,-3.325) -- (5.20,-3.93);
+\draw[jyel,line width=3pt] (7.65,-2.72) -- (7.65,-3.123);
+\draw[jblu,line width=3pt] (7.65,-3.123) -- (7.65,-3.527);
+\draw[jred,line width=3pt] (7.65,-3.527) -- (7.65,-3.93);
+\node[jlabS] at (6.42,-3.30) {$\cdots$};
+% farthest destination takes the outermost lane, so no two wires cross
+\draw[jyel,line width=1.4pt,rounded corners=4pt,-{Stealth[length=1.5mm]}]
+      (3.75,-1.80) -- (7.72,-1.80) -- (7.72,-2.70);
+\draw[jblu,line width=1.4pt,rounded corners=4pt,-{Stealth[length=1.5mm]}]
+      (5.20,-1.95) -- (7.58,-1.95) -- (7.58,-2.70);
+\draw[jyel,line width=1.4pt,rounded corners=4pt,-{Stealth[length=1.5mm]}]
+      (3.75,-2.10) -- (5.13,-2.10) -- (5.13,-2.70);
+\fill[jyel] (3.75,-1.80) circle (1.5pt);
+\fill[jyel] (3.75,-2.10) circle (1.5pt);
+\fill[jblu] (5.20,-1.95) circle (1.5pt);
+% ---- the MLP: one shared box, every position through it on its own cord
+% (mirrors the W_E / W_U bottlenecks of the network at large --- no cord ever meets another)
+\draw[thick,fill=gray!12,rounded corners=2pt] (3.34,-4.95) rectangle (8.06,-4.50);
+\node[font=\scriptsize] at (5.70,-4.725) {MLP};
+% ---- the cords themselves: in at the top, through g_ell, out at the bottom
+\foreach \X in {3.75,5.20,7.65}{
+  \draw[jresid] (\X,0.30) -- (\X,-2.60);
+  \draw[jresid] (\X,-4.05) -- (\X,-4.50);
+  \draw[jresid] (\X,-4.95) -- (\X,-6.20);}
+\node[jlabS] at (6.42,-0.15) {$\cdots$};
+% ---- each stream's bypass carries x AROUND the whole compound, in its own lane
+% outer cords peel off to their own side; the middle one routes out past its neighbour
+\draw[thin,rounded corners=4pt,-{Stealth[length=1.6mm]}]
+      (3.75,-0.95) -- (2.75,-0.95) -- (2.75,-6.38) -- (3.56,-6.38);
+\draw[thin,rounded corners=4pt,-{Stealth[length=1.6mm]}]
+      (7.65,-0.95) -- (8.65,-0.95) -- (8.65,-6.38) -- (7.84,-6.38);
+\draw[thin,rounded corners=4pt,-{Stealth[length=1.6mm]}]
+      (5.20,-0.55) -- (2.35,-0.55) -- (2.35,-6.63) -- (4.30,-6.63)
+                  -- (4.30,-6.38) -- (5.01,-6.38);
+\foreach \X/\Y in {3.75/-0.95,5.20/-0.55,7.65/-0.95}{\fill (\X,\Y) circle (1.4pt);}
+\node[jlabS] at (4.45,-0.36) {$x$};
+\node[jlabS,right] at (5.86,-5.85) {$g_\ell(x)$};
+% ---- every stream sums for itself
+\foreach \X in {3.75,5.20,7.65}{
+  \node[draw,circle,inner sep=1.4pt,thick] at (\X,-6.38) {$+$};
+  \draw[jresid,-{Stealth[length=1.8mm]}] (\X,-6.56) -- (\X,-7.25);}
+\node[jlabS] at (5.70,-7.52) {$x + g_\ell(x)$};
 % ---- after b_0: pull the streams out and NAME them (they are the positions)
 \draw[jresid] (-0.45,-1.85) to[out=-90,in=90] (-3.4,-2.65) -- (-3.4,-3.05)
               to[out=-90,in=90] (-0.45,-3.75);
@@ -245,9 +271,9 @@ This document will explain the definitions and techniques employed to compute th
 \draw[jresid] (-0.15,-6.95) -- (-0.15,-7.35);
 \draw[jresid] (0.3,-6.95) -- (0.3,-7.35);
 % ---- the point, stated on-figure
-\node[jlab,gray,align=center] at (4.65,-7.25)
+\node[jlab,gray,align=center] at (5.5,-8.4)
       {\emph{one set of parameters per layer,}\\ \emph{shared by all $S$ streams}};
-% (the residual write is now the FIRST nested window off b_0, above; g_ell there opens into attention)
+% (the residual write is ONE cutaway off b_0, above; attention is seen inside its g_ell box)
 % ---- bottom: fan back out; unembed only the final stream
 \draw[jresid] (-0.45,-8.05) to[out=-90,in=90] (-3.4,-8.85);
 \draw[jresid] (-0.15,-8.05) to[out=-90,in=90] (-2.1,-8.85);
@@ -519,7 +545,7 @@ This takes us from some \(h_{\ell,t}\) to a probability distribution (\(\mathbb{
 
 As the computation below will detail, any \(J_\ell\) where \(\ell < L\) is but a \textit{local linear approximation} of a relationship that is by no means linear. Further, \(J_\ell\) as we define it is an \textit{average} local linear approximation of the relationship in question. Any from the set of specific Jacobians averaged to produce a single object from this family is itself entirely accurate and complete, but only to the specific \(h_{\ell,t}\) that allowed its computation. \(R_\ell\) is (for \(\ell < L\)) by-design nonlinear, so the transformation it performs on \(h_{\ell,t}\) is \textit{dependent on} \(h_{\ell,t}\) and irreducible over \(h_{\ell}\)-space without averaging. Now the averaging, for all the specific accuracy it sheds, makes \(J_{\ell}\) and \(\jlens_\ell\) flexible over token positions and---when further averaged over the prompt corpus \(\mathscr{P}\)---flexibly relevant across semantic contexts. 
 
-Finally, as \S\ref{sec:jspace} will show, the \textbf{J-space} component \(\jspace_{\ell}(h_\ell)\) of a latent \(h_{\ell}\) is a selection of the rows of \(\jlens_{\ell}\). Thus, \(J_{\ell}\) and \(\jlens_{\ell}\) are the prerequisite objects for \textbf{J-vision} broadly.
+Finally, as \S\ref{sec:jspace} will show, the \textbf{J-space} decomposition \(\jspace_{\ell}(h_\ell)\) of a latent \(h_{\ell}\) is a selection of the rows of \(\jlens_{\ell}\). Thus, \(J_{\ell}\) and \(\jlens_{\ell}\) are the prerequisite objects for \textbf{J-vision} broadly.
 
 \subsection{Computation}\label{sec:jcomp}
 
@@ -886,26 +912,24 @@ Averaging is a hypothesis. Here is how we test it: we can measure the magnitude 
 
 \section{J-space}\label{sec:jspace}
 
-Where \(\jlens\) shines in the \textit{synthesis} it makes of causal relationships into a single object, it blinds with its potent density. The \textbf{J-space} is a kind of prism we fit to the information that pours into \(\jlens\), reducing it to its principal components and focusing its information into distinct beams of practical insight. \(\jlens\) colors the \(\dmodel\)-sized latent states of the model with what it means for all \(|V|\) concepts in its available grasp, but do we feel intuitively that every thought in our heads should be put in relation to \textit{every} word we can possibly utter? Any \(h\) must be reducible to only those directions in token space that really count, right? Beyond the reduction the \textbf{J-space} provides for the purposes of interpreting internal state, if we want to affect change in the model's behavior, we'd hope that we wouldn't have to tweak \textit{every single} source, but only a privileged few, right? 
+Where \(\jlens\) shines in the \textit{synthesis} it makes of causal relationships into a single object, it blinds with its potent density. The \textbf{J-space} is a kind of prism we fit to the information that pours into \(\jlens\), reducing it to a sparse few of its directions and focusing its information into distinct beams of practical insight. \(\jlens\) colors the \(\dmodel\)-sized latent states of the model with what it means for all \(|V|\) concepts in its available grasp, but do we feel intuitively that every thought in our heads should be put in relation to \textit{every} word we can possibly utter? Any \(h\) must be reducible to only those directions in token space that really count, right? Beyond the reduction the \textbf{J-space} provides for the purposes of interpreting internal state, if we want to affect change in the model's behavior, we'd hope that we wouldn't have to tweak \textit{every single} source, but only a privileged few, right? 
 
 Knowing the normalized alignment vector \(\jlens(h)\) of any latent is valuable, but \(\jlens\) itself (and the vocabulary it speaks to!) is highly redundant. If \(h\) scores highly with an (imaginary) token, ``dog'', then it will likely align with tokens such as ``dogs'', ``canine'', and ``puppy''. Knowing one of these practically tells us the other. Taking the top 10 scoring tokens from \(\jlens(h)\) might only give us 2 or 3 truly distinct concepts.
 
-The \textbf{J-space} \(\jspace\) is defined to bring information-retaining \textbf{sparsity} to the redundancy of \(\jlens\)-space. \(\jspace\) is an \textit{intensionally} as opposed to \textit{extensionally} defined space, never fully enumerated as an object like \(\jlens\) but instead specified by a constrained recipe for finding its members.\footnote{For one thing, it is an \textit{uncountably} infinite space---a union of finitely many cones, but each cone a continuum of points---so we could never compact it into an object like \(\jlens\).} The \textbf{J-space} \textit{decomposition} \(\jspace(h)\) of an activation \(h\) is the closest point \textit{in the \textbf{J-space}} to \(h\) itself.
-
-Once \(\jlens\)-space is made sparse, the meaningful conceptual decomposition of the residual stream is fast-tracked and principled, allowing for efficiently pointed interventions. The torrential information delivered in \(\jlens\) gets its due scrutiny, allowing us to isolate and utilize its (literally) most pointed insights. 
+The \textbf{J-space} \(\jspace\) is defined to bring information-retaining \textbf{sparsity} to the redundancy of \(\jlens\)-space. \(\jspace\) is an \textit{intensionally} as opposed to \textit{extensionally} defined space, never fully enumerated as an object like \(\jlens\) but instead specified by a constrained recipe for finding its members.\footnote{For one thing, it is an \textit{uncountably} infinite space---a union of finitely many cones, but each cone a continuum of points---so we could never compact it into an object like \(\jlens\).} The \textbf{J-space} \textit{decomposition} \(\jspace(h)\) of an activation \(h\) is the closest point \textit{in the \textbf{J-space}} to \(h\) itself. Once \(\jlens\)-space is made sparse, the meaningful conceptual decomposition of the residual stream is fast-tracked and principled, allowing for efficiently pointed interventions.
 
 \subsection{Computation}\label{sec:jspacecomp}
 
 The \textbf{J-space} \(\jspace_\ell\) in layer \(\ell\) is defined as the set of all points reachable by a sparse, nonnegative decomposition of up to \(k\) rows of \(\jlens\), where \(k\) is our sparsity constraint. Anthropic denotes it as a \textit{union of cones} in \(\mathbb{R}^{\dmodel}\), where each cone is made up of a set of \(k\) directions (rows drawn from \(\jlens\)), each with a nonnegative coefficient. Writing \(\mathscr{m}_{v}\) for the row of \(\jlens\) belonging to token \(v\), and collecting the coefficients into a single sparse, nonnegative vector \(c \in \mathbb{R}^{|V|}_{\ge 0}\) with at most \(k\) nonzero entries (\(\|c\|_0 \le k\)), the space is
 \[ \jspace \;=\; \bigl\{\, \jlens^{\!\top} c \;:\; c \ge 0,\ \|c\|_0 \le k \,\bigr\}, \qquad \jlens^{\!\top} c \;=\; \sum_{v=1}^{|V|} c_v\, \mathscr{m}_{v} \]
 
-The \textbf{J-space} \textit{component} \(\jspace(h)\) of a latent \(h\) is then defined as the point in \(\jspace\) that is closest to \(h\).
+The \textbf{J-space} \textit{decomposition} \(\jspace(h)\) of a latent \(h\) is then defined as the point in \(\jspace\) that is closest to \(h\).
 
 \[ \jspace(h) \;=\; \jlens^{\!\top} c^\star, \qquad c^\star \;=\; \argmin_{\substack{c \,\in\, \mathbb{R}^{|V|}_{\ge 0} \\ \|c\|_0 \,\le\, k}} \bigl\| \jlens^{\!\top} c - h \bigr\|_2^2  \]
 
-\(c^\star\) is our prism on the overcomplete white light that is \(\jlens\). Once fit, \(c^\star\)  sifts the principal directions in \(\jlens\)-space (\(\in \mathbb{R}^{\dmodel}\)) that best reconstruct \(h\). If each row of \(\jlens\) denotes a direction of steepest logit-increase for each token, then \(\jspace(h)\) puts together a non-redundant report of the \(k\) directions in token space that best describe the model's disposition.
+\(c^\star\) is our prism on the overcomplete white light that is \(\jlens\). Once fit, \(c^\star\) sifts the \(k\) directions in \(\jlens\)-space (\(\in \mathbb{R}^{\dmodel}\)) that best reconstruct \(h\). If each row of \(\jlens\) denotes a direction of steepest logit-increase for each token, then \(\jspace(h)\) puts together a non-redundant report of the \(k\) directions in token space that best describe the model's disposition.
 
-While the notation defining \(\jspace(h)\) is succinct, choosing the best \(k\) rows out of a \(|V|\)-term dictionary is NP-hard, so we solve it greedily. One objective---\textit{reconstruct \(h\) as closely as possible with only \(k\) rows}---forces two oscillating complementary operations: \textit{select} directions against the residual \(r\) (which progressively shrinks during the optimization), but always \textit{fit} against \(h\). Every \textit{next} direction \(\mathscr{m}\) is the one most aligned with \textit{what still needs to be covered} (the residual, \(r\)). After each next direction selection, we see how well the working set of directions reconstructs the ultimate objective, \textit{h}. \textit{Diversity} among the \(k\) rows of \(\jlens\) that we select is never an imposed rule---it falls out of greedily \textit{selecting} against the residual but \textit{fitting} against the target. The selected rows are not thereby mutually \textit{orthogonal} (with an overcomplete, correlated dictionary they generally are not); what emerges is only that we never spend a slot re-selecting a direction the working set already covers, since after each refit the residual is (near-)orthogonal to everything we have already captured. Algorithm~\ref{alg:jspace} displays the \textit{outer} algorithm for selecting directions, while Algorithm~\ref{alg:fit} specifies how those directions are fit. Because \textsc{Fit} re-solves \textit{all} of the active coefficients against \(h\) at every round---rather than freezing past coefficients and only appending the new one---the procedure is, strictly, \textit{orthogonal} matching pursuit (in fact its nonnegative variant), not the original matching pursuit.\footnote{Orthogonal matching pursuit: Y.~C. Pati, R.~Rezaiifar, and P.~S. Krishnaprasad, \textit{Orthogonal Matching Pursuit: Recursive Function Approximation with Applications to Wavelet Decomposition}, Proc.\ 27th Asilomar Conf.\ on Signals, Systems and Computers, \href{https://doi.org/10.1109/ACSSC.1993.342465}{1993}. The refit is what makes it \textit{orthogonal}: after it, the residual is orthogonal to the span of the active rows.}
+While the notation defining \(\jspace(h)\) is succinct, choosing the best \(k\) rows out of a \(|V|\)-term dictionary is NP-hard, so we solve it greedily. One objective---\textit{reconstruct \(h\) as closely as possible with only \(k\) rows}---forces two oscillating complementary operations: \textit{select} directions against the residual \(r\) (which progressively shrinks during the optimization), but always \textit{fit} against \(h\). Every \textit{next} direction \(\mathscr{m}\) is the one most aligned with \textit{what still needs to be covered} (the residual, \(r\)). After each next direction selection, we see how well the working set of directions reconstructs the ultimate objective, \textit{h}. \textit{Diversity} among the \(k\) rows of \(\jlens\) that we select is never an imposed rule---it falls out of greedily \textit{selecting} against the residual but \textit{fitting} against the target. The selected rows are not thereby mutually \textit{orthogonal} (with an overcomplete, correlated dictionary they generally are not); what emerges is only that we never spend a slot re-selecting a direction the working set already covers, since after each refit the residual is (near-)orthogonal to everything we have already captured. Algorithm~\ref{alg:jspace} displays the \textit{outer} algorithm for selecting directions, while Algorithm~\ref{alg:fit} specifies how those directions are fit. Because \textsc{Fit} re-solves \textit{all} of the active coefficients against \(h\) at every round---rather than freezing past coefficients and only appending the new one---the procedure is, strictly, \textit{orthogonal} matching pursuit (in fact its nonnegative variant), not the original matching pursuit.\footnote{Orthogonal matching pursuit: Y.~C. Pati, R.~Rezaiifar, and P.~S. Krishnaprasad, \textit{Orthogonal Matching Pursuit: Recursive Function Approximation with Applications to Wavelet Decomposition}, Proc.\ 27th Asilomar Conf.\ on Signals, Systems and Computers, \href{https://doi.org/10.1109/ACSSC.1993.342465}{1993}.}
 
 % ===== J-space decomposition algorithm (matching pursuit + refit) =====
 % Reference it in prose as: Algorithm~\ref{alg:jspace}  (renders "Algorithm 1", clickable via hyperref).
@@ -915,7 +939,7 @@ While the notation defining \(\jspace(h)\) is succinct, choosing the best \(k\) 
 \label{alg:jspace}
 \begin{algorithmic}[1]
 \Require latent \(h \in \mathbb{R}^{\dmodel}\);\ \ J-lens rows \(\mathscr{m}_{v}\) for \(v = 0,\dots,|V|-1\);\ \ sparsity budget \(k\)
-\Ensure sparse nonnegative \(c \in \mathbb{R}^{|V|}_{\ge 0}\) with \(\|c\|_0 \le k\);\ \ component \(\jspace(h) = \jlens^{\!\top} c\)
+\Ensure sparse nonnegative \(c \in \mathbb{R}^{|V|}_{\ge 0}\) with \(\|c\|_0 \le k\);\ \ decomposition \(\jspace(h) = \jlens^{\!\top} c\)
 \State \(r \gets h\);\quad \(A \gets \varnothing\);\quad \(c \gets \mathbf{0}\) \Comment{residual, active support, coefficients}
 \For{\(j = 1\) \textbf{to} \(k\)} \Comment{outer loop: grow the support}
   \State \(\displaystyle v^\star \gets \argmax_{v}\ \frac{\langle \mathscr{m}_{v},\, r\rangle}{\lVert \mathscr{m}_{v}\rVert}\) \Comment{select against the residual \(r\) --- the fastest error drop}
@@ -948,18 +972,18 @@ While the notation defining \(\jspace(h)\) is succinct, choosing the best \(k\) 
 \end{algorithm}
 
 
-Algorithm~\ref{alg:fit} should seem familiar: it is gradient descent! Write the error as \(e \equiv \hat{s} - h = \sum_w c_w\, m_w - h = -r\), so the loss is
+Algorithm~\ref{alg:fit} should seem familiar: it is gradient descent! Write the error as \(e \equiv \hat{s} - h = \sum_w c_w\, \mathscr{m}_w - h = -r\), where \(\hat{s}\) is the running reconstruction of \(h\) under the current coefficients, so the loss is
 \[ L(c) \;=\; \bigl\lVert \hat{s} - h\bigr\rVert_2^2 \;=\; \lVert e\rVert^2 \;=\; e \cdot e \]
 Differentiating with respect to a single coefficient \(c_v\),
 \[ \frac{\partial L}{\partial c_v} \;=\; \frac{\partial}{\partial c_v}\,\bigl(e \cdot e\bigr) \;=\; 2\, e \cdot \frac{\partial e}{\partial c_v}. \]
 The inner derivative picks out a single term,
-\[ \frac{\partial e}{\partial c_v} \;=\; \frac{\partial}{\partial c_v}\Bigl(\sum_w c_w\, m_w - h\Bigr) \;=\; m_v \]
+\[ \frac{\partial e}{\partial c_v} \;=\; \frac{\partial}{\partial c_v}\Bigl(\sum_w c_w\, \mathscr{m}_w - h\Bigr) \;=\; \mathscr{m}_v \]
 since \(h\) and every \(c_w\) with \(w \neq v\) are constant in \(c_v\). Substituting back,
-\[ \frac{\partial L}{\partial c_v} \;=\; 2\, e \cdot m_v \;=\; 2(\hat{s}-h)\cdot m_v \;=\; 2(-r)\cdot m_v \;=\; -2\,\langle m_v,\, r\rangle \]
+\[ \frac{\partial L}{\partial c_v} \;=\; 2\, e \cdot \mathscr{m}_v \;=\; 2(\hat{s}-h)\cdot \mathscr{m}_v \;=\; 2(-r)\cdot \mathscr{m}_v \;=\; -2\,\langle \mathscr{m}_v,\, r\rangle \]
 
-At every turn of the optimization, \(r\) is the vector representing all of \(h\) that we have not reconstructed. It is a \textit{direction} in which we want to move, not a point at which we want to arrive. The more we nudge \(\sum_{v \in A}(c_A)_v\,\mathscr{m}_{v}\) towards \(r\), the more \(r\) disappears.\footnote{Because \(r = h - \sum_{v \in A}(c_A)_v\,\mathscr{m}_{v}\)!} We want to adjust each coefficient \(c_v\) so it supports this directional goal and brings its corresponding \(\mathscr{m}_v\) to where it needs to be to cancel more of \(r\). What is the relationship between \(c_v\) and \(r\)? It is exactly (proportional to) \(\langle m_v,\, r\rangle\)!
+At every turn of the optimization, \(r\) is the vector representing all of \(h\) that we have not reconstructed. It is a \textit{direction} in which we want to move, not a point at which we want to arrive. The more we nudge \(\sum_{v \in A}(c_A)_v\,\mathscr{m}_{v}\) towards \(r\), the more \(r\) disappears.\footnote{Because \(r = h - \sum_{v \in A}(c_A)_v\,\mathscr{m}_{v}\)!} We want to adjust each coefficient \(c_v\) so it supports this directional goal and brings its corresponding \(\mathscr{m}_v\) to where it needs to be to cancel more of \(r\). What is the relationship between \(c_v\) and \(r\)? It is exactly (proportional to) \(\langle \mathscr{m}_v,\, r\rangle\)!
 
-The motivation for the \textbf{J-space} decomposition \(\jspace(h)\) of a latent \(h\) is plain: positively include the \(k\) distinct token-influence directions of \(h\)-space that can reconstruct \(h\) the best. The \textit{algorithm} for computing it, though, is even more plain and elegant. At every turn of the outer algorithm, select the direction that best eats up the work we have left to do (\(r\))---this is what buys us the diversity noted above. Then for each working set of directions, figure out the best way to combine them to reconstruct the information we actually want to reconstruct, \(h\). The algorithm is so nice because its goal is so interpretable and intuitive and its methods are so familiar to anyone who has worked with neural networks. Interestingly, it was originally introduced (under the name of \textit{matching pursuit}) in the context of continuous signal processing by Mallat and Zhang \href{https://doi.org/10.1109/78.258082}{(1993)}.\footnote{S.~G. Mallat and Z.~Zhang, \textit{Matching Pursuits with Time-Frequency Dictionaries}, IEEE Trans.\ Signal Processing, 41(12):3397--3415, 1993.} Continuous sinusoidal waves that are composed of pure frequencies, each at a specific coefficient (and phase), resemble vectors that are composed of different directions. The motivation to deconstruct them is the same: \textit{which frequencies are present in this signal?} Better yet, \textit{what are the top k frequencies that could approximate this signal?} Each pure frequency brings something distinct to the table, like each orthogonal direction of a vector space. How do you find the single pure frequency that best aligns with a sinusoid (be it a raw signal or a residual!)? Dot product, Discrete Fourier Transform. If you have a set of choice pure frequencies, how do you you figure out their best combination to reconstruct a sinusoid? Gradient descent!  Figure~\ref{fig:jspace-freq} celebrates this alignment in methods and motivations, honoring the original instantiation of the matching pursuit algorithm which we use to compute \(\jspace(h)\), and stimulating your intuition for what reconstruction really looks like. 
+The motivation for the \textbf{J-space} decomposition \(\jspace(h)\) of a latent \(h\) is plain: positively include the \(k\) distinct token-influence directions of \(h\)-space that can reconstruct \(h\) the best. The \textit{algorithm} for computing it, though, is even more plain and elegant. At every turn of the outer algorithm, select the direction that best eats up the work we have left to do (\(r\))---this is what buys us the diversity noted above. Then for each working set of directions, figure out the best way to combine them to reconstruct the information we actually want to reconstruct, \(h\). The algorithm is so nice because its goal is so interpretable and intuitive and its methods are so familiar to anyone who has worked with neural networks. Interestingly, it was originally introduced (under the name of \textit{matching pursuit}) in the context of continuous signal processing by Mallat and Zhang \href{https://doi.org/10.1109/78.258082}{(1993)}.\footnote{S.~G. Mallat and Z.~Zhang, \textit{Matching Pursuits with Time-Frequency Dictionaries}, IEEE Trans.\ Signal Processing, 41(12):3397--3415, 1993.} Continuous sinusoidal waves that are composed of pure frequencies, each at a specific coefficient (and phase), resemble vectors that are composed of different directions. The motivation to deconstruct them is the same: \textit{which frequencies are present in this signal?} Better yet, \textit{what are the \textbf{top k }frequencies that could approximate this signal?} Each pure frequency brings something distinct to the table, like each direction of a vector space. (1) How do you find the single pure frequency that best aligns with a sinusoid (be it a raw signal or a residual)? Dot product (which gives us the Discrete Fourier Transform)! (2) If you have a set of choice pure frequencies, how do you figure out their best combination to reconstruct a sinusoid? Gradient descent!  Figure~\ref{fig:jspace-freq} celebrates this alignment in methods and motivations, honoring the original instantiation of the matching pursuit algorithm which we use to compute \(\jspace(h)\), and stimulating your intuition for what reconstruction really looks like. 
 
 \begin{figure}[htbp]
 \centering
@@ -1462,22 +1486,50 @@ The motivation for the \textbf{J-space} decomposition \(\jspace(h)\) of a latent
 
 
 \subsection{Insightful Caveats}
-So we can reconstruct any latent \(h\) with a selection of a few key disposition vectors...what about the rest of the directions are tied up in \(h\)? In the same vein of asking what we lose when we average local Jacobians \(J\) to get \(\jlens\), we can ask about the epistemological consequences of very shrewdly dismissing \textit{most} of our \(\jlens\) vectors to get \(\jspace\) and \(\jspace(h)\). What information are we losing? A first thought might be: we only keep \(k\) directions to reconstruct all of \(h\), so we only keep \(\frac{k}{\dmodel}\) of the information. This would only be true if the rows of \(\jlens\) (from which we draw our \(k\)) were orthogonal and linearly independent. This is manifestly not the case.\footnote{For one thing, there are (typically) more rows (\(|V|\)) in \(\jlens\) than dimensions in each row \(\dmodel\). So even if every row could only be a basis vector, some would be duplicates, hence killing orthogonality.} Trained neural networks do not spread information uniformly through the spaces their afforded. Training is a process of \textit{compressing}, \textit{abstracting}, and \textit{discovering} useful redundancies when it comes to representing and apprehending information. Because of this, the causal tendrils flowing from any given node within the model are braided and entangled, giving the model the power to make high-leverage decisions, but also blinding the path backwards through those decisions. The \(\jlens\), as we know, was explicitly constructed by pulling derivatives backward, trying to reverse the causal course that determined the behavior we observed. 
+So we can reconstruct any latent \(h\) with a selection of a few key disposition vectors...what about the rest of the directions tied up in \(h\)? In the same vein of asking what we lose when we average local Jacobians to get \(J\) and \(\jlens\), we can ask about the epistemological consequences of very shrewdly dismissing \textit{most} of our \(\jlens\) vectors to get \(\jspace\) and \(\jspace(h)\). What information are we losing? A first thought might be: we only keep \(k\) directions to reconstruct all of \(h\), so we only keep \(\frac{k}{\dmodel}\) of the information. This would only be true if the rows of \(\jlens\) (from which we draw our \(k\)) were orthogonal and linearly independent. This is manifestly not the case.\footnote{For one thing, there are (typically) more rows (\(|V|\)) in \(\jlens\) than dimensions in each row \(\dmodel\). So even if every row could only be a basis vector, some would be duplicates, hence killing orthogonality.} Trained neural networks do not spread information uniformly through the spaces they're afforded. Training is a process of \textit{compressing}, \textit{abstracting}, and \textit{discovering} useful redundancies in the representation and apprehension of information. Because of this, the causal tendrils flowing from any given node within the model are braided and entangled, giving the model the power to make high-leverage decisions, but also blinding the path backwards through those decisions. \(\jlens\), as we know, was explicitly constructed by pulling derivatives backward, trying to reverse and untangle the causal course that determined the behavior we observed.
 
-So if \(\jlens\) is highly redundant, then maybe \(k\) directions really can reconstruct almost all of the information in a given \(h\)...can it? At this point in the discussion, we have to ask ourselves what we mean by \textit{information}. Information content is always in the eye of the beholder. What was the gaze that guided our constructed \(\jlens\)? How does it \textit{see} the raw data stored in a single latent? 
+So if \(\jlens\) is highly redundant, then maybe \(k\) directions really can reconstruct almost all of the information in a given \(h\)...can it? At this point, we have to ask ourselves what we mean by \textit{information}. Information content is always in the eye of the beholder. In what ways can we measure the information in a latent \(h\) and compare it with that which is reconstructed in \(\jspace(h)\)? 
 
-- a latent is a fully specified point or direction
-- it contains tons of raw information, if you just look at its basic, unqualified variance
-- but jlens doesnt care about that---it specifically looks  for one kind of information in any datapoint that it is faced with
+One neutral measure is simply the statistical variance. Of all the latents sampled in the process of computing \(\jlens\), what was their average information as denoted by variance? If they were all the same, variance would be null and therefore we could see that the information each one offers up on its own would be null as well. At each layer (we will omit subscripts denoting layer, because we can do this at any layer), we can define the variance as \(\mathscr{T} = \mathbb{E}_h\|h - \bar{h}\|^2\), where \(\bar{h} = \mathbb{E} [h]\)---the average squared length of the difference between any \(h\) and the average \(h\). This spread is a proxy for informational distinctness across the sampled activations of a layer---which, we'd hope, are distinct and decisive. Since we're interested in how good \(\jspace\) decompositions of latents are, we can see \(\mathscr{T}\) as a measure of \textit{the average information to be reconstructed}. How much information, then, do \(\jspace\) decompositions cover? The natural quantity has already been put to good use---the \textit{residual}. We can define an average measure of that which \(\jspace\) decompositions leave \textit{uncovered} as \(\mathscr{U} = \mathbb{E}_h\|h - \jspace(h)\|^2\). Finally, coupling these definitions, we can measure the average amount of variance covered by \(\jspace\) decompositions as \(\mathscr{C} = 1 - \frac{\mathscr{U}}{\mathscr{T}}\).\footnote{Note the asymmetry: \(\mathscr{U}\) is measured against \(h\) itself, while \(\mathscr{T}\) is measured about the mean \(\bar{h}\).}
+% FOOTNOTE TO EXPAND (Ben) --- the thrust: this asymmetry makes \mathscr{C} a HARSHER test
+% than a like-for-like one, and it cuts in our favor. \jspace(h) must reconstruct h outright,
+% so some of its k directions are spent reproducing the large shared mean offset that every
+% residual-stream latent carries --- work the \mathscr{T} baseline gets for free, since it is
+% handed \bar{h} by construction. So 10--15% understates the non-trivial (off-mean) structure
+% actually captured, and the concession we go on to make is more generous than it needs to be.
+ \(\frac{\mathscr{U}}{\mathscr{T}}\) on its own tells us the fraction of what is \textit{uncovered} with respect to that which we want to cover. Subtracting this fraction tells us the fraction \textit{covered} of that which we want to cover. 
 
-- so is it going to be good at fully reconstructing the point? hell no. 
-- is it going to only see points for their behavioral influence? hell yes. 
+So what did Anthropic find for \(\mathscr{C}\)? When measured as we've described here, despite the success of the \(\jspace\) to be discussed in later sections, \(\mathscr{C}\) was typically only as high as \(10-15\%\). In typical LLMs, this is far higher than \(\frac{k}{\dmodel}\), but it is still a rather lower number than we might expect. The bulk of the variance of activations is unseen by the \(\jspace\) decomposition.
 
-so in a literal sense, it only reconstructs somehting like 10-15 percent of a latent's variance. but practically, it explains almost all of its influence on behavior as expressed in logits!
+We said that information is in the eye of the beholder. What was the gaze that guided our constructed \(\jlens\)---the source from which we drew \(\jspace\)? How does it \textit{see} the raw data stored in a single latent? This is the crux: the computation of the \(\jlens\) only ever saw latents in terms of their downstream causal impact on logits. The power of \(\jlens\) is that it is \textit{not} a representation of static state, but instead disposition, informed by derivatives blaming \(h\). A hypothetical latent could be highly deviant from the mean (thus strongly contributing to \(\mathscr{T}\)) but be causally irrelevant, and therefore \textit{nothing} to the \(\jlens\). \(\jspace(h)\) doesn't reconstruct \(h\) through some geometrically neutral gaze---like that of \(\mathscr{T}\)---but instead does so in the basis of causal leverage itself. These top \(k\) directions picked from such a basis, yes, leave lots of variance on the table, but every one of them is, by construction, a direction of causal bearing on the network's outputs.
+% PRECISION (Ben) --- worth a sentence or two here, and it strengthens the hand-off below.
+% Split what is true BY CONSTRUCTION from what is EMPIRICAL:
+%   (a) By construction: the dictionary is built of \jlens rows, i.e. logit-gradient
+%       directions. So anything matching pursuit selects IS a leverage direction. Solid.
+%   (b) NOT by construction: that the k selected are the ones carrying the MOST leverage.
+%       The selection rule is <m_v, r> --- it ranks by what best rebuilds h, not by causal
+%       magnitude. Leverage is the basis, not the ranking criterion.
+%   (c) NOT by construction (the big one): that the DISCARDED remainder is causally
+%       near-inert. That is the real claim of this section, and it is an empirical result,
+%       not a theorem --- the remainder can still lie along lens rows we simply didn't pick.
+% Suggest staking (c) plainly as a claim that must be EARNED, so the next paragraph's
+% hand-off to \S\ref{sec:jfindings} (the 60%-vs-6% swaps) reads as a debt being paid
+% rather than as a mere complement. Construction motivates; the interventions prove.
 
-for intuition here we should think about dna. the j lens looks at dna with a known-protein amino-acid filter. does this strip produce a protein found in the body? if yes, it's an active dna region that we cna interpret. if no, then...eh, genetics are complex. yes! so much higher order interaction is entailed in a single latent. so much fo this information cancels out as the network churns ahead through layers. what we care about are those end products: the tokens it lens shine in the logit vector. the proteins it synthesizes!
+With this in mind, we see \(\jspace\) for what it is---the causal, dispositional profile of \(h\)---and what it isn't---a naive, generalist reconstruction of the static information frozen into the activations of any layer. The results explored in the following section complement the above discussed caveat, telling us that sheer \textit{volume} and true \textit{influence} can be separated. We already understand this notion of sparse leverage in the genome, for example. What \textit{makes} \textbf{J-vision} is the shedding of noise for causal signal, collapsing our focus to a crystallized, privileged subset---just as training did.
 
-so just as we'dnt look at dna through the general/vague view of raw information content and instead look at how it mints proteins, we look at latents for how they mint logits. are the non-coding regions worthless? absolutely not. but are the regions that directly produce vital proteins absolute nonnegotiables? yes. if we fuck with them, we fuck with the proteins they produce. if we fuck with the other parts....eh, yes we will mess things up and htose proteins will not be made. but those higher order, later interactiosn are resilient, and they may let us still land on our feet and live. now if we fuck with the noncoding parts, but force the coding parts to stay the same, will we fuck with those proteins? hell no!
+% - a latent is a fully specified point or direction
+% - it contains tons of raw information, if you just look at its basic, unqualified variance
+% - but jlens doesnt care about that---it specifically looks  for one kind of information in any datapoint that it is faced with
+
+% - so is it going to be good at fully reconstructing the point? hell no. 
+% - is it going to only see points for their behavioral influence? hell yes. 
+
+% so in a literal sense, it only reconstructs somehting like 10-15 percent of a latent's variance. but practically, it explains almost all of its influence on behavior as expressed in logits!
+
+% for intuition here we should think about dna. the j lens looks at dna with a known-protein amino-acid filter. does this strip produce a protein found in the body? if yes, it's an active dna region that we cna interpret. if no, then...eh, genetics are complex. yes! so much higher order interaction is entailed in a single latent. so much fo this information cancels out as the network churns ahead through layers. what we care about are those end products: the tokens it lens shine in the logit vector. the proteins it synthesizes!
+
+% so just as we'dnt look at dna through the general/vague view of raw information content and instead look at how it mints proteins, we look at latents for how they mint logits. are the non-coding regions worthless? absolutely not. but are the regions that directly produce vital proteins absolute nonnegotiables? yes. if we fuck with them, we fuck with the proteins they produce. if we fuck with the other parts....eh, yes we will mess things up and htose proteins will not be made. but those higher order, later interactiosn are resilient, and they may let us still land on our feet and live. now if we fuck with the noncoding parts, but force the coding parts to stay the same, will we fuck with those proteins? hell no!
 
 
 
