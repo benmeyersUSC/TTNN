@@ -1,2 +1,3 @@
 title: TTTN
 tagline: A trainable templated tensor network library in C++20
+description: Machine learning library written in C++ with *shape as type* philosophy. Tensors, networks, primitive functions are all types and are highly optimized and inlined at compile-time. Implementations of standard dense networks (using LearnedContractions---weight matrices inferred from declared activation shapes, forward and backward passes abstracted), attention blocks and transformers, byte-pair tokenization, dataset-loading, and model training and monitoring. Training and activation lenses as first class instruments in the library. README displays library's philosophy, showcases snippets, and provides extensive documentation for all types and functions.  
