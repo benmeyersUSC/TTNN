@@ -1,6 +1,7 @@
 *
 
 !.gitignore
+!.showcase.yml
 !README.md
 !CMakeLists.txt
 !main.cpp
