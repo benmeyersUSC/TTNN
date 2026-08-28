@@ -208,6 +208,10 @@ TTTN {
         };
 
         NetworkT Network;
+        // The network is just a network. Training state -- optimizer moments and the
+        // activation cache -- belongs to the trainer that orchestrates it. One trainer
+        // for both the CE and RL paths, so they share one AdamState.
+        NetworkTrainer<NetworkT, Batch> Trainer{Network};
         RLState RL_State;
         DataCursor Cursor;
         std::string tttn_home_;
@@ -445,6 +449,13 @@ TTTN {
             return {out, n_tokens > 0 ? static_cast<float>(total_nll / static_cast<double>(n_tokens)) : 0.f};
         }
 
+        // Inference on a single example. Forward is batched now, so wrap and unwrap.
+        OutputT ForwardOne(const InputT &x) const {
+            typename PrependBatch<1, InputT>::type bx{};
+            TensorSet<0>(bx, 0, x);
+            return TensorGet<0>(Network.template Forward<1>(bx), 0);
+        }
+
         static std::vector<Token> ArgmaxDecode(const OutputT &logits) {
             std::vector<Token> out;
             for (size_t t = 0; t < TgtLen; ++t)
@@ -456,7 +467,7 @@ TTTN {
             auto [tf_input, _tgt] = EncodeExample(ex);
             if (p_sample <= 0.f) return tf_input;
 
-            const auto logits = Network.Forward(tf_input);
+            const auto logits = ForwardOne(tf_input);
             const auto predicted = ArgmaxDecode(logits);
 
             // real number coin
@@ -520,7 +531,7 @@ TTTN {
                     std::vector<uint8_t>(tgt_buf.data() + r * TgtLen, tgt_buf.data() + (r + 1) * TgtLen)
                 };
                 const auto [inp, tgt] = EncodeExample(ex);
-                const auto logits = Network.Forward(inp);
+                const auto logits = ForwardOne(inp);
                 tf_loss += SequenceSoftmaxCEL<static_cast<size_t>(Token::PAD)>::Loss(logits, tgt).flat(0);
                 ++tf_examples;
 
@@ -808,7 +819,7 @@ TTTN {
             const float advantage = avg_R - RL_State.baseline;
             const float rl_lr = RL_State.LR(Cursor.total_seen) * advantage;
 
-            Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(Token::PAD)>, RL_K>(rl_x, rl_y, rl_lr);
+            Trainer.template Fit<SequenceSoftmaxCEL<static_cast<size_t>(Token::PAD)>, RL_K>(rl_x, rl_y, rl_lr);
 
             const float rl_ramp_pct = std::clamp(
                                           static_cast<float>(Cursor.total_seen) / (RL_RAMP_SIZE * ExamplesPerEpoch),
@@ -941,7 +952,7 @@ TTTN {
                                 TensorSet<0>(batch_x, i, inp);
                                 TensorSet<0>(batch_y, i, tgt);
                             }
-                            const float loss = Network.template BatchFit<SequenceSoftmaxCEL<static_cast<size_t>(
+                            const float loss = Trainer.template Fit<SequenceSoftmaxCEL<static_cast<size_t>(
                                 Token::PAD)>, Batch>(
                                 batch_x, batch_y, LR(Cursor.total_seen));
                             group_loss += loss;

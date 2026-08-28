@@ -9,7 +9,7 @@
 namespace TTTN {
     // @doc: template<Block... Blocks> class TrainableTensorNetwork
     /**
-     * Capstone object of the library; owns a `BlockSequence<Blocks...> mSeq_` and an `AdamState mAdam_`
+     * Capstone object of the library; owns a `BlockSequence<Blocks...> mSeq_`; optimizer state lives in `NetworkTrainer`
      * All type aliases (`InputTensor`, `OutputTensor`, `Activations`, etc.) and inference/backward/serialization methods delegate directly to `mSeq_`
      * Exclusively owns the optimizer state and loss-parameterized training entry points
      */
@@ -30,7 +30,7 @@ namespace TTTN {
         // Metric I — Positional Leverage (architecture-only, compile-time).
         static constexpr auto BlockParamCounts             = Seq::BlockParamCounts;
         static constexpr auto PositionalLeveragePerBlock   = Seq::PositionalLeveragePerBlock;
-        static constexpr auto PositionalLeveragePerParam   = Seq::PositionalLeveragePerParam;
+        static constexpr float PositionalLeverageForParam(size_t i) { return Seq::PositionalLeverageForParam(i); }
 
         template<size_t Batch> using Activations    = typename Seq::template Activations<Batch>;
         template<size_t Batch> using TrainingCache  = typename Seq::template TrainingCache<Batch>;
@@ -329,12 +329,30 @@ namespace TTTN {
          * `ForwardAll` -> `ZeroGrad` -> `BackwardAll` -> `Update`
          * `grad` is `dLoss/dOutputTensor`, computed externally
          */
-        template<typename Loss>
-        float Fit(const BatchIn &X, const BatchOut &Y, float lr) {
-            const BatchOut pred = Forward(X);
+        // B defaults to the trainer's configured batch. A caller that needs a
+        // different one (an RL rollout of K samples alongside CE minibatches, say)
+        // passes it explicitly; the optimizer state stays shared either way, which
+        // is the whole point of doing this on one trainer rather than two.
+        template<typename Loss, size_t B = Batch_>
+        float Fit(const typename PrependBatch<B, InputT>::type &X,
+                  const typename PrependBatch<B, OutputT>::type &Y, float lr) {
+            using BOut = typename PrependBatch<B, OutputT>::type;
+
+            // cache_ is sized to Batch_; any other batch gets its own. Heap, because
+            // a training cache at transformer scale is far too big for the stack.
+            std::unique_ptr<typename Net::template TrainingCache<B>> owned;
+            auto &cache = [&]() -> typename Net::template TrainingCache<B> & {
+                if constexpr (B == Batch_) { return cache_; }
+                else {
+                    owned = std::make_unique<typename Net::template TrainingCache<B>>();
+                    return *owned;
+                }
+            }();
+
+            const BOut pred = net_.template Forward<B>(X, cache);
             float loss_val = 0.f;
-            BatchOut grad{};
-            for (size_t b = 0; b < Batch_; ++b) {
+            BOut grad{};
+            for (size_t b = 0; b < B; ++b) {
                 OutputT pred_b, y_b;
                 for (size_t i = 0; i < OutputT::Size; ++i) {
                     pred_b.flat(i) = pred.flat(b * OutputT::Size + i);
@@ -345,9 +363,9 @@ namespace TTTN {
                 for (size_t i = 0; i < OutputT::Size; ++i)
                     grad.flat(b * OutputT::Size + i) = g.flat(i);
             }
-            loss_val /= static_cast<float>(Batch_);
+            loss_val /= static_cast<float>(B);
             ZeroGrad();
-            Backward(grad);
+            net_.template BackwardAll<B>(grad, cache);
             Update(lr);
             return loss_val;
         }

@@ -59,16 +59,18 @@ namespace TTTN {
         }();
 
         // Metric I — Positional Leverage per parameter (flat, all_params() order).
-        // Every parameter in block k receives PositionalLeveragePerBlock[k].
-        static constexpr std::array<float, TotalParamCount> PositionalLeveragePerParam = [] {
-            std::array<float, TotalParamCount> r{};
-            size_t idx = 0;
+        // Every parameter in block k has PositionalLeveragePerBlock[k], so this is a
+        // broadcast of the per-block array rather than a stored one. Materialising it
+        // would mean a constexpr array of TotalParamCount floats -- for a transformer
+        // that is millions of entries, which no compiler will evaluate.
+        static constexpr float PositionalLeverageForParam(size_t i) {
+            size_t end = 0;
             for (size_t k = 0; k < NumBlocks; ++k) {
-                const float lev = PositionalLeveragePerBlock[k];
-                for (size_t i = 0; i < BlockParamCounts[k]; ++i) r[idx++] = lev;
+                end += BlockParamCounts[k];
+                if (i < end) return PositionalLeveragePerBlock[k];
             }
-            return r;
-        }();
+            return 0.f;
+        }
 
         // N+1 batched tensors: [X, A0, A1, ..., A_{N-1}]
         template<size_t Batch>

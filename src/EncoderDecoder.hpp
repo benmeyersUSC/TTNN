@@ -76,13 +76,14 @@ namespace TTTN {
                 CrossAttn mhca_;
                 ResidualBlock<FFN> rffn_;
 
+                // Single-sample forward. The primitives are batched-only now, so this
+                // is a batch-of-1 wrapper rather than a second copy of the logic.
                 DecHidden Forward(const DecHidden &x, const EncHidden &enc_out) const {
-                    // masked self-attn + residual (handled by ResidualBlock)
-                    auto selfed = rmmha_.Forward(x);
-                    // cross-attn: pack decoder state with encoder output, residual on Q-side
-                    auto crossed = mhca_.Forward(ConcatAxis<0>(selfed, enc_out)) + selfed;
-                    // FFN + residual (handled by ResidualBlock)
-                    return rffn_.Forward(crossed);
+                    Tensor<1, TgtLen, EmbDim> bx{};
+                    Tensor<1, SrcLen, EmbDim> benc{};
+                    TensorSet<0>(bx, 0, x);
+                    TensorSet<0>(benc, 0, enc_out);
+                    return TensorGet<0>(Forward<1>(bx, benc), 0);
                 }
 
                 // returns (d_x, d_enc_out_layer)
@@ -98,24 +99,60 @@ namespace TTTN {
                     return {d_x, d_enc};
                 }
 
+                // Cache holds each sub-block's cache plus the activations their
+                // Backward needs as `a` / `a_prev`.
                 template<size_t Batch>
-                Tensor<Batch, TgtLen, EmbDim> BatchedForward(
+                struct TrainingCacheData {
+                    typename ResidualBlock<SelfAttn>::template TrainingCache<Batch> rmmha{};
+                    typename CrossAttn::template TrainingCache<Batch>               mhca{};
+                    typename ResidualBlock<FFN>::template TrainingCache<Batch>      rffn{};
+                    Tensor<Batch, TgtLen, EmbDim>          x{};        // layer input
+                    Tensor<Batch, TgtLen, EmbDim>          selfed{};   // after self-attn residual
+                    Tensor<Batch, TgtLen + SrcLen, EmbDim> packed{};   // cross-attn input
+                    Tensor<Batch, TgtLen, EmbDim>          mhca_out{}; // cross-attn output, pre-residual
+                    Tensor<Batch, TgtLen, EmbDim>          crossed{};  // after cross-attn residual
+                    Tensor<Batch, TgtLen, EmbDim>          out{};      // layer output
+                };
+                template<size_t Batch> using TrainingCache = TrainingCacheData<Batch>;
+
+                // ---- batched forward: pure inference, no cache ----
+                template<size_t Batch>
+                Tensor<Batch, TgtLen, EmbDim> Forward(
                     const Tensor<Batch, TgtLen, EmbDim> &x,
                     const Tensor<Batch, SrcLen, EmbDim> &enc_out) const {
-                    auto selfed = rmmha_.template BatchedForward<Batch>(x);
-                    auto crossed = mhca_.template BatchedForward<Batch>(ConcatAxis<1>(selfed, enc_out)) + selfed;
-                    return rffn_.template BatchedForward<Batch>(crossed);
+                    auto selfed = rmmha_.template Forward<Batch>(x);
+                    auto crossed = mhca_.template Forward<Batch>(ConcatAxis<1>(selfed, enc_out)) + selfed;
+                    return rffn_.template Forward<Batch>(crossed);
+                }
+
+                // ---- batched forward: training, populates cache ----
+                template<size_t Batch>
+                Tensor<Batch, TgtLen, EmbDim> Forward(
+                    const Tensor<Batch, TgtLen, EmbDim> &x,
+                    const Tensor<Batch, SrcLen, EmbDim> &enc_out,
+                    TrainingCache<Batch> &cache) const {
+                    cache.x = x;
+                    cache.selfed = rmmha_.template Forward<Batch>(x, cache.rmmha);
+                    cache.packed = ConcatAxis<1>(cache.selfed, enc_out);
+                    cache.mhca_out = mhca_.template Forward<Batch>(cache.packed, cache.mhca);
+                    cache.crossed = cache.mhca_out + cache.selfed;   // cross-attn residual
+                    cache.out = rffn_.template Forward<Batch>(cache.crossed, cache.rffn);
+                    return cache.out;
                 }
 
                 // returns (d_x, d_enc_out_layer)
                 template<size_t Batch>
                 std::pair<Tensor<Batch, TgtLen, EmbDim>, Tensor<Batch, SrcLen, EmbDim> >
-                BatchedBackward(const Tensor<Batch, TgtLen, EmbDim> &d_out) {
-                    auto d_crossed = rffn_.template BatchedBackward<Batch>(d_out, {}, {});
-                    auto d_packed = mhca_.template BatchedBackward<Batch>(d_crossed, {}, {});
+                Backward(const Tensor<Batch, TgtLen, EmbDim> &d_out,
+                         const TrainingCache<Batch> &cache) {
+                    auto d_crossed = rffn_.template Backward<Batch>(
+                        d_out, cache.out, cache.crossed, cache.rffn);
+                    auto d_packed = mhca_.template Backward<Batch>(
+                        d_crossed, cache.mhca_out, cache.packed, cache.mhca);
                     auto [d_selfed, d_enc] = SplitAxis<1, TgtLen>(d_packed);
-                    d_selfed += d_crossed;
-                    auto d_x = rmmha_.template BatchedBackward<Batch>(d_selfed, {}, {});
+                    d_selfed += d_crossed;                            // cross-attn residual
+                    auto d_x = rmmha_.template Backward<Batch>(
+                        d_selfed, cache.selfed, cache.x, cache.rmmha);
                     return {d_x, d_enc};
                 }
 
@@ -140,11 +177,11 @@ namespace TTTN {
 
             // ---- forward: walk all NDec layers, threading enc_out into every cross-attn ----
             DecHidden Forward(const DecHidden &dec_in, const EncHidden &enc_out) const {
-                return [&]<size_t... Is>(std::index_sequence<Is...>) {
-                    DecHidden x = dec_in;
-                    ((x = layers_[Is].Forward(x, enc_out)), ...);
-                    return x;
-                }(std::make_index_sequence<NDec>{});
+                Tensor<1, TgtLen, EmbDim> bx{};
+                Tensor<1, SrcLen, EmbDim> benc{};
+                TensorSet<0>(bx, 0, dec_in);
+                TensorSet<0>(benc, 0, enc_out);
+                return TensorGet<0>(Forward<1>(bx, benc), 0);
             }
 
 
@@ -160,14 +197,33 @@ namespace TTTN {
                 return {d_x, d_enc_accum};
             }
 
+            template<size_t Batch>
+            struct TrainingCacheData {
+                std::array<typename Layer::template TrainingCache<Batch>, NDec> layers{};
+            };
+            template<size_t Batch> using TrainingCache = TrainingCacheData<Batch>;
+
             // ---- batched forward: same fold as single-sample, threading batched enc_out ----
             template<size_t Batch>
-            Tensor<Batch, TgtLen, EmbDim> BatchedForward(
+            Tensor<Batch, TgtLen, EmbDim> Forward(
                 const Tensor<Batch, TgtLen, EmbDim> &dec_in,
                 const Tensor<Batch, SrcLen, EmbDim> &enc_out) const {
                 return [&]<size_t... Is>(std::index_sequence<Is...>) {
                     Tensor<Batch, TgtLen, EmbDim> x = dec_in;
-                    ((x = layers_[Is].template BatchedForward<Batch>(x, enc_out)), ...);
+                    ((x = layers_[Is].template Forward<Batch>(x, enc_out)), ...);
+                    return x;
+                }(std::make_index_sequence<NDec>{});
+            }
+
+            // ---- batched forward: training, populates per-layer caches ----
+            template<size_t Batch>
+            Tensor<Batch, TgtLen, EmbDim> Forward(
+                const Tensor<Batch, TgtLen, EmbDim> &dec_in,
+                const Tensor<Batch, SrcLen, EmbDim> &enc_out,
+                TrainingCache<Batch> &cache) const {
+                return [&]<size_t... Is>(std::index_sequence<Is...>) {
+                    Tensor<Batch, TgtLen, EmbDim> x = dec_in;
+                    ((x = layers_[Is].template Forward<Batch>(x, enc_out, cache.layers[Is])), ...);
                     return x;
                 }(std::make_index_sequence<NDec>{});
             }
@@ -175,11 +231,13 @@ namespace TTTN {
             // ---- batched backward: reverse accumulation of d_enc_out ----
             template<size_t Batch>
             std::pair<Tensor<Batch, TgtLen, EmbDim>, Tensor<Batch, SrcLen, EmbDim> >
-            BatchedBackward(const Tensor<Batch, TgtLen, EmbDim> &d_out) {
+            Backward(const Tensor<Batch, TgtLen, EmbDim> &d_out,
+                     const TrainingCache<Batch> &cache) {
                 Tensor<Batch, TgtLen, EmbDim> d_x = d_out;
                 Tensor<Batch, SrcLen, EmbDim> d_enc_accum{};
                 for (int i = static_cast<int>(NDec) - 1; i >= 0; --i) {
-                    auto [d_layer_in, d_enc_layer] = layers_[i].template BatchedBackward<Batch>(d_x);
+                    auto [d_layer_in, d_enc_layer] =
+                        layers_[i].template Backward<Batch>(d_x, cache.layers[i]);
                     d_x = d_layer_in;
                     d_enc_accum += d_enc_layer;
                 }
@@ -312,66 +370,75 @@ namespace TTTN {
             return InputTensor{};
         }
 
-        // ---- batched forward ----
+        // ---- training cache: encoder + decoder caches, plus the activations
+        //      Backward needs (the one-hots, the encoder input, the decoder output) ----
         template<size_t Batch>
-        Tensor<Batch, TgtLen, VocabSize> BatchedForward(
+        struct TrainingCacheData {
+            typename EncoderType::template TrainingCache<Batch>      enc{};
+            typename CrossDecoderStack::template TrainingCache<Batch> dec{};
+            Tensor<Batch, SrcLen, VocabSize> src_oh{};
+            Tensor<Batch, TgtLen, VocabSize> tgt_oh{};
+            Tensor<Batch, SrcLen, EmbDim>    src_emb{};
+            Tensor<Batch, TgtLen, EmbDim>    dec_out{};
+        };
+        template<size_t Batch> using TrainingCache = TrainingCacheData<Batch>;
+
+        // ---- batched forward: pure inference, no cache ----
+        template<size_t Batch>
+        Tensor<Batch, TgtLen, VocabSize> Forward(
             const Tensor<Batch, SrcLen + TgtLen, VocabSize> &X) const {
-            using BSrcOH = Tensor<Batch, SrcLen, VocabSize>;
-            using BTgtOH = Tensor<Batch, TgtLen, VocabSize>;
-            using BSrcEmb = Tensor<Batch, SrcLen, EmbDim>;
-            // 1. split packed input
             auto [b_src_oh, b_tgt_oh] = SplitAxis<1, SrcLen>(X);
-            batch_cache_store(b_src_oh, b_src_oh_);
-            batch_cache_store(b_tgt_oh, b_tgt_oh_);
-            // 2. embed src + PE
             auto b_src_emb = BatchEmbed<Batch, SrcLen>(b_src_oh, embed_.value);
             BatchAddPE<Batch, SrcLen>(b_src_emb);
-            batch_cache_store(b_src_emb, b_src_emb_); // needed for enc backward a_prev
-            // 3. encode
-            auto b_enc_out = enc_.template BatchedForward<Batch>(b_src_emb);
-            // 4. embed tgt + PE
+            auto b_enc_out = enc_.template Forward<Batch>(b_src_emb);
             auto b_tgt_emb = BatchEmbed<Batch, TgtLen>(b_tgt_oh, embed_.value);
             BatchAddPE<Batch, TgtLen>(b_tgt_emb);
-            // 5. decode
-            auto b_dec_out = dec_.template BatchedForward<Batch>(b_tgt_emb, b_enc_out);
-            batch_cache_store(b_dec_out, b_dec_out_);
-            // 6. weight-tied projection via flatten: [Batch,TgtLen,EmbDim] → [Batch,TgtLen,VocabSize]
+            auto b_dec_out = dec_.template Forward<Batch>(b_tgt_emb, b_enc_out);
             return BatchProject<Batch, TgtLen>(b_dec_out, embed_.value);
+        }
+
+        // ---- batched forward: training, populates cache ----
+        template<size_t Batch>
+        Tensor<Batch, TgtLen, VocabSize> Forward(
+            const Tensor<Batch, SrcLen + TgtLen, VocabSize> &X,
+            TrainingCache<Batch> &cache) const {
+            std::tie(cache.src_oh, cache.tgt_oh) = SplitAxis<1, SrcLen>(X);
+            cache.src_emb = BatchEmbed<Batch, SrcLen>(cache.src_oh, embed_.value);
+            BatchAddPE<Batch, SrcLen>(cache.src_emb);
+            auto b_enc_out = enc_.template Forward<Batch>(cache.src_emb, cache.enc);
+            auto b_tgt_emb = BatchEmbed<Batch, TgtLen>(cache.tgt_oh, embed_.value);
+            BatchAddPE<Batch, TgtLen>(b_tgt_emb);
+            cache.dec_out = dec_.template Forward<Batch>(b_tgt_emb, b_enc_out, cache.dec);
+            return BatchProject<Batch, TgtLen>(cache.dec_out, embed_.value);
         }
 
         // ---- batched backward ----
         template<size_t Batch>
-        Tensor<Batch, SrcLen + TgtLen, VocabSize> BatchedBackward(
+        Tensor<Batch, SrcLen + TgtLen, VocabSize> Backward(
             const Tensor<Batch, TgtLen, VocabSize> &delta_A,
             const Tensor<Batch, TgtLen, VocabSize> & /*a*/,
-            const Tensor<Batch, SrcLen + TgtLen, VocabSize> & /*a_prev*/) {
-            using BSrcOH = Tensor<Batch, SrcLen, VocabSize>;
-            using BTgtOH = Tensor<Batch, TgtLen, VocabSize>;
-            using BSrcEmb = Tensor<Batch, SrcLen, EmbDim>;
-            using BDecOut = Tensor<Batch, TgtLen, EmbDim>;
-            const auto b_src_oh = batch_cache_load<BSrcOH>(b_src_oh_);
-            const auto b_tgt_oh = batch_cache_load<BTgtOH>(b_tgt_oh_);
-            const auto b_src_emb = batch_cache_load<BSrcEmb>(b_src_emb_);
-            const auto b_dec_out = batch_cache_load<BDecOut>(b_dec_out_);
-
-            // 1. grad through projection (flatten → Contract → reshape)
-            //    d_dec_out[b,t,e] = Σ_v delta[b,t,v]*E[v,e]
+            const Tensor<Batch, SrcLen + TgtLen, VocabSize> & /*a_prev*/,
+            const TrainingCache<Batch> &cache) {
+            // 1. grad through projection (flatten -> Contract -> reshape)
+            //    d_dec_out[b,t,e] = sum_v delta[b,t,v]*E[v,e]
             auto d_dec_out = Reshape<Batch, TgtLen, EmbDim>(
                 Contract<AxisList<1>{}, AxisList<0>{}, Mul, Add>(
                     Reshape<Batch * TgtLen, VocabSize>(delta_A), embed_.value));
-            //    dE[v,e] += Σ_b Σ_t delta[b,t,v]*dec_out[b,t,e]
-            embed_.grad += BatchEmbedGrad<Batch, TgtLen>(delta_A, b_dec_out);
+            //    dE[v,e] += sum_b sum_t delta[b,t,v]*dec_out[b,t,e]
+            embed_.grad += BatchEmbedGrad<Batch, TgtLen>(delta_A, cache.dec_out);
 
-            // 2. grad through decoder (internal caches from BatchedForward)
-            auto [d_tgt_emb, d_enc_out] = dec_.template BatchedBackward<Batch>(d_dec_out);
+            // 2. grad through decoder
+            auto [d_tgt_emb, d_enc_out] = dec_.template Backward<Batch>(d_dec_out, cache.dec);
 
-            // 3. grad through encoder (re-runs BatchedForward from b_src_emb to repopulate caches)
-            auto d_src_emb = enc_.template BatchedBackward<Batch>(d_enc_out, {}, b_src_emb);
+            // 3. grad through encoder -- the cache carries its activations, so
+            //    unlike the old path this no longer re-runs the forward pass
+            auto d_src_emb = enc_.template Backward<Batch>(
+                d_enc_out, {}, cache.src_emb, cache.enc);
 
-            // 4. accumulate embed grad from tgt: dE[v,e] += Σ_b Σ_t tgt_oh[b,t,v]*d_tgt_emb[b,t,e]
-            embed_.grad += BatchEmbedGrad<Batch, TgtLen>(b_tgt_oh, d_tgt_emb);
-            // 5. accumulate embed grad from src
-            embed_.grad += BatchEmbedGrad<Batch, SrcLen>(b_src_oh, d_src_emb);
+            // 4. embed grad from tgt: dE[v,e] += sum_b sum_t tgt_oh[b,t,v]*d_tgt_emb[b,t,e]
+            embed_.grad += BatchEmbedGrad<Batch, TgtLen>(cache.tgt_oh, d_tgt_emb);
+            // 5. embed grad from src
+            embed_.grad += BatchEmbedGrad<Batch, SrcLen>(cache.src_oh, d_src_emb);
 
             return Tensor<Batch, SrcLen + TgtLen, VocabSize>{};
         }
@@ -452,7 +519,9 @@ namespace TTTN {
         EncHidden EncodeOnly(const SrcOneHot &src) const {
             auto emb = Embed(src, embed_.value);
             AddPositionalEncoding(emb);
-            return enc_.Forward(emb);
+            Tensor<1, SrcLen, EmbDim> bemb{};
+            TensorSet<0>(bemb, 0, emb);
+            return TensorGet<0>(enc_.template Forward<1>(bemb), 0);
         }
 
         OutputTensor DecodeStep(const EncHidden &enc_out, const TgtOneHot &tgt_so_far) const {
